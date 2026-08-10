@@ -107,15 +107,8 @@ silveri greeter.sr
 | Path | Purpose |
 | --- | --- |
 | `src/` | Interpreter source modules |
-| `silver-interpreter.srp` | Silver interpreter project manifest |
+| `silveri.srp` | Silver interpreter project manifest |
 | `silveri.exe` | Interpreter executable on Windows |
-
-## Documentation
-
-- [Language specification](../SPEC.md)
-- [Language feature guides](../DOCS/)
-- [Silver compiler](../silverc/README.md)
-- [Silver language support for VS Code](../silver-vscode-extension/)
 
 ## License
 
