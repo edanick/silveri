@@ -1,0 +1,467 @@
+mod export lexer;
+
+import token;
+
+class Lexer {
+    private prop string src;
+    private prop int pos;
+    private prop int line;
+    private prop int col;
+
+    construct (string source) {
+        this.src = source;
+        this.pos = 0;
+        this.line = 1;
+        this.col = 1;
+    }
+
+    private char? peek() {
+        if (this.pos < this.src.length) {
+            return this.src[this.pos];
+        }
+        return null;
+    }
+
+    private char? peekNext() {
+        if (this.pos + 1 < this.src.length) {
+            return this.src[this.pos + 1];
+        }
+        return null;
+    }
+
+    private char? advance() {
+        if (this.pos >= this.src.length) { return null; }
+        char c = this.src[this.pos];
+        this.pos += 1;
+        if (c == '\n') {
+            this.line += 1;
+            this.col = 1;
+        } else {
+            this.col += 1;
+        }
+        return c;
+    }
+
+    private void skipWhitespace() {
+        while (this.pos < this.src.length) {
+            char c = this.src[this.pos];
+            if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+                this.advance();
+            } else {
+                break;
+            }
+        }
+    }
+
+    private void skipLineComment() {
+        while (this.pos < this.src.length) {
+            char c = this.src[this.pos];
+            if (c == '\n') { break; }
+            this.advance();
+        }
+    }
+
+    private bool skipBlockComment() {
+        int depth = 1;
+        while (this.pos < this.src.length && depth > 0) {
+            char c = this.src[this.pos];
+            if (c == '/' && this.pos + 1 < this.src.length && this.src[this.pos + 1] == '*') {
+                depth += 1;
+                this.advance();
+                this.advance();
+            } else if (c == '*' && this.pos + 1 < this.src.length && this.src[this.pos + 1] == '/') {
+                depth -= 1;
+                this.advance();
+                this.advance();
+            } else {
+                this.advance();
+            }
+        }
+        return depth == 0;
+    }
+
+    private Token makeToken(int kind, string text) {
+        return new Token(kind, text, this.line, this.col);
+    }
+
+    private Token readString() {
+        int ln = this.line;
+        int c = this.col;
+        string s = "";
+        while (this.pos < this.src.length) {
+            char ch = this.src[this.pos];
+            this.advance();
+            if (ch == '"') { break; }
+            if (ch == '\\') {
+                if (this.pos < this.src.length) {
+                    char esc = this.src[this.pos];
+                    this.advance();
+                    if (esc == 'n') { s += "\n"; }
+                    else if (esc == 't') { s += "\t"; }
+                    else if (esc == 'r') { s += "\r"; }
+                    else if (esc == '\\') { s += "\\"; }
+                    else if (esc == '"') { s += "\""; }
+                    else if (esc == '$') { s += "$"; }
+                    else if (esc == '0') { s += "\0"; }
+                    else { s += esc.toString(); }
+                }
+            } else {
+                s += ch.toString();
+            }
+        }
+        Token tok = new Token(TK_STRING_LIT, s, ln, c);
+        tok.strVal = s;
+        return tok;
+    }
+
+    private Token readChar() {
+        int ln = this.line;
+        int c = this.col;
+        char ch = ' ';
+        if (this.pos < this.src.length) {
+            ch = this.src[this.pos];
+            this.advance();
+            if (ch == '\\') {
+                if (this.pos < this.src.length) {
+                    char esc = this.src[this.pos];
+                    this.advance();
+                    if (esc == 'n') { ch = '\n'; }
+                    else if (esc == 't') { ch = '\t'; }
+                    else if (esc == 'r') { ch = '\r'; }
+                    else if (esc == '\\') { ch = '\\'; }
+                    else if (esc == '\'') { ch = '\''; }
+                    else if (esc == '0') { ch = '\0'; }
+                    else { ch = esc; }
+                }
+            }
+        }
+        if (this.pos < this.src.length && this.src[this.pos] == '\'') {
+            this.advance();
+        }
+        Token tok = new Token(TK_CHAR_LIT, ch.toString(), ln, c);
+        tok.charVal = ch;
+        return tok;
+    }
+
+    private Token readNumber(char first) {
+        int ln = this.line;
+        int c = this.col;
+        string s = first.toString();
+        bool isFloat = false;
+        if (first == '0' && this.pos < this.src.length) {
+            char next = this.src[this.pos];
+            if (next == 'x' || next == 'X') {
+                s += next.toString();
+                this.advance();
+                while (this.pos < this.src.length) {
+                    char ch = this.src[this.pos];
+                    if (isHexDigit(ch)) {
+                        s += ch.toString();
+                        this.advance();
+                    } else {
+                        break;
+                    }
+                }
+                return makeIntToken(s, 16, ln, c);
+            }
+            if (next == 'b' || next == 'B') {
+                s += next.toString();
+                this.advance();
+                while (this.pos < this.src.length) {
+                    char ch = this.src[this.pos];
+                    if (ch == '0' || ch == '1') {
+                        s += ch.toString();
+                        this.advance();
+                    } else {
+                        break;
+                    }
+                }
+                return makeIntToken(s, 2, ln, c);
+            }
+        }
+        while (this.pos < this.src.length) {
+            char ch = this.src[this.pos];
+            if (ch.isDigit() || ch == '_') {
+                s += ch.toString();
+                this.advance();
+            } else if (ch == '.' && !isFloat) {
+                if (this.pos + 1 < this.src.length && this.src[this.pos + 1] == '.') {
+                    break;
+                }
+                isFloat = true;
+                s += ch.toString();
+                this.advance();
+            } else if (ch == 'e' || ch == 'E') {
+                isFloat = true;
+                s += ch.toString();
+                this.advance();
+                if (this.pos < this.src.length) {
+                    char sign = this.src[this.pos];
+                    if (sign == '+' || sign == '-') {
+                        s += sign.toString();
+                        this.advance();
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+        string clean = removeUnderscores(s);
+        if (isFloat) {
+            Token tok = new Token(TK_FLOAT_LIT, clean, ln, c);
+            tok.floatVal = clean.toFloat64();
+            return tok;
+        }
+        Token tok = new Token(TK_INT_LIT, clean, ln, c);
+        tok.intVal = clean.toInt64();
+        return tok;
+    }
+
+    private Token makeIntToken(string s, int base, int ln, int c) {
+        string clean = removeUnderscores(s);
+        Token tok = new Token(TK_INT_LIT, clean, ln, c);
+        if (base == 16) {
+            string hex = clean.substr(2);
+            tok.intVal = hex.toLongFromBase(16);
+        } else if (base == 2) {
+            string bin = clean.substr(2);
+            tok.intVal = bin.toLongFromBase(2);
+        } else {
+            tok.intVal = clean.toInt64();
+        }
+        return tok;
+    }
+
+    private Token readIdentifierOrKeyword(char first) {
+        int ln = this.line;
+        int c = this.col;
+        string s = first.toString();
+        while (this.pos < this.src.length) {
+            char ch = this.src[this.pos];
+            if (ch.isAlphaNum() || ch == '_') {
+                s += ch.toString();
+                this.advance();
+            } else {
+                break;
+            }
+        }
+        int kind = keywordKind(s);
+        Token tok = new Token(kind, s, ln, c);
+        if (kind == TK_IDENT) {
+            tok.strVal = s;
+        }
+        return tok;
+    }
+
+    public Token[] tokenize() {
+        Token[] tokens = [];
+        while (true) {
+            this.skipWhitespace();
+            if (this.pos >= this.src.length) {
+                tokens.add(new Token(TK_EOF, "", this.line, this.col));
+                break;
+            }
+            Token? tok = this.nextToken();
+            if (tok != null) {
+                tokens.add(tok);
+            }
+        }
+        return tokens;
+    }
+
+    private Token? nextToken() {
+        char c = this.src[this.pos];
+        int ln = this.line;
+        int cl = this.col;
+
+        if (c == '/' && this.pos + 1 < this.src.length) {
+            char next = this.src[this.pos + 1];
+            if (next == '/') {
+                this.skipLineComment();
+                return null;
+            }
+            if (next == '*') {
+                this.advance();
+                this.advance();
+                this.skipBlockComment();
+                return null;
+            }
+        }
+
+        if (c == '"') {
+            this.advance();
+            return this.readString();
+        }
+        if (c == '\'') {
+            this.advance();
+            return this.readChar();
+        }
+        if (c.isDigit()) {
+            this.advance();
+            return this.readNumber(c);
+        }
+        if (c.isAlpha() || c == '_') {
+            this.advance();
+            return this.readIdentifierOrKeyword(c);
+        }
+
+        this.advance();
+
+        if (c == '(') { return new Token(TK_LPAREN, "(", ln, cl); }
+        if (c == ')') { return new Token(TK_RPAREN, ")", ln, cl); }
+        if (c == '{') { return new Token(TK_LBRACE, "{", ln, cl); }
+        if (c == '}') { return new Token(TK_RBRACE, "}", ln, cl); }
+        if (c == '[') { return new Token(TK_LBRACKET, "[", ln, cl); }
+        if (c == ']') { return new Token(TK_RBRACKET, "]", ln, cl); }
+        if (c == ';') { return new Token(TK_SEMI, ";", ln, cl); }
+        if (c == ',') { return new Token(TK_COMMA, ",", ln, cl); }
+        if (c == '~') { return new Token(TK_TILDE, "~", ln, cl); }
+        if (c == '^') { return new Token(TK_CARET, "^", ln, cl); }
+        if (c == '?') {
+            if (this.peek() == '?') {
+                this.advance();
+                return new Token(TK_QUESTIONQUESTION, "??", ln, cl);
+            }
+            return new Token(TK_QUESTION, "?", ln, cl);
+        }
+        if (c == '$') { return new Token(TK_DOLLAR, "$", ln, cl); }
+
+        if (c == '.') {
+            if (this.pos < this.src.length && this.src[this.pos] == '.' && this.pos + 1 < this.src.length && this.src[this.pos + 1] == '.') {
+                this.advance();
+                this.advance();
+                return new Token(TK_SPREAD, "...", ln, cl);
+            }
+            if (this.pos < this.src.length && this.src[this.pos] == '.') {
+                this.advance();
+                return new Token(TK_RANGE, "..", ln, cl);
+            }
+            return new Token(TK_DOT, ".", ln, cl);
+        }
+
+        if (c == ':') { return new Token(TK_COLON, ":", ln, cl); }
+
+        if (c == '+') {
+            if (this.peek() == '+') { this.advance(); return new Token(TK_INC, "++", ln, cl); }
+            if (this.peek() == '=') { this.advance(); return new Token(TK_PLUS_EQ, "+=", ln, cl); }
+            return new Token(TK_PLUS, "+", ln, cl);
+        }
+        if (c == '-') {
+            if (this.peek() == '-') { this.advance(); return new Token(TK_DEC, "--", ln, cl); }
+            if (this.peek() == '=') { this.advance(); return new Token(TK_MINUS_EQ, "-=", ln, cl); }
+            if (this.peek() == '>') { this.advance(); return new Token(TK_ARROW, "->", ln, cl); }
+            return new Token(TK_MINUS, "-", ln, cl);
+        }
+        if (c == '*') {
+            if (this.peek() == '=') { this.advance(); return new Token(TK_STAR_EQ, "*=", ln, cl); }
+            return new Token(TK_STAR, "*", ln, cl);
+        }
+        if (c == '/') {
+            if (this.peek() == '=') { this.advance(); return new Token(TK_SLASH_EQ, "/=", ln, cl); }
+            return new Token(TK_SLASH, "/", ln, cl);
+        }
+        if (c == '%') { return new Token(TK_PERCENT, "%", ln, cl); }
+        if (c == '&') {
+            if (this.peek() == '&') { this.advance(); return new Token(TK_AND, "&&", ln, cl); }
+            return new Token(TK_AMP, "&", ln, cl);
+        }
+        if (c == '|') {
+            if (this.peek() == '|') { this.advance(); return new Token(TK_OR, "||", ln, cl); }
+            return new Token(TK_PIPE, "|", ln, cl);
+        }
+        if (c == '<') {
+            if (this.peek() == '<') { this.advance(); return new Token(TK_SHL, "<<", ln, cl); }
+            if (this.peek() == '=') { this.advance(); return new Token(TK_LEQ, "<=", ln, cl); }
+            return new Token(TK_LESS, "<", ln, cl);
+        }
+        if (c == '>') {
+            if (this.peek() == '>') { this.advance(); return new Token(TK_SHR, ">>", ln, cl); }
+            if (this.peek() == '=') { this.advance(); return new Token(TK_GEQ, ">=", ln, cl); }
+            return new Token(TK_GREATER, ">", ln, cl);
+        }
+        if (c == '=') {
+            if (this.peek() == '=') { this.advance(); return new Token(TK_EQ, "==", ln, cl); }
+            if (this.peek() == '>') { this.advance(); return new Token(TK_FAT_ARROW, "=>", ln, cl); }
+            return new Token(TK_ASSIGN, "=", ln, cl);
+        }
+        if (c == '!') {
+            if (this.peek() == '=') { this.advance(); return new Token(TK_NEQ, "!=", ln, cl); }
+            return new Token(TK_BANG, "!", ln, cl);
+        }
+        if (c == '#') { return new Token(TK_HASH, "#", ln, cl); }
+        if (c == '@') { return new Token(TK_DOLLAR, "@", ln, cl); }
+        if (c == '_') { return new Token(TK_UNDERSCORE, "_", ln, cl); }
+
+        printline("Warning: unexpected character '" + c.toString() + "' at " + ln.toString() + ":" + cl.toString());
+        return null;
+    }
+}
+
+int keywordKind(string s) {
+    if (s == "if") { return TK_IF; }
+    if (s == "else") { return TK_ELSE; }
+    if (s == "while") { return TK_WHILE; }
+    if (s == "for") { return TK_FOR; }
+    if (s == "foreach") { return TK_FOREACH; }
+    if (s == "return") { return TK_RETURN; }
+    if (s == "match") { return TK_MATCH; }
+    if (s == "void") { return TK_VOID; }
+    if (s == "int") { return TK_INT; }
+    if (s == "int32") { return TK_INT32; }
+    if (s == "int64") { return TK_INT64; }
+    if (s == "uint") { return TK_UINT; }
+    if (s == "float") { return TK_FLOAT; }
+    if (s == "float64") { return TK_FLOAT64; }
+    if (s == "double") { return TK_DOUBLE; }
+    if (s == "bool") { return TK_BOOL; }
+    if (s == "char") { return TK_CHAR; }
+    if (s == "string") { return TK_STRING; }
+    if (s == "var") { return TK_VAR; }
+    if (s == "struct") { return TK_STRUCT; }
+    if (s == "class") { return TK_CLASS; }
+    if (s == "enum") { return TK_ENUM; }
+    if (s == "def") { return TK_DEF; }
+    if (s == "found") { return TK_FOUND; }
+    if (s == "collect") { return TK_COLLECT; }
+    if (s == "mod") { return TK_MOD; }
+    if (s == "import") { return TK_IMPORT; }
+    if (s == "from") { return TK_FROM; }
+    if (s == "as") { return TK_AS; }
+    if (s == "new") { return TK_NEW; }
+    if (s == "const") { return TK_CONST; }
+    if (s == "true") { return TK_BOOL_LIT; }
+    if (s == "false") { return TK_BOOL_LIT; }
+    if (s == "null") { return TK_NULL_LIT; }
+    if (s == "public") { return TK_PUBLIC; }
+    if (s == "private") { return TK_PRIVATE; }
+    if (s == "static") { return TK_STATIC; }
+    if (s == "prop") { return TK_PROP; }
+    if (s == "construct") { return TK_CONSTRUCT; }
+    if (s == "unset") { return TK_UNSET; }
+    if (s == "mut") { return TK_MUT; }
+    if (s == "ref") { return TK_REF; }
+    if (s == "try") { return TK_TRY; }
+    if (s == "catch") { return TK_CATCH; }
+    if (s == "in") { return TK_IN; }
+    if (s == "to") { return TK_TO; }
+    if (s == "switch") { return TK_SWITCH; }
+    if (s == "case") { return TK_CASE; }
+    if (s == "assert") { return TK_ASSERT; }
+    if (s == "await") { return TK_AWAIT; }
+    if (s == "sleep") { return TK_SLEEP; }
+    return TK_IDENT;
+}
+
+bool isHexDigit(char c) {
+    return c.isDigit() || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
+string removeUnderscores(string s) {
+    string result = "";
+    for (int i = 0; i < s.length; i++) {
+        if (s[i] != '_') {
+            result += s[i].toString();
+        }
+    }
+    return result;
+}

@@ -1,0 +1,99 @@
+mod export main;
+
+import token;
+import lexer;
+import parser;
+import ast;
+import value;
+import env;
+import eval;
+import builtins;
+import fs;
+
+void printHelp() {
+    printline("silveri " + APP_VERSION);
+    printline("Copyright: © 2025 Edan M.");
+    printline("License: " + APP_LICENSE);
+    printline("Silver language version: " + LANG_VERSION);
+    printline("");
+    printline("Usage: silveri [options] <filename>");
+    printline("");
+    printline("Options:");
+    printline("  -i <file>      Input Silver source file");
+    printline("  -o <file>      Output file (ignored in interpreter)");
+    printline("  --help, -h     Show this help message");
+    printline("  --version      Show version information");
+    printline("");
+    printline("Examples:");
+    printline("  silveri script.sr              Run a Silver script");
+    printline("  silveri -i script.sr           Run a Silver script");
+}
+
+void main() {
+    string[] args = cargs;
+
+    if (args.length < 2) {
+        printHelp();
+        exit(1);
+    }
+
+    string filename = "";
+
+    for (int i = 1; i < args.length; i += 1) {
+        string arg = args[i];
+        if (arg == "--help" || arg == "-h") {
+            printHelp();
+            return;
+        }
+        if (arg == "--version") {
+            printline("silveri " + APP_VERSION);
+            printline("Silver " + LANG_VERSION);
+            printline("Copyright: © 2025 Edan M.");
+    printline("License: " + APP_LICENSE);
+            return;
+        }
+        if (arg == "-i") {
+            if (i + 1 < args.length) {
+                i += 1;
+                filename = args[i];
+            } else {
+                printline("Error: -i requires a filename");
+                exit(1);
+            }
+        } else if (arg == "-o") {
+            if (i + 1 < args.length) {
+                i += 1;
+            } else {
+                printline("Error: -o requires a filename");
+                exit(1);
+            }
+        } else if (arg.startsWith("-")) {
+            printline("Error: Unknown option '" + arg + "'");
+            printHelp();
+            exit(1);
+        } else if (filename == "") {
+            filename = arg;
+        } else {
+            printline("Error: Unknown option '" + arg + "'");
+            printHelp();
+            exit(1);
+        }
+    }
+
+    if (filename == "") {
+        printline("Error: No input file specified");
+        printline("Usage: silveri [options] <filename>");
+        exit(1);
+    }
+
+    string source = fs.readFile(filename);
+
+    Lexer lexer = new Lexer(source);
+    Token[] tokens = lexer.tokenize();
+
+    Parser p = new Parser(tokens);
+    Node[] program = p.parseProgram();
+
+    Evaluator evaluator = new Evaluator();
+    evaluator.run(program);
+}

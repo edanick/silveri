@@ -1,0 +1,799 @@
+mod export eval;
+
+import ast;
+import value;
+import env;
+import builtins;
+
+class ReturnSignal {
+    public prop Value? val;
+    construct () { this.val = null; }
+    construct (Value v) { this.val = v; }
+}
+
+class Evaluator {
+    public prop Env globals;
+    public prop dict<string, Node> functions;
+    public prop dict<string, Node> structs;
+    public prop dict<string, Node> classes;
+    public prop dict<string, string> enums;
+    public prop dict<string, string> typeAliases;
+    public prop dict<string, Node> modules;
+    public prop bool hasReturned;
+    public prop Value? returnValue;
+
+    construct () {
+        this.globals = new Env();
+        this.functions = {};
+        this.structs = {};
+        this.classes = {};
+        this.enums = {};
+        this.typeAliases = {};
+        this.modules = {};
+        this.hasReturned = false;
+        this.returnValue = null;
+        this.registerBuiltins();
+    }
+
+    private void registerBuiltins() {
+    Value v = Value.makeBuiltin("printline");
+    this.globals.define("printline", v);
+    this.globals.define("print", Value.makeBuiltin("print"));
+        this.globals.define("input", Value.makeBuiltin("input"));
+        this.globals.define("assert", Value.makeBuiltin("assert"));
+        this.globals.define("sleep", Value.makeBuiltin("sleep"));
+        this.globals.define("exit", Value.makeBuiltin("exit"));
+        this.globals.define("end", Value.makeBuiltin("exit"));
+        this.globals.define("int", Value.makeBuiltin("int"));
+        this.globals.define("float", Value.makeBuiltin("float"));
+        this.globals.define("string", Value.makeBuiltin("string_cast"));
+        this.globals.define("now", Value.makeBuiltin("now"));
+        this.globals.define("time", Value.makeBuiltin("time_module"));
+    }
+
+    public void run(Node[] program) {
+        this.registerItems(program);
+        this.runMain(program);
+    }
+
+    private void registerItems(Node[] program) {
+        foreach (Node item in program) {
+            this.registerItem(item);
+        }
+    }
+
+    private void registerItem(Node item) {
+        if (item.kind == ND_FUNC) {
+            this.functions[item.name] = item;
+            if (item.isPublic) {
+                this.globals.define(item.name, Value.makeFunc(item.name));
+            }
+        }
+        if (item.kind == ND_STRUCT_DEF) {
+            this.structs[item.name] = item;
+        }
+        if (item.kind == ND_CLASS_DEF) {
+            this.classes[item.name] = item;
+        }
+        if (item.kind == ND_ENUM_DEF) {
+            this.enums[item.name] = item.strVal;
+        }
+        if (item.kind == ND_MODULE) {
+            this.modules[item.name] = item;
+        }
+        if (item.kind == ND_CONST && item.childCount() > 0) {
+            Value val = this.evalExpr(item.child(0), this.globals);
+            this.globals.define(item.name, val);
+        }
+    }
+
+    private void runMain(Node[] program) {
+        for (int idx = 0; idx < program.length; idx++) {
+            Node item = program[idx];
+            if (item.kind == ND_FUNC && item.name != "main" && item.childCount() >= 2) {
+                Env fnEnv = this.globals.push();
+                Node params = item.child(0);
+                for (int i = 0; i < params.childCount(); i++) {
+                    fnEnv.define(params.child(i).name, Value.makeNull());
+                }
+            }
+            if (item.kind == ND_VAR_DECL) {
+                if (item.childCount() > 0) {
+                    Value val = this.evalExpr(item.child(0), this.globals);
+                    this.globals.define(item.name, val);
+                } else {
+                    this.globals.define(item.name, Value.makeNull());
+                }
+            }
+            if (item.kind == ND_EXPR_STMT && item.childCount() > 0) {
+            this.evalExpr(item.child(0), this.globals);
+            }
+        }
+        if (this.functions.contains("main")) {
+            this.callFunction("main", [], this.globals);
+        }
+    }
+
+    public Value callFunction(string name, Value[] args, Env callerEnv) {
+        if (this.functions.contains(name)) {
+            Node fn = this.functions[name];
+            return this.callNode(fn, args, callerEnv);
+        }
+        Value? globalFn = this.globals.get(name);
+        if (globalFn != null && globalFn.tag == VAL_BUILTIN) {
+            return callBuiltin(globalFn.funcName, args);
+        }
+        printline("Runtime error: undefined function '" + name + "'");
+        return Value.makeNull();
+    }
+
+    public Value callNode(Node fn, Value[] args, Env callerEnv) {
+        Node params = fn.child(0);
+        Env fnEnv = this.globals.push();
+        for (int i = 0; i < params.childCount(); i++) {
+            Node param = params.child(i);
+            if (i < args.length) {
+                fnEnv.define(param.name, args[i]);
+            } elif (param.childCount() > 0) {
+                fnEnv.define(param.name, this.evalExpr(param.child(0), fnEnv));
+            } else {
+                fnEnv.define(param.name, Value.makeNull());
+            }
+        }
+        if (fn.childCount() >= 2) {
+            Node body = fn.child(1);
+            this.hasReturned = false;
+            this.returnValue = null;
+            this.execBlock(body, fnEnv);
+            if (this.hasReturned && this.returnValue != null) {
+                Value ret = this.returnValue;
+                this.hasReturned = false;
+                this.returnValue = null;
+                return ret;
+            }
+        }
+        return Value.makeNull();
+    }
+
+    public Value callMethod(Value receiver, string method, Value[] args) {
+        return BuiltinMethods.callMethod(this, receiver, method, args);
+    }
+
+    public Value evalExpr(Node node, Env env) {
+        if (node.kind == ND_INT_LIT) { return Value.makeInt(node.intVal); }
+        if (node.kind == ND_FLOAT_LIT) { return Value.makeFloat(node.floatVal); }
+        if (node.kind == ND_STRING_LIT) { return Value.makeString(node.strVal); }
+        if (node.kind == ND_CHAR_LIT) { return Value.makeChar(node.charVal); }
+        if (node.kind == ND_BOOL_LIT) { return Value.makeBool(node.boolVal); }
+        if (node.kind == ND_NULL_LIT) { return Value.makeNull(); }
+
+        if (node.kind == ND_IDENT) {
+            Value? val = env.get(node.name);
+            if (val != null) { return val; }
+            if (this.enums.contains(node.name)) {
+                return Value.makeBuiltin(node.name);
+            }
+            if (this.structs.contains(node.name)) {
+                return Value.makeBuiltin("struct_" + node.name);
+            }
+            if (this.classes.contains(node.name)) {
+                return Value.makeBuiltin("class_" + node.name);
+            }
+            printline("Runtime error: undefined variable '" + node.name + "' at " + node.line.toString() + ":" + node.col.toString());
+            return Value.makeNull();
+        }
+
+        if (node.kind == ND_BINARY) { return this.evalBinary(node, env); }
+        if (node.kind == ND_DICT_LIT) { return this.evalDictLit(node, env); }
+        if (node.kind == ND_UNARY) { return this.evalUnary(node, env); }
+        if (node.kind == ND_CALL) { return this.evalCall(node, env); }
+        if (node.kind == ND_METHOD_CALL) { return this.evalMethodCall(node, env); }
+        if (node.kind == ND_INDEX) { return this.evalIndex(node, env); }
+        if (node.kind == ND_SLICE) { return this.evalSlice(node, env); }
+        if (node.kind == ND_MEMBER) { return this.evalMember(node, env); }
+        if (node.kind == ND_TERNARY) {
+            Value cond = this.evalExpr(node.child(0), env);
+            if (cond.isTruthy()) { return this.evalExpr(node.child(1), env); }
+            return this.evalExpr(node.child(2), env);
+        }
+        if (node.kind == ND_NEW) { return this.evalNew(node, env); }
+        if (node.kind == ND_ARRAY_LIT) { return this.evalArrayLit(node, env); }
+        if (node.kind == ND_TUPLE_LIT) { return this.evalTupleLit(node, env); }
+        if (node.kind == ND_STRUCT_LIT) { return this.evalStructLit(node, env); }
+        if (node.kind == ND_INTERP) { return this.evalInterp(node, env); }
+        if (node.kind == ND_PAREN) { return this.evalExpr(node.child(0), env); }
+        if (node.kind == ND_MATCH) { return this.evalMatch(node, env); }
+        if (node.kind == ND_IF_EXPR) {
+            Value cond = this.evalExpr(node.child(0), env);
+            if (cond.isTruthy()) { return this.evalExpr(node.child(1), env); }
+            if (node.childCount() >= 3) { return this.evalExpr(node.child(2), env); }
+            return Value.makeNull();
+        }
+
+        return Value.makeNull();
+    }
+
+    private Value evalBinary(Node node, Env env) {
+        int op = node.op;
+
+        if (op == OP_ASSIGN) {
+            Value val = this.evalExpr(node.child(1), env);
+            return this.assignTo(node.child(0), val, env);
+        }
+        if (op == OP_ADD_ASSIGN || op == OP_SUB_ASSIGN || op == OP_MUL_ASSIGN || op == OP_DIV_ASSIGN) {
+            Value current = this.evalExpr(node.child(0), env);
+            Value rhs = this.evalExpr(node.child(1), env);
+            Value result = this.computeOp(current, op, rhs);
+            this.assignTo(node.child(0), result, env);
+            return result;
+        }
+
+        Value lhs = this.evalExpr(node.child(0), env);
+
+        if (op == OP_COALESCE) {
+            if (lhs.tag != VAL_NULL) { return lhs; }
+            return this.evalExpr(node.child(1), env);
+        }
+
+        if (op == OP_AND) {
+            if (!lhs.isTruthy()) { return Value.makeBool(false); }
+            return this.evalExpr(node.child(1), env);
+        }
+        if (op == OP_OR) {
+            if (lhs.isTruthy()) { return lhs; }
+            return this.evalExpr(node.child(1), env);
+        }
+
+        Value rhs = this.evalExpr(node.child(1), env);
+
+        if (op == OP_RANGE) {
+            int64 start = lhs.toInt();
+            int64 end = rhs.toInt();
+            Value[] items = [];
+            for (int64 i = start; i < end; i += 1) {
+                items.add(Value.makeInt(i));
+            }
+            return Value.makeArray(items);
+        }
+
+        if (op == OP_JOIN) {
+            if (lhs.tag == VAL_ARRAY) {
+                string sep = rhs.strVal;
+                string result = "";
+                for (int i = 0; i < lhs.arrVal.length; i++) {
+                    if (i > 0) { result += sep; }
+                    result += lhs.arrVal[i].toString();
+                }
+                return Value.makeString(result);
+            }
+        }
+
+        if (op == OP_ADD) {
+            if (lhs.tag == VAL_STRING || rhs.tag == VAL_STRING) {
+                return Value.makeString(lhs.toString() + rhs.toString());
+            }
+            if (lhs.tag == VAL_ARRAY && rhs.tag == VAL_ARRAY) {
+                Value[] combined = [];
+                foreach (Value v in lhs.arrVal) { combined.add(v); }
+                foreach (Value v in rhs.arrVal) { combined.add(v); }
+                return Value.makeArray(combined);
+            }
+        }
+
+        return this.computeOp(lhs, op, rhs);
+    }
+
+    private Value computeOp(Value lhs, int op, Value rhs) {
+        if (op == OP_ADD) {
+            if (lhs.tag == VAL_FLOAT || rhs.tag == VAL_FLOAT) {
+                return Value.makeFloat(lhs.toFloat() + rhs.toFloat());
+            }
+            return Value.makeInt(lhs.toInt() + rhs.toInt());
+        }
+        if (op == OP_SUB) { return Value.makeInt(lhs.toInt() - rhs.toInt()); }
+        if (op == OP_MUL) {
+            if (lhs.tag == VAL_FLOAT || rhs.tag == VAL_FLOAT) {
+                return Value.makeFloat(lhs.toFloat() * rhs.toFloat());
+            }
+            return Value.makeInt(lhs.toInt() * rhs.toInt());
+        }
+        if (op == OP_DIV) {
+            if (lhs.tag == VAL_FLOAT || rhs.tag == VAL_FLOAT) {
+                return Value.makeFloat(lhs.toFloat() / rhs.toFloat());
+            }
+            int64 divisor = rhs.toInt();
+            if (divisor == 0) { return Value.makeInt(0); }
+            return Value.makeInt(lhs.toInt() / divisor);
+        }
+        if (op == OP_MOD) { return Value.makeInt(lhs.toInt() % rhs.toInt()); }
+        if (op == OP_EQ) { return Value.makeBool(lhs.equals(rhs)); }
+        if (op == OP_NEQ) { return Value.makeBool(!lhs.equals(rhs)); }
+        if (op == OP_LT) { return Value.makeBool(lhs.toInt() < rhs.toInt()); }
+        if (op == OP_LEQ) { return Value.makeBool(lhs.toInt() <= rhs.toInt()); }
+        if (op == OP_GT) { return Value.makeBool(lhs.toInt() > rhs.toInt()); }
+        if (op == OP_GEQ) { return Value.makeBool(lhs.toInt() >= rhs.toInt()); }
+        if (op == OP_SHL) { return Value.makeInt(lhs.toInt() << rhs.toInt()); }
+        if (op == OP_SHR) { return Value.makeInt(lhs.toInt() >> rhs.toInt()); }
+        if (op == OP_BIT_AND) { return Value.makeInt(lhs.toInt() & rhs.toInt()); }
+        if (op == OP_BIT_OR) { return Value.makeInt(lhs.toInt() | rhs.toInt()); }
+        if (op == OP_BIT_XOR) { return Value.makeInt(lhs.toInt() ^ rhs.toInt()); }
+        return Value.makeNull();
+    }
+
+    private Value assignTo(Node target, Value val, Env env) {
+        if (target.kind == ND_IDENT) {
+            if (env.exists(target.name)) {
+                env.set(target.name, val);
+            } else {
+                env.define(target.name, val);
+            }
+            return val;
+        }
+        if (target.kind == ND_MEMBER) {
+            Value obj = this.evalExpr(target.child(0), env);
+            if (obj.tag == VAL_OBJECT || obj.tag == VAL_CLASS_INST) {
+                obj.objVal[target.name] = val;
+                return val;
+            }
+        }
+        if (target.kind == ND_INDEX) {
+            Value collection = this.evalExpr(target.child(0), env);
+            Value idx = this.evalExpr(target.child(1), env);
+            if (collection.tag == VAL_ARRAY) {
+                int i = idx.toInt().toInt();
+                if (i >= 0 && i < collection.arrVal.length) {
+                    collection.arrVal[i] = val;
+                }
+                return val;
+            }
+            if (collection.tag == VAL_DICT || collection.tag == VAL_OBJECT) {
+                collection.objVal[idx.strVal] = val;
+                return val;
+            }
+        }
+        return val;
+    }
+
+    private Value evalUnary(Node node, Env env) {
+        Value operand = this.evalExpr(node.child(0), env);
+        if (node.op == UOP_NEG) {
+            if (operand.tag == VAL_FLOAT) { return Value.makeFloat(-operand.floatVal); }
+            return Value.makeInt(-operand.toInt());
+        }
+        if (node.op == UOP_NOT) { return Value.makeBool(!operand.isTruthy()); }
+        if (node.op == UOP_REF) { return operand; }
+        if (node.op == UOP_DEREF) { return operand; }
+        return operand;
+    }
+
+    private Value evalCall(Node node, Env env) {
+        Value[] args = [];
+        for (int i = 0; i < node.childCount(); i++) {
+            args.add(this.evalExpr(node.child(i), env));
+        }
+        if (this.functions.contains(node.name)) {
+            return this.callNode(this.functions[node.name], args, env);
+        }
+    Value? globalFn = this.globals.get(node.name);
+    if (globalFn != null && globalFn.tag == VAL_BUILTIN) {
+            return callBuiltin(globalFn.funcName, args);
+        }
+        if (this.classes.contains(node.name)) {
+            return this.constructClass(node.name, args);
+        }
+        if (this.structs.contains(node.name)) {
+            return this.constructStruct(node.name, args);
+        }
+        printline("Runtime error: undefined function '" + node.name + "'");
+        return Value.makeNull();
+    }
+
+    private Value evalMethodCall(Node node, Env env) {
+        Value receiver = this.evalExpr(node.child(0), env);
+        Value[] args = [];
+        for (int i = 1; i < node.childCount(); i++) {
+            args.add(this.evalExpr(node.child(i), env));
+        }
+        if (receiver.tag == VAL_CLASS_INST) {
+            string methodKey = receiver.typeName + "." + node.name;
+            if (this.functions.contains(methodKey)) {
+                Value[] methodArgs = [receiver];
+                foreach (Value a in args) { methodArgs.add(a); }
+                return this.callNode(this.functions[methodKey], methodArgs, env);
+            }
+        }
+        return this.callMethod(receiver, node.name, args);
+    }
+
+    private Value evalIndex(Node node, Env env) {
+        Value collection = this.evalExpr(node.child(0), env);
+        Value idx = this.evalExpr(node.child(1), env);
+        if (collection.tag == VAL_ARRAY) {
+            int i = idx.toInt().toInt();
+            if (i >= 0 && i < collection.arrVal.length) {
+                return collection.arrVal[i];
+            }
+            printline("Runtime error: array index out of bounds: " + i.toString());
+            return Value.makeNull();
+        }
+        if (collection.tag == VAL_STRING) {
+            int i = idx.toInt().toInt();
+            if (i >= 0 && i < collection.strVal.length) {
+                return Value.makeChar(collection.strVal[i]);
+            }
+            return Value.makeNull();
+        }
+        if (collection.tag == VAL_DICT || collection.tag == VAL_OBJECT || collection.tag == VAL_CLASS_INST) {
+            if (collection.objVal.contains(idx.strVal)) {
+                return collection.objVal[idx.strVal];
+            }
+            return Value.makeNull();
+        }
+        if (collection.tag == VAL_TUPLE) {
+            int i = idx.toInt().toInt();
+            if (i >= 0 && i < collection.arrVal.length) {
+                return collection.arrVal[i];
+            }
+            return Value.makeNull();
+        }
+        return Value.makeNull();
+    }
+
+    private Value evalSlice(Node node, Env env) {
+        Value collection = this.evalExpr(node.child(0), env);
+        int64 start = this.evalExpr(node.child(1), env).toInt();
+        int64 end = this.evalExpr(node.child(2), env).toInt();
+        if (collection.tag == VAL_STRING) {
+            int s = start.toInt();
+            int e = end.toInt();
+            if (s < 0) { s = 0; }
+            if (e > collection.strVal.length) { e = collection.strVal.length; }
+            return Value.makeString(collection.strVal[s..e]);
+        }
+        if (collection.tag == VAL_ARRAY) {
+            int s = start.toInt();
+            int e = end.toInt();
+            if (s < 0) { s = 0; }
+            if (e > collection.arrVal.length) { e = collection.arrVal.length; }
+            Value[] result = [];
+            for (int i = s; i < e; i += 1) {
+                result.add(collection.arrVal[i]);
+            }
+            return Value.makeArray(result);
+        }
+        return Value.makeNull();
+    }
+
+    private Value evalMember(Node node, Env env) {
+        Value obj = this.evalExpr(node.child(0), env);
+        string member = node.name;
+
+        if (obj.tag == VAL_CLASS_INST || obj.tag == VAL_OBJECT || obj.tag == VAL_STRUCT) {
+            if (obj.objVal.contains(member)) {
+                return obj.objVal[member];
+            }
+            if (obj.tag == VAL_CLASS_INST && this.classes.contains(obj.typeName)) {
+                Node classDef = this.classes[obj.typeName];
+                for (int i = 0; i < classDef.childCount(); i++) {
+                    Node child = classDef.child(i);
+                    if (child.kind == ND_FUNC && child.name == member) {
+                        return Value.makeFunc(obj.typeName + "." + member);
+                    }
+                }
+            }
+        }
+        if (obj.tag == VAL_ENUM_VAL) {
+            if (member == obj.strVal) { return obj; }
+            return Value.makeEnumVal(obj.typeName, member);
+        }
+        if (obj.tag == VAL_BUILTIN) {
+            if (obj.funcName == "time_module") {
+                if (member == "now") { return Value.makeBuiltin("now"); }
+            }
+            if (this.enums.contains(obj.funcName)) {
+                return Value.makeEnumVal(obj.funcName, member);
+            }
+        }
+        return BuiltinMethods.getProperty(obj, member);
+    }
+
+    private Value evalNew(Node node, Env env) {
+        Value[] args = [];
+        for (int i = 0; i < node.childCount(); i++) {
+            args.add(this.evalExpr(node.child(i), env));
+        }
+        if (this.classes.contains(node.name)) {
+            return this.constructClass(node.name, args);
+        }
+        if (this.structs.contains(node.name)) {
+            return this.constructStruct(node.name, args);
+        }
+        if (node.name == "kvp") {
+            return Value.makeDict({});
+        }
+        printline("Runtime error: unknown type '" + node.name + "'");
+        return Value.makeNull();
+    }
+
+    private Value constructClass(string name, Value[] args) {
+        dict<string, Value> fields = {};
+        Value inst = Value.makeClassInst(fields, name);
+        if (this.classes.contains(name)) {
+            Node classDef = this.classes[name];
+            for (int i = 0; i < classDef.childCount(); i++) {
+                Node child = classDef.child(i);
+                if (child.kind == ND_VAR_DECL) {
+                    if (child.childCount() > 0) {
+                        fields[child.name] = this.evalExpr(child.child(0), this.globals);
+                    } else {
+                        fields[child.name] = Value.makeNull();
+                    }
+                }
+            }
+            for (int i = 0; i < classDef.childCount(); i++) {
+                Node child = classDef.child(i);
+                if (child.kind == ND_FUNC && child.name == "construct") {
+                    Value[] methodArgs = [inst];
+                    foreach (Value a in args) { methodArgs.add(a); }
+                    this.callNode(child, methodArgs, this.globals);
+                    break;
+                }
+            }
+        }
+        return inst;
+    }
+
+    private Value constructStruct(string name, Value[] args) {
+        dict<string, Value> fields = {};
+        if (this.structs.contains(name)) {
+            Node structDef = this.structs[name];
+            for (int i = 0; i < structDef.childCount() && i < args.length; i++) {
+                fields[structDef.child(i).name] = args[i];
+            }
+        }
+        return Value.makeObject(fields, name);
+    }
+
+    private Value evalArrayLit(Node node, Env env) {
+        Value[] items = [];
+        for (int i = 0; i < node.childCount(); i++) {
+            Node child = node.child(i);
+            if (child.name == "spread") {
+                Value spread = this.evalExpr(child, env);
+                if (spread.tag == VAL_ARRAY) {
+                    foreach (Value v in spread.arrVal) { items.add(v); }
+                }
+            } else {
+                items.add(this.evalExpr(child, env));
+            }
+        }
+        return Value.makeArray(items);
+    }
+
+    private Value evalDictLit(Node node, Env env) {
+        dict<string, Value> entries = {};
+        for (int i = 0; i < node.childCount(); i++) {
+            Node pair = node.child(i);
+            if (pair.childCount() >= 2) {
+                Value key = this.evalExpr(pair.child(0), env);
+                Value val = this.evalExpr(pair.child(1), env);
+                entries[key.toString()] = val;
+            }
+        }
+        return Value.makeDict(entries);
+    }
+
+    private Value evalTupleLit(Node node, Env env) {
+        Value[] items = [];
+        for (int i = 0; i < node.childCount(); i++) {
+            items.add(this.evalExpr(node.child(i), env));
+        }
+        return Value.makeTuple(items);
+    }
+
+    private Value evalStructLit(Node node, Env env) {
+        dict<string, Value> fields = {};
+        for (int i = 0; i < node.childCount(); i++) {
+            Node field = node.child(i);
+            fields[field.name] = this.evalExpr(field.child(0), env);
+        }
+        return Value.makeObject(fields, "");
+    }
+
+    private Value evalInterp(Node node, Env env) {
+        string result = "";
+        for (int i = 0; i < node.childCount(); i++) {
+            Node part = node.child(i);
+            if (part.kind == ND_STRING_LIT) {
+                result += part.strVal;
+            } else {
+                Value val = this.evalExpr(part, env);
+                result += val.toString();
+            }
+        }
+        return Value.makeString(result);
+    }
+
+    private Value evalMatch(Node node, Env env) {
+        Value target = this.evalExpr(node.child(0), env);
+        for (int i = 1; i < node.childCount(); i++) {
+            Node arm = node.child(i);
+            Node pattern = arm.child(0);
+            Node body = arm.child(1);
+            if (this.matchPattern(pattern, target, env)) {
+                return this.evalExpr(body, env);
+            }
+        }
+        return Value.makeNull();
+    }
+
+    private bool matchPattern(Node pattern, Value target, Env env) {
+        if (pattern.name == "_") { return true; }
+        if (pattern.name == "null" && target.tag == VAL_NULL) { return true; }
+        if (pattern.kind == ND_INT_LIT && target.tag == VAL_INT) { return target.intVal == pattern.intVal; }
+        if (pattern.kind == ND_FLOAT_LIT && target.tag == VAL_FLOAT) { return target.floatVal == pattern.floatVal; }
+        if (pattern.kind == ND_STRING_LIT && target.tag == VAL_STRING) { return target.strVal == pattern.strVal; }
+        if (pattern.kind == ND_CHAR_LIT && target.tag == VAL_CHAR) { return target.charVal == pattern.charVal; }
+        if (pattern.kind == ND_BOOL_LIT && target.tag == VAL_BOOL) { return target.boolVal == pattern.boolVal; }
+        if (pattern.kind == ND_IDENT) {
+            if (pattern.name.contains(".")) {
+                string enumType = pattern.name.split(".")[0];
+                string variant = pattern.name.split(".")[1];
+                return target.tag == VAL_ENUM_VAL && target.typeName == enumType && target.strVal == variant;
+            }
+            if (pattern.typeHint != "") {
+                env.define(pattern.name, target);
+                return true;
+            }
+            env.define(pattern.name, target);
+            return true;
+        }
+        if (pattern.kind == ND_TUPLE_LIT && target.tag == VAL_TUPLE) {
+            if (pattern.childCount() != target.arrVal.length) { return false; }
+            for (int i = 0; i < pattern.childCount(); i++) {
+                if (!this.matchPattern(pattern.child(i), target.arrVal[i], env)) { return false; }
+            }
+            return true;
+        }
+        return false;
+    }
+
+    public void execBlock(Node block, Env env) {
+        Env blockEnv = env.push();
+        for (int i = 0; i < block.childCount(); i++) {
+            if (this.hasReturned) { return; }
+            this.execStmt(block.child(i), blockEnv);
+        }
+    }
+
+    public void execStmt(Node stmt, Env env) {
+        if (this.hasReturned) { return; }
+
+        if (stmt.kind == ND_EXPR_STMT) {
+            if (stmt.childCount() > 0) {
+                this.evalExpr(stmt.child(0), env);
+            }
+            return;
+        }
+
+        if (stmt.kind == ND_VAR_DECL) {
+            if (stmt.childCount() > 0) {
+                Value val = this.evalExpr(stmt.child(0), env);
+                env.define(stmt.name, val);
+            } else {
+                env.define(stmt.name, Value.makeNull());
+            }
+            return;
+        }
+
+        if (stmt.kind == ND_RETURN) {
+            if (stmt.childCount() > 0) {
+                this.returnValue = this.evalExpr(stmt.child(0), env);
+            } else {
+                this.returnValue = Value.makeNull();
+            }
+            this.hasReturned = true;
+            return;
+        }
+
+        if (stmt.kind == ND_IF_STMT) {
+            Value cond = this.evalExpr(stmt.child(0), env);
+            if (cond.isTruthy()) {
+                this.execBlock(stmt.child(1), env);
+            } else if (stmt.childCount() >= 3) {
+                if (stmt.child(2).kind == ND_IF_STMT) {
+                    this.execStmt(stmt.child(2), env);
+                } else {
+                    this.execBlock(stmt.child(2), env);
+                }
+            }
+            return;
+        }
+
+        if (stmt.kind == ND_WHILE) {
+            while (true) {
+                if (this.hasReturned) { break; }
+                Value cond = this.evalExpr(stmt.child(0), env);
+                if (!cond.isTruthy()) { break; }
+                this.execBlock(stmt.child(1), env);
+            }
+            return;
+        }
+
+        if (stmt.kind == ND_FOR_C) {
+            this.execStmt(stmt.child(0), env);
+            while (true) {
+                if (this.hasReturned) { break; }
+                Value cond = this.evalExpr(stmt.child(1), env);
+                if (!cond.isTruthy()) { break; }
+                this.execBlock(stmt.child(3), env);
+                this.evalExpr(stmt.child(2), env);
+            }
+            return;
+        }
+
+        if (stmt.kind == ND_FOR_RANGE) {
+            int64 start = this.evalExpr(stmt.child(0), env).toInt();
+            int64 end = this.evalExpr(stmt.child(1), env).toInt();
+            Env forEnv = env.push();
+            forEnv.define(stmt.name, Value.makeInt(start));
+            for (int64 i = start; i < end; i += 1) {
+                if (this.hasReturned) { break; }
+                forEnv.set(stmt.name, Value.makeInt(i));
+                this.execBlock(stmt.child(2), forEnv);
+            }
+            return;
+        }
+
+        if (stmt.kind == ND_FOREACH) {
+            Value collection = this.evalExpr(stmt.child(0), env);
+            if (collection.tag == VAL_ARRAY) {
+                Env forEnv = env.push();
+                for (int i = 0; i < collection.arrVal.length; i++) {
+                    if (this.hasReturned) { break; }
+                    forEnv.define(stmt.name, collection.arrVal[i]);
+                    this.execBlock(stmt.child(1), forEnv);
+                }
+            }
+            return;
+        }
+
+        if (stmt.kind == ND_MATCH_STMT) {
+            Value target = this.evalExpr(stmt.child(0), env);
+            for (int i = 1; i < stmt.childCount(); i++) {
+                Node arm = stmt.child(i);
+                Node pattern = arm.child(0);
+                Node body = arm.child(1);
+                if (this.matchPattern(pattern, target, env)) {
+                    this.evalExpr(body, env);
+                    break;
+                }
+            }
+            return;
+        }
+
+        if (stmt.kind == ND_SWITCH) {
+            Value target = this.evalExpr(stmt.child(0), env);
+            for (int i = 1; i < stmt.childCount(); i++) {
+                Node arm = stmt.child(i);
+                Node caseExpr = arm.child(0);
+                Node caseBody = arm.child(1);
+                if (caseExpr.kind == ND_NULL_LIT || this.evalExpr(caseExpr, env).equals(target)) {
+                    this.execBlock(caseBody, env);
+                    break;
+                }
+            }
+            return;
+        }
+
+        if (stmt.kind == ND_TRY_CATCH) {
+            this.execBlock(stmt.child(0), env);
+            return;
+        }
+
+        if (stmt.kind == ND_UNSET) {
+            env.remove(stmt.name);
+            return;
+        }
+    }
+}

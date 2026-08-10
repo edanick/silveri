@@ -1,0 +1,314 @@
+mod export builtins;
+
+import value;
+import eval;
+
+class BuiltinMethods {
+
+    public static Value callMethod(Evaluator ev, Value receiver, string method, Value[] args) {
+        if (receiver.tag == VAL_STRING) { return stringMethod(receiver, method, args); }
+        if (receiver.tag == VAL_ARRAY) { return arrayMethod(ev, receiver, method, args); }
+        if (receiver.tag == VAL_DICT || receiver.tag == VAL_OBJECT || receiver.tag == VAL_CLASS_INST) {
+            return dictMethod(receiver, method, args);
+        }
+        if (receiver.tag == VAL_INT || receiver.tag == VAL_FLOAT) { return numberMethod(receiver, method, args); }
+        if (receiver.tag == VAL_CHAR) { return charMethod(receiver, method, args); }
+        printline("Runtime error: no method '" + method + "' on " + receiver.typeString());
+        return Value.makeNull();
+    }
+
+    public static Value getProperty(Value receiver, string propertyName) {
+        if (receiver.tag == VAL_STRING) { return stringProperty(receiver, propertyName); }
+        if (receiver.tag == VAL_ARRAY) { return arrayProperty(receiver, propertyName); }
+        if (receiver.tag == VAL_CLASS_INST || receiver.tag == VAL_OBJECT) {
+            if (receiver.objVal.contains(propertyName)) { return receiver.objVal[propertyName]; }
+        }
+        return Value.makeNull();
+    }
+
+    private static Value stringMethod(Value s, string method, Value[] args) {
+        if (method == "split") {
+            string delim = ",";
+            if (args.length > 0) { delim = args[0].strVal; }
+            string[] parts = s.strVal.split(delim);
+            Value[] result = [];
+            foreach (string p in parts) { result.add(Value.makeString(p)); }
+            return Value.makeArray(result);
+        }
+        if (method == "trim") { return Value.makeString(s.strVal.trim()); }
+        if (method == "replace") {
+            if (args.length < 2) { return s; }
+            return Value.makeString(s.strVal.replace(args[0].strVal, args[1].strVal));
+        }
+        if (method == "upper") { return Value.makeString(s.strVal.upper()); }
+        if (method == "lower") { return Value.makeString(s.strVal.lower()); }
+        if (method == "contains") {
+            if (args.length < 1) { return Value.makeBool(false); }
+            return Value.makeBool(s.strVal.contains(args[0].strVal));
+        }
+        if (method == "startsWith") {
+            if (args.length < 1) { return Value.makeBool(false); }
+            return Value.makeBool(s.strVal.startsWith(args[0].strVal));
+        }
+        if (method == "endsWith") {
+            if (args.length < 1) { return Value.makeBool(false); }
+            return Value.makeBool(s.strVal.endsWith(args[0].strVal));
+        }
+        if (method == "find") {
+            if (args.length < 1) { return Value.makeInt(-1); }
+            int idx = s.strVal.find(args[0].strVal);
+            return Value.makeInt(idx.toInt64());
+        }
+        if (method == "repeat") {
+            if (args.length < 1) { return s; }
+            string result = "";
+            int n = args[0].toInt().toInt();
+            for (int i = 0; i < n; i++) { result += s.strVal; }
+            return Value.makeString(result);
+        }
+        if (method == "pad") {
+            if (args.length < 2) { return s; }
+            int width = args[0].toInt().toInt();
+            string padChar = args[1].strVal;
+            string result = s.strVal;
+            while (result.length < width) { result = padChar + result; }
+            return Value.makeString(result);
+        }
+        if (method == "toString") { return Value.makeString(s.strVal); }
+        if (method == "parse") {
+            return Value.makeInt(s.strVal.toInt64());
+        }
+        if (method == "toFloat") { return Value.makeFloat(s.strVal.toFloat64()); }
+        if (method == "toInt") { return Value.makeInt(s.strVal.toInt64()); }
+        printline("Runtime error: unknown string method '" + method + "'");
+        return Value.makeNull();
+    }
+
+    private static Value stringProperty(Value s, string propertyName) {
+        if (propertyName == "length") { return Value.makeInt(s.strVal.length.toInt64()); }
+        return Value.makeNull();
+    }
+
+    private static Value arrayMethod(Evaluator ev, Value arr, string method, Value[] args) {
+        if (method == "map") {
+            Value[] result = [];
+            if (args.length > 0 && args[0].tag == VAL_BUILTIN) {
+                for (int i = 0; i < arr.arrVal.length; i++) {
+                    result.add(callBuiltin(args[0].funcName, [arr.arrVal[i]]));
+                }
+            }
+            return Value.makeArray(result);
+        }
+        if (method == "filter") {
+            Value[] result = [];
+            if (args.length > 0 && args[0].tag == VAL_BUILTIN) {
+                for (int i = 0; i < arr.arrVal.length; i++) {
+                    Value test = callBuiltin(args[0].funcName, [arr.arrVal[i]]);
+                    if (test.isTruthy()) { result.add(arr.arrVal[i]); }
+                }
+            }
+            return Value.makeArray(result);
+        }
+        if (method == "reduce") {
+            if (args.length < 1) { return Value.makeNull(); }
+            Value acc = args.length > 1 ? args[1] : arr.arrVal[0];
+            int start = args.length > 1 ? 0 : 1;
+            for (int i = start; i < arr.arrVal.length; i++) {
+                acc = callBuiltin(args[0].funcName, [acc, arr.arrVal[i]]);
+            }
+            return acc;
+        }
+        if (method == "reverse") {
+            Value[] result = [];
+            for (int i = arr.arrVal.length - 1; i >= 0; i -= 1) {
+                result.add(arr.arrVal[i]);
+            }
+            return Value.makeArray(result);
+        }
+        if (method == "sort") {
+            Value[] items = [];
+            foreach (Value v in arr.arrVal) { items.add(v); }
+            items.sort();
+            return Value.makeArray(items);
+        }
+        if (method == "find") {
+            if (args.length < 1) { return Value.makeNull(); }
+            for (int i = 0; i < arr.arrVal.length; i++) {
+                Value test = callBuiltin(args[0].funcName, [arr.arrVal[i]]);
+                if (test.isTruthy()) { return arr.arrVal[i]; }
+            }
+            return Value.makeNull();
+        }
+        if (method == "add" || method == "push") {
+            if (args.length > 0) { arr.arrVal.add(args[0]); }
+            return args.length > 0 ? args[0] : Value.makeNull();
+        }
+        if (method == "outlast") {
+            if (arr.arrVal.length > 0) {
+                Value last = arr.arrVal[arr.arrVal.length - 1];
+                arr.arrVal.remove(arr.arrVal.length - 1);
+                return last;
+            }
+            return Value.makeNull();
+        }
+        if (method == "last") {
+            if (arr.arrVal.length > 0) { return arr.arrVal[arr.arrVal.length - 1]; }
+            return Value.makeNull();
+        }
+        if (method == "remove") {
+            if (args.length > 0) {
+                int idx = args[0].toInt().toInt();
+                if (idx >= 0 && idx < arr.arrVal.length) {
+                    arr.arrVal.remove(idx);
+                }
+            }
+            return Value.makeNull();
+        }
+        if (method == "contains" || method == "includes") {
+            if (args.length < 1) { return Value.makeBool(false); }
+            for (int i = 0; i < arr.arrVal.length; i++) {
+                if (arr.arrVal[i].equals(args[0])) { return Value.makeBool(true); }
+            }
+            return Value.makeBool(false);
+        }
+        if (method == "indexOf") {
+            if (args.length < 1) { return Value.makeInt(-1); }
+            for (int i = 0; i < arr.arrVal.length; i++) {
+                if (arr.arrVal[i].equals(args[0])) { return Value.makeInt(i.toInt64()); }
+            }
+            return Value.makeInt(-1);
+        }
+        if (method == "all" || method == "every") {
+            if (args.length < 1) { return Value.makeBool(true); }
+            for (int i = 0; i < arr.arrVal.length; i++) {
+                Value test = callBuiltin(args[0].funcName, [arr.arrVal[i]]);
+                if (!test.isTruthy()) { return Value.makeBool(false); }
+            }
+            return Value.makeBool(true);
+        }
+        if (method == "any" || method == "some") {
+            if (args.length < 1) { return Value.makeBool(false); }
+            for (int i = 0; i < arr.arrVal.length; i++) {
+                Value test = callBuiltin(args[0].funcName, [arr.arrVal[i]]);
+                if (test.isTruthy()) { return Value.makeBool(true); }
+            }
+            return Value.makeBool(false);
+        }
+        if (method == "flat") {
+            Value[] result = [];
+            for (int i = 0; i < arr.arrVal.length; i++) {
+                if (arr.arrVal[i].tag == VAL_ARRAY) {
+                    foreach (Value v in arr.arrVal[i].arrVal) { result.add(v); }
+                } else {
+                    result.add(arr.arrVal[i]);
+                }
+            }
+            return Value.makeArray(result);
+        }
+        printline("Runtime error: unknown array method '" + method + "'");
+        return Value.makeNull();
+    }
+
+    private static Value arrayProperty(Value arr, string propertyName) {
+        if (propertyName == "length") { return Value.makeInt(arr.arrVal.length.toInt64()); }
+        return Value.makeNull();
+    }
+
+    private static Value dictMethod(Value d, string method, Value[] args) {
+        if (method == "contains" || method == "hasKey") {
+            if (args.length < 1) { return Value.makeBool(false); }
+            return Value.makeBool(d.objVal.contains(args[0].strVal));
+        }
+        if (method == "keys") {
+            Value[] result = [];
+            return Value.makeArray(result);
+        }
+        if (method == "values") {
+            Value[] result = [];
+            return Value.makeArray(result);
+        }
+        return Value.makeNull();
+    }
+
+    private static Value numberMethod(Value n, string method, Value[] args) {
+        if (method == "toString") { return Value.makeString(n.toString()); }
+        if (method == "abs") {
+            if (n.tag == VAL_FLOAT) { return Value.makeFloat(n.floatVal.abs()); }
+            if (n.intVal < 0) { return Value.makeInt(-n.intVal); }
+            return n;
+        }
+        if (method == "toFloat") { return Value.makeFloat(n.toFloat()); }
+        if (method == "toInt") { return Value.makeInt(n.toInt()); }
+        printline("Runtime error: unknown number method '" + method + "'");
+        return Value.makeNull();
+    }
+
+    private static Value charMethod(Value c, string method, Value[] args) {
+        if (method == "toString") { return Value.makeString(c.charVal.toString()); }
+        if (method == "isDigit") { return Value.makeBool(c.charVal.isDigit()); }
+        if (method == "isAlpha") { return Value.makeBool(c.charVal.isAlpha()); }
+        return Value.makeNull();
+    }
+}
+
+Value callBuiltin(string name, Value[] args) {
+    if (name == "printline") {
+        if (args.length > 0) {
+            printline(args[0].toString());
+        } else {
+            printline("");
+        }
+        return Value.makeNull();
+    }
+    if (name == "print") {
+        if (args.length > 0) {
+            print(args[0].toString());
+        }
+        return Value.makeNull();
+    }
+    if (name == "input") {
+        string inp = input();
+        return Value.makeString(inp);
+    }
+    if (name == "assert") {
+        if (args.length > 0 && !args[0].isTruthy()) {
+            printline("Assertion failed!");
+            exit(1);
+        }
+        return Value.makeNull();
+    }
+    if (name == "sleep") {
+        if (args.length > 0) {
+            sleep(args[0].toInt().toInt());
+        }
+        return Value.makeNull();
+    }
+    if (name == "exit") {
+        int code = 0;
+        if (args.length > 0) { code = args[0].toInt().toInt(); }
+        exit(code);
+        return Value.makeNull();
+    }
+    if (name == "int") {
+        if (args.length > 0) {
+            if (args[0].tag == VAL_STRING) { return Value.makeInt(args[0].strVal.toInt64()); }
+            return Value.makeInt(args[0].toInt());
+        }
+        return Value.makeInt(0);
+    }
+    if (name == "float") {
+        if (args.length > 0) {
+            if (args[0].tag == VAL_STRING) { return Value.makeFloat(args[0].strVal.toFloat64()); }
+            return Value.makeFloat(args[0].toFloat());
+        }
+        return Value.makeFloat(0.0);
+    }
+    if (name == "string_cast") {
+        if (args.length > 0) { return Value.makeString(args[0].toString()); }
+        return Value.makeString("");
+    }
+    if (name == "now") {
+        return Value.makeString(now());
+    }
+    return Value.makeNull();
+}

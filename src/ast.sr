@@ -1,0 +1,216 @@
+mod export ast;
+
+import token;
+
+const int ND_INT_LIT = 0;
+const int ND_FLOAT_LIT = 1;
+const int ND_STRING_LIT = 2;
+const int ND_CHAR_LIT = 3;
+const int ND_BOOL_LIT = 4;
+const int ND_NULL_LIT = 5;
+const int ND_IDENT = 6;
+const int ND_BINARY = 7;
+const int ND_UNARY = 8;
+const int ND_CALL = 9;
+const int ND_METHOD_CALL = 10;
+const int ND_INDEX = 11;
+const int ND_SLICE = 12;
+const int ND_MEMBER = 13;
+const int ND_MATCH = 14;
+const int ND_IF_EXPR = 15;
+const int ND_BLOCK = 16;
+const int ND_STRUCT_LIT = 17;
+const int ND_TUPLE_LIT = 18;
+const int ND_ARRAY_LIT = 19;
+const int ND_TERNARY = 20;
+const int ND_NEW = 21;
+const int ND_INTERP = 22;
+const int ND_PAREN = 23;
+const int ND_DICT_LIT = 24;
+
+const int ND_VAR_DECL = 50;
+const int ND_RETURN = 51;
+const int ND_RETURN_SHORT = 52;
+const int ND_IF_STMT = 53;
+const int ND_WHILE = 54;
+const int ND_FOR_C = 55;
+const int ND_FOR_RANGE = 56;
+const int ND_FOREACH = 57;
+const int ND_MATCH_STMT = 58;
+const int ND_TRY_CATCH = 59;
+const int ND_UNSET = 60;
+const int ND_EXPR_STMT = 61;
+const int ND_SWITCH = 62;
+
+const int ND_FUNC = 100;
+const int ND_STRUCT_DEF = 101;
+const int ND_CLASS_DEF = 102;
+const int ND_ENUM_DEF = 103;
+const int ND_CONST = 104;
+const int ND_IMPORT = 105;
+const int ND_MODULE = 106;
+const int ND_TYPE_ALIAS = 107;
+const int ND_FOUND = 108;
+const int ND_COLLECT = 109;
+const int ND_DEF_UNIT = 110;
+const int ND_ANNOTATION = 111;
+
+const int OP_ADD = 0;
+const int OP_SUB = 1;
+const int OP_MUL = 2;
+const int OP_DIV = 3;
+const int OP_MOD = 4;
+const int OP_EQ = 5;
+const int OP_NEQ = 6;
+const int OP_LT = 7;
+const int OP_LEQ = 8;
+const int OP_GT = 9;
+const int OP_GEQ = 10;
+const int OP_AND = 11;
+const int OP_OR = 12;
+const int OP_ASSIGN = 13;
+const int OP_ADD_ASSIGN = 14;
+const int OP_SUB_ASSIGN = 15;
+const int OP_MUL_ASSIGN = 16;
+const int OP_DIV_ASSIGN = 17;
+const int OP_SHL = 18;
+const int OP_SHR = 19;
+const int OP_RANGE = 20;
+const int OP_MOVE = 21;
+const int OP_BIT_AND = 22;
+const int OP_BIT_OR = 23;
+const int OP_BIT_XOR = 24;
+const int OP_COALESCE = 25;
+const int OP_JOIN = 26;
+
+const int UOP_NEG = 0;
+const int UOP_NOT = 1;
+const int UOP_DEREF = 2;
+const int UOP_REF = 3;
+
+const int PAT_WILDCARD = 0;
+const int PAT_INT = 1;
+const int PAT_FLOAT = 2;
+const int PAT_STRING = 3;
+const int PAT_CHAR = 4;
+const int PAT_BOOL = 5;
+const int PAT_NULL = 6;
+const int PAT_IDENT = 7;
+const int PAT_TYPED = 8;
+const int PAT_TUPLE = 9;
+const int PAT_MEMBER = 10;
+
+class Node {
+    public prop int kind;
+    public prop int64 intVal;
+    public prop float64 floatVal;
+    public prop string strVal;
+    public prop char charVal;
+    public prop bool boolVal;
+    public prop int op;
+    public prop string name;
+    public prop string typeHint;
+    public prop bool isMut;
+    public prop bool isPublic;
+    public prop bool isStatic;
+    public prop string parentClass;
+    public prop Node[] children;
+    public prop dict<string, Node> props;
+    public prop int line;
+    public prop int col;
+
+    construct (int kind, int line, int col) {
+        this.kind = kind;
+        this.intVal = 0;
+        this.floatVal = 0.0;
+        this.strVal = "";
+        this.charVal = ' ';
+        this.boolVal = false;
+        this.op = 0;
+        this.name = "";
+        this.typeHint = "";
+        this.isMut = false;
+        this.isPublic = true;
+        this.isStatic = false;
+        this.parentClass = "";
+        this.children = [];
+        this.props = {};
+        this.line = line;
+        this.col = col;
+    }
+
+    public void addChild(Node n) {
+        this.children.add(n);
+    }
+
+    public Node child(int i) {
+        if (i >= 0 && i < this.children.length) {
+            return this.children[i];
+        }
+        return new Node(ND_NULL_LIT, 0, 0);
+    }
+
+    public int childCount() {
+        return this.children.length;
+    }
+
+    public void setProp(string key, Node val) {
+        this.props[key] = val;
+    }
+
+    public Node? getProp(string key) {
+        if (this.props.contains(key)) {
+            return this.props[key];
+        }
+        return null;
+    }
+
+    public string toString() {
+        return "Node(" + kindName(this.kind) + " '" + this.name + "')";
+    }
+}
+
+string kindName(int k) {
+    if (k == ND_INT_LIT) { return "IntLit"; }
+    if (k == ND_FLOAT_LIT) { return "FloatLit"; }
+    if (k == ND_STRING_LIT) { return "StringLit"; }
+    if (k == ND_CHAR_LIT) { return "CharLit"; }
+    if (k == ND_BOOL_LIT) { return "BoolLit"; }
+    if (k == ND_NULL_LIT) { return "NullLit"; }
+    if (k == ND_IDENT) { return "Ident"; }
+    if (k == ND_BINARY) { return "Binary"; }
+    if (k == ND_UNARY) { return "Unary"; }
+    if (k == ND_CALL) { return "Call"; }
+    if (k == ND_METHOD_CALL) { return "MethodCall"; }
+    if (k == ND_INDEX) { return "Index"; }
+    if (k == ND_SLICE) { return "Slice"; }
+    if (k == ND_MEMBER) { return "Member"; }
+    if (k == ND_MATCH) { return "Match"; }
+    if (k == ND_IF_EXPR) { return "IfExpr"; }
+    if (k == ND_BLOCK) { return "Block"; }
+    if (k == ND_STRUCT_LIT) { return "StructLit"; }
+    if (k == ND_TUPLE_LIT) { return "TupleLit"; }
+    if (k == ND_ARRAY_LIT) { return "ArrayLit"; }
+    if (k == ND_TERNARY) { return "Ternary"; }
+    if (k == ND_NEW) { return "New"; }
+    if (k == ND_INTERP) { return "Interp"; }
+    if (k == ND_DICT_LIT) { return "DictLit"; }
+    if (k == ND_VAR_DECL) { return "VarDecl"; }
+    if (k == ND_RETURN) { return "Return"; }
+    if (k == ND_IF_STMT) { return "IfStmt"; }
+    if (k == ND_WHILE) { return "While"; }
+    if (k == ND_FOR_C) { return "ForC"; }
+    if (k == ND_FOR_RANGE) { return "ForRange"; }
+    if (k == ND_FOREACH) { return "Foreach"; }
+    if (k == ND_MATCH_STMT) { return "MatchStmt"; }
+    if (k == ND_TRY_CATCH) { return "TryCatch"; }
+    if (k == ND_EXPR_STMT) { return "ExprStmt"; }
+    if (k == ND_FUNC) { return "Func"; }
+    if (k == ND_STRUCT_DEF) { return "StructDef"; }
+    if (k == ND_CLASS_DEF) { return "ClassDef"; }
+    if (k == ND_ENUM_DEF) { return "EnumDef"; }
+    if (k == ND_CONST) { return "Const"; }
+    if (k == ND_IMPORT) { return "Import"; }
+    if (k == ND_MODULE) { return "Module"; }
+    return "Node" + k.toString();
+}

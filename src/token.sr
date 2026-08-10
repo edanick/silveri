@@ -1,0 +1,217 @@
+mod export token;
+
+const int TK_EOF = 0;
+const int TK_INT_LIT = 1;
+const int TK_FLOAT_LIT = 2;
+const int TK_STRING_LIT = 3;
+const int TK_CHAR_LIT = 4;
+const int TK_BOOL_LIT = 5;
+const int TK_NULL_LIT = 6;
+const int TK_IDENT = 7;
+const int TK_ANNOTATION = 8;
+
+const int TK_IF = 10;
+const int TK_ELSE = 11;
+const int TK_WHILE = 12;
+const int TK_FOR = 13;
+const int TK_FOREACH = 14;
+const int TK_RETURN = 15;
+const int TK_MATCH = 16;
+const int TK_VOID = 17;
+const int TK_INT = 18;
+const int TK_INT32 = 19;
+const int TK_INT64 = 20;
+const int TK_UINT = 21;
+const int TK_FLOAT = 22;
+const int TK_FLOAT64 = 23;
+const int TK_DOUBLE = 24;
+const int TK_BOOL = 25;
+const int TK_CHAR = 26;
+const int TK_STRING = 27;
+const int TK_VAR = 28;
+const int TK_STRUCT = 29;
+const int TK_CLASS = 30;
+const int TK_ENUM = 31;
+const int TK_DEF = 32;
+const int TK_FOUND = 33;
+const int TK_COLLECT = 34;
+const int TK_MOD = 35;
+const int TK_IMPORT = 36;
+const int TK_FROM = 37;
+const int TK_AS = 38;
+const int TK_NEW = 39;
+const int TK_CONST = 40;
+const int TK_TRUE = 41;
+const int TK_FALSE = 42;
+const int TK_NULL = 43;
+const int TK_PUBLIC = 44;
+const int TK_PRIVATE = 45;
+const int TK_STATIC = 46;
+const int TK_PROP = 47;
+const int TK_CONSTRUCT = 48;
+const int TK_UNSET = 49;
+const int TK_MUT = 50;
+const int TK_REF = 51;
+const int TK_TRY = 52;
+const int TK_CATCH = 53;
+const int TK_IN = 54;
+const int TK_TO = 55;
+const int TK_SWITCH = 56;
+const int TK_CASE = 57;
+const int TK_ASSERT = 58;
+const int TK_AWAIT = 59;
+const int TK_SLEEP = 60;
+
+const int TK_LPAREN = 100;
+const int TK_RPAREN = 101;
+const int TK_LBRACE = 102;
+const int TK_RBRACE = 103;
+const int TK_LBRACKET = 104;
+const int TK_RBRACKET = 105;
+const int TK_SEMI = 106;
+const int TK_COMMA = 107;
+const int TK_DOT = 108;
+const int TK_COLON = 109;
+const int TK_ASSIGN = 110;
+const int TK_PLUS = 111;
+const int TK_MINUS = 112;
+const int TK_STAR = 113;
+const int TK_SLASH = 114;
+const int TK_PERCENT = 115;
+const int TK_AMP = 116;
+const int TK_PIPE = 117;
+const int TK_CARET = 118;
+const int TK_TILDE = 119;
+const int TK_LESS = 120;
+const int TK_GREATER = 121;
+const int TK_BANG = 122;
+const int TK_QUESTION = 123;
+const int TK_DOLLAR = 124;
+const int TK_HASH = 125;
+const int TK_UNDERSCORE = 126;
+
+const int TK_PLUS_EQ = 130;
+const int TK_MINUS_EQ = 131;
+const int TK_STAR_EQ = 132;
+const int TK_SLASH_EQ = 133;
+const int TK_EQ = 134;
+const int TK_NEQ = 135;
+const int TK_LEQ = 136;
+const int TK_GEQ = 137;
+const int TK_AND = 138;
+const int TK_OR = 139;
+const int TK_SHL = 140;
+const int TK_SHR = 141;
+const int TK_INC = 142;
+const int TK_DEC = 143;
+const int TK_RANGE = 144;
+const int TK_ARROW = 145;
+const int TK_FAT_ARROW = 146;
+const int TK_SPREAD = 147;
+const int TK_QUESTIONQUESTION = 148;
+
+class Token {
+    public prop int kind;
+    public prop string text;
+    public prop int line;
+    public prop int col;
+    public prop int64 intVal;
+    public prop float64 floatVal;
+    public prop string strVal;
+    public prop char charVal;
+
+    construct (int kind, string text, int line, int col) {
+        this.kind = kind;
+        this.text = text;
+        this.line = line;
+        this.col = col;
+        this.intVal = 0;
+        this.floatVal = 0.0;
+        this.strVal = "";
+        this.charVal = ' ';
+    }
+
+    public string toString() {
+        string k = kindToString(this.kind);
+        return k + " '" + this.text + "' @ " + this.line.toString() + ":" + this.col.toString();
+    }
+}
+
+string kindToString(int kind) {
+    if (kind == TK_EOF) { return "EOF"; }
+    if (kind == TK_INT_LIT) { return "INT_LIT"; }
+    if (kind == TK_FLOAT_LIT) { return "FLOAT_LIT"; }
+    if (kind == TK_STRING_LIT) { return "STRING_LIT"; }
+    if (kind == TK_CHAR_LIT) { return "CHAR_LIT"; }
+    if (kind == TK_BOOL_LIT) { return "BOOL_LIT"; }
+    if (kind == TK_NULL_LIT) { return "NULL_LIT"; }
+    if (kind == TK_IDENT) { return "IDENT"; }
+    if (kind == TK_IF) { return "if"; }
+    if (kind == TK_ELSE) { return "else"; }
+    if (kind == TK_WHILE) { return "while"; }
+    if (kind == TK_FOR) { return "for"; }
+    if (kind == TK_FOREACH) { return "foreach"; }
+    if (kind == TK_RETURN) { return "return"; }
+    if (kind == TK_MATCH) { return "match"; }
+    if (kind == TK_VOID) { return "void"; }
+    if (kind == TK_INT) { return "int"; }
+    if (kind == TK_INT32) { return "int32"; }
+    if (kind == TK_INT64) { return "int64"; }
+    if (kind == TK_UINT) { return "uint"; }
+    if (kind == TK_FLOAT) { return "float"; }
+    if (kind == TK_FLOAT64) { return "float64"; }
+    if (kind == TK_DOUBLE) { return "double"; }
+    if (kind == TK_BOOL) { return "bool"; }
+    if (kind == TK_CHAR) { return "char"; }
+    if (kind == TK_STRING) { return "string"; }
+    if (kind == TK_VAR) { return "var"; }
+    if (kind == TK_STRUCT) { return "struct"; }
+    if (kind == TK_CLASS) { return "class"; }
+    if (kind == TK_ENUM) { return "enum"; }
+    if (kind == TK_DEF) { return "def"; }
+    if (kind == TK_NEW) { return "new"; }
+    if (kind == TK_CONST) { return "const"; }
+    if (kind == TK_MUT) { return "mut"; }
+    if (kind == TK_LPAREN) { return "("; }
+    if (kind == TK_RPAREN) { return ")"; }
+    if (kind == TK_LBRACE) { return "{"; }
+    if (kind == TK_RBRACE) { return "}"; }
+    if (kind == TK_LBRACKET) { return "["; }
+    if (kind == TK_RBRACKET) { return "]"; }
+    if (kind == TK_SEMI) { return ";"; }
+    if (kind == TK_COMMA) { return ","; }
+    if (kind == TK_DOT) { return "."; }
+    if (kind == TK_COLON) { return ":"; }
+    if (kind == TK_ASSIGN) { return "="; }
+    if (kind == TK_PLUS) { return "+"; }
+    if (kind == TK_MINUS) { return "-"; }
+    if (kind == TK_STAR) { return "*"; }
+    if (kind == TK_SLASH) { return "/"; }
+    if (kind == TK_PERCENT) { return "%"; }
+    if (kind == TK_EQ) { return "=="; }
+    if (kind == TK_NEQ) { return "!="; }
+    if (kind == TK_LESS) { return "<"; }
+    if (kind == TK_GREATER) { return ">"; }
+    if (kind == TK_LEQ) { return "<="; }
+    if (kind == TK_GEQ) { return ">="; }
+    if (kind == TK_AND) { return "&&"; }
+    if (kind == TK_OR) { return "||"; }
+    if (kind == TK_BANG) { return "!"; }
+    if (kind == TK_QUESTION) { return "?"; }
+    if (kind == TK_ARROW) { return "->"; }
+    if (kind == TK_FAT_ARROW) { return "=>"; }
+    if (kind == TK_RANGE) { return ".."; }
+    if (kind == TK_INC) { return "++"; }
+    if (kind == TK_DEC) { return "--"; }
+    if (kind == TK_PLUS_EQ) { return "+="; }
+    if (kind == TK_MINUS_EQ) { return "-="; }
+    if (kind == TK_STAR_EQ) { return "*="; }
+    if (kind == TK_SLASH_EQ) { return "/="; }
+    if (kind == TK_SHL) { return "<<"; }
+    if (kind == TK_SHR) { return ">>"; }
+    if (kind == TK_AMP) { return "&"; }
+    if (kind == TK_PIPE) { return "|"; }
+    if (kind == TK_SPREAD) { return "..."; }
+    if (kind == TK_QUESTIONQUESTION) { return "??"; }
+    return "UNKNOWN(" + kind.toString() + ")";
+}

@@ -1,0 +1,261 @@
+mod export value;
+
+const int VAL_NULL = 0;
+const int VAL_INT = 1;
+const int VAL_FLOAT = 2;
+const int VAL_BOOL = 3;
+const int VAL_STRING = 4;
+const int VAL_CHAR = 5;
+const int VAL_ARRAY = 6;
+const int VAL_TUPLE = 7;
+const int VAL_OBJECT = 8;
+const int VAL_FUNC = 9;
+const int VAL_BUILTIN = 10;
+const int VAL_STRUCT = 11;
+const int VAL_CLASS_INST = 12;
+const int VAL_ENUM_VAL = 13;
+const int VAL_RANGE = 14;
+const int VAL_DICT = 15;
+const int VAL_BYTE = 16;
+const int VAL_NULLABLE = 17;
+
+class Value {
+    public prop int tag;
+    public prop int64 intVal;
+    public prop float64 floatVal;
+    public prop bool boolVal;
+    public prop string strVal;
+    public prop char charVal;
+    public prop Value[] arrVal;
+    public prop dict<string, Value> objVal;
+    public prop string typeName;
+    public prop string funcName;
+    public prop string parentType;
+    public prop bool isNullable;
+    public prop Value? nullableInner;
+
+    construct () {
+        this.tag = VAL_NULL;
+        this.intVal = 0;
+        this.floatVal = 0.0;
+        this.boolVal = false;
+        this.strVal = "";
+        this.charVal = ' ';
+        this.arrVal = [];
+        this.objVal = {};
+        this.typeName = "";
+        this.funcName = "";
+        this.parentType = "";
+        this.isNullable = false;
+        this.nullableInner = null;
+    }
+
+    public static Value makeInt(int64 v) {
+        Value val = new Value();
+        val.tag = VAL_INT;
+        val.intVal = v;
+        return val;
+    }
+
+    public static Value makeFloat(float64 v) {
+        Value val = new Value();
+        val.tag = VAL_FLOAT;
+        val.floatVal = v;
+        return val;
+    }
+
+    public static Value makeBool(bool v) {
+        Value val = new Value();
+        val.tag = VAL_BOOL;
+        val.boolVal = v;
+        return val;
+    }
+
+    public static Value makeString(string v) {
+        Value val = new Value();
+        val.tag = VAL_STRING;
+        val.strVal = v;
+        return val;
+    }
+
+    public static Value makeChar(char v) {
+        Value val = new Value();
+        val.tag = VAL_CHAR;
+        val.charVal = v;
+        return val;
+    }
+
+    public static Value makeNull() {
+        Value val = new Value();
+        val.tag = VAL_NULL;
+        return val;
+    }
+
+    public static Value makeArray(Value[] v) {
+        Value val = new Value();
+        val.tag = VAL_ARRAY;
+        val.arrVal = v;
+        return val;
+    }
+
+    public static Value makeObject(dict<string, Value> v, string typeName) {
+        Value val = new Value();
+        val.tag = VAL_OBJECT;
+        val.objVal = v;
+        val.typeName = typeName;
+        return val;
+    }
+
+    public static Value makeTuple(Value[] v) {
+        Value val = new Value();
+        val.tag = VAL_TUPLE;
+        val.arrVal = v;
+        return val;
+    }
+
+    public static Value makeFunc(string name) {
+        Value val = new Value();
+        val.tag = VAL_FUNC;
+        val.funcName = name;
+        return val;
+    }
+
+    public static Value makeBuiltin(string name) {
+        Value val = new Value();
+        val.tag = VAL_BUILTIN;
+        val.funcName = name;
+        return val;
+    }
+
+    public static Value makeClassInst(dict<string, Value> fields, string typeName) {
+        Value val = new Value();
+        val.tag = VAL_CLASS_INST;
+        val.objVal = fields;
+        val.typeName = typeName;
+        return val;
+    }
+
+    public static Value makeEnumVal(string enumName, string variant) {
+        Value val = new Value();
+        val.tag = VAL_ENUM_VAL;
+        val.typeName = enumName;
+        val.strVal = variant;
+        return val;
+    }
+
+    public static Value makeRange(int64 start, int64 end) {
+        Value val = new Value();
+        val.tag = VAL_RANGE;
+        val.intVal = start;
+        val.floatVal = end.toFloat64();
+        return val;
+    }
+
+    public static Value makeDict(dict<string, Value> v) {
+        Value val = new Value();
+        val.tag = VAL_DICT;
+        val.objVal = v;
+        return val;
+    }
+
+    public bool isTruthy() {
+        if (this.tag == VAL_BOOL) { return this.boolVal; }
+        if (this.tag == VAL_INT) { return this.intVal != 0; }
+        if (this.tag == VAL_FLOAT) { return this.floatVal != 0.0; }
+        if (this.tag == VAL_STRING) { return this.strVal.length > 0; }
+        if (this.tag == VAL_NULL) { return false; }
+        return true;
+    }
+
+    public bool equals(Value other) {
+        if (this.tag != other.tag) {
+            if (this.tag == VAL_NULL && other.tag == VAL_NULL) { return true; }
+            if (this.tag == VAL_INT && other.tag == VAL_FLOAT) {
+                return this.intVal.toFloat64() == other.floatVal;
+            }
+            if (this.tag == VAL_FLOAT && other.tag == VAL_INT) {
+                return this.floatVal == other.intVal.toFloat64();
+            }
+            return false;
+        }
+        if (this.tag == VAL_INT) { return this.intVal == other.intVal; }
+        if (this.tag == VAL_FLOAT) { return this.floatVal == other.floatVal; }
+        if (this.tag == VAL_BOOL) { return this.boolVal == other.boolVal; }
+        if (this.tag == VAL_STRING) { return this.strVal == other.strVal; }
+        if (this.tag == VAL_CHAR) { return this.charVal == other.charVal; }
+        if (this.tag == VAL_NULL) { return true; }
+        return false;
+    }
+
+    public string toString() {
+        if (this.tag == VAL_INT) { return this.intVal.toString(); }
+        if (this.tag == VAL_FLOAT) { return this.floatVal.toString(); }
+        if (this.tag == VAL_BOOL) { return this.boolVal.toString(); }
+        if (this.tag == VAL_STRING) { return this.strVal; }
+        if (this.tag == VAL_CHAR) { return this.charVal.toString(); }
+        if (this.tag == VAL_NULL) { return "null"; }
+        if (this.tag == VAL_ARRAY) { return arrayToString(this.arrVal); }
+        if (this.tag == VAL_TUPLE) { return "(" + arrayToString(this.arrVal) + ")"; }
+        if (this.tag == VAL_OBJECT || this.tag == VAL_CLASS_INST) {
+            return this.typeName + "{...}";
+        }
+        if (this.tag == VAL_FUNC || this.tag == VAL_BUILTIN) {
+            return "<fn " + this.funcName + ">";
+        }
+        if (this.tag == VAL_ENUM_VAL) {
+            return this.typeName + "." + this.strVal;
+        }
+        if (this.tag == VAL_DICT) {
+            return "dict{...}";
+        }
+        return "?";
+    }
+
+    public string inspect() {
+        if (this.tag == VAL_STRING) { return "\"" + this.strVal + "\""; }
+        if (this.tag == VAL_CHAR) { return "'" + this.charVal.toString() + "'"; }
+        return this.toString();
+    }
+
+    public string typeString() {
+        if (this.tag == VAL_INT) { return "int"; }
+        if (this.tag == VAL_FLOAT) { return "float"; }
+        if (this.tag == VAL_BOOL) { return "bool"; }
+        if (this.tag == VAL_STRING) { return "string"; }
+        if (this.tag == VAL_CHAR) { return "char"; }
+        if (this.tag == VAL_NULL) { return "null"; }
+        if (this.tag == VAL_ARRAY) { return "array"; }
+        if (this.tag == VAL_TUPLE) { return "tuple"; }
+        if (this.tag == VAL_FUNC || this.tag == VAL_BUILTIN) { return "function"; }
+        if (this.tag == VAL_CLASS_INST) { return this.typeName; }
+        if (this.tag == VAL_ENUM_VAL) { return this.typeName; }
+        if (this.tag == VAL_DICT) { return "dict"; }
+        return "unknown";
+    }
+
+    public int64 toInt() {
+        if (this.tag == VAL_INT) { return this.intVal; }
+        if (this.tag == VAL_FLOAT) { return this.floatVal.toInt64(); }
+        if (this.tag == VAL_BOOL) { return this.boolVal ? 1 : 0; }
+        if (this.tag == VAL_STRING) { return this.strVal.toInt64(); }
+        if (this.tag == VAL_CHAR) { return this.charVal.toInt64(); }
+        return 0;
+    }
+
+    public float64 toFloat() {
+        if (this.tag == VAL_FLOAT) { return this.floatVal; }
+        if (this.tag == VAL_INT) { return this.intVal.toFloat64(); }
+        if (this.tag == VAL_STRING) { return this.strVal.toFloat64(); }
+        return 0.0;
+    }
+}
+
+string arrayToString(Value[] arr) {
+    string result = "[";
+    for (int i = 0; i < arr.length; i++) {
+        if (i > 0) { result += ", "; }
+        result += arr[i].inspect();
+    }
+    result += "]";
+    return result;
+}
