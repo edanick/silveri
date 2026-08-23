@@ -115,9 +115,8 @@ void printHelp() {
 }
 
 void main() {
-    printline("INTERP-START");
-    fs.writeBytes("CRASHED_BEFORE_START.txt", [0]);
-    file.writeBytes("T2_ARGPARSE.txt", [50]);
+    // Diagnostic crumbs go into a subfolder so they never pollute the
+    // working directory (e.g. when running tests/ scripts).
     // Option parsing goes through the `cli` module (DOCS/252) so the same
     // spelling rules apply as silverc and the self-hosted compiler.
     string[] helpNames = ["-h", "--help"];
@@ -184,7 +183,6 @@ void main() {
         exit(1);
     }
 
-    file.writeBytes("T1_args.txt", [49]);
 
     string inputSource = "";
     if (isProjectPath(filename)) {
@@ -195,49 +193,25 @@ void main() {
         // UnknownCollectionException instead of a generic parser error.
         inputSource = projExpandCollections(fs.readFile(filename), ".", "");
     }
-    file.writeBytes("T2_read.txt", [49]);
-    printline("DBG1 read ok len=" + inputSource.length);
 
     // Resolve `import * from <module>` statements by prepending the module
     // source (like the compiler driver does) so its classes, constants and
     // functions are registered before the user source runs.
     inputSource = resolveImports(inputSource, filename);
-    file.writeBytes("T3_READ.txt", [51]);
-    file.writeBytes("T3_imp.txt", [49]);
-    printline("DBG2 imports ok");
 
-    file.writeBytes("T4_IMPORTS.txt", [52]);
     Lexer lexer = new Lexer(inputSource);
     Token[] tokens = lexer.tokenize();
-    file.writeBytes("T4_lex.txt", [49]);
-    printline("DBG3 lex ok " + tokens.length);
 
-    file.writeBytes("T5_LEX.txt", [53]);
     Parser p = new Parser(tokens);
-    file.writeBytes("TM_ctor.txt", [49]);
     Node[] program = p.parseProgram();
-    int plenEarly = program.length;
-    file.writeBytes("TC_early.txt", [49]);
-    file.writeBytes("T7_PCTOR.txt", [55]);
-    file.writeBytes("T5_parse.txt", [49]);
-    file.writeBytes("TB0.txt", [49]);
-    int plen = program.length;
-    file.writeBytes("TB1.txt", [49]);
-    string dbg4s = "DBG4 parse ok " + plen;
-    file.writeBytes("TB2.txt", [49]);
-    printline(dbg4s);
-    file.writeBytes("TB3.txt", [49]);
 
-    file.writeBytes("T6_PARSE.txt", [54]);
     Evaluator evaluator = new Evaluator();
-    file.writeBytes("T6_eval.txt", [49]);
     string preludeSrc = source();
     Lexer preludeLexer = new Lexer(preludeSrc);
     Token[] preludeTokens = preludeLexer.tokenize();
     Parser preludeParser = new Parser(preludeTokens);
     Node[] llmaiPrelude = preludeParser.parseProgram();
     evaluator.register(llmaiPrelude);
-    file.writeBytes("T7_reg1.txt", [49]);
 
     string excSrc = exceptionSource();
     Lexer excLexer = new Lexer(excSrc);
@@ -245,12 +219,9 @@ void main() {
     Parser excParser = new Parser(excTokens);
     Node[] excPrelude = excParser.parseProgram();
     evaluator.register(excPrelude);
-    file.writeBytes("T8_reg2.txt", [49]);
 
     MemoryGuard guard = new MemoryGuard();
     guard.checkProgram(program);
-    file.writeBytes("T9_guard.txt", [49]);
 
     evaluator.run(program);
-    file.writeBytes("T10_run.txt", [49]);
 }

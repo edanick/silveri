@@ -315,7 +315,7 @@ class Lexer {
     }
 
     public Token[] tokenize() {
-        file.writeBytes("TL0_lex_start.txt", [49]);
+        file.writeBytes("build/diag/TL0_lex_start.txt", [49]);
         Token[] tokens = [];
         while (true) {
             this.skipWhitespace();
@@ -328,7 +328,7 @@ class Lexer {
                 tokens.add(tok);
             }
         }
-        file.writeBytes("TL1_lex_end.txt", [49]);
+        file.writeBytes("build/diag/TL1_lex_end.txt", [49]);
         return tokens;
     }
 

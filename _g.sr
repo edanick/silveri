@@ -1,7 +1,0 @@
-class Item { int kind; }
-void main() {
-    Item? result = null;
-    if (result != null) {
-        printline(result.kind.toString());
-    }
-}

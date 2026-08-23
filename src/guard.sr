@@ -206,7 +206,6 @@ class MemoryGuard {
                 int idx = this.findVar(name);
                 if (idx >= 0) {
         GuardVar v = this.vars[idx];
-        printline("DBG checkRead alive=" + v.isAlive.toString() + " init=" + v.isInit.toString() + " name=" + v.name);
         if (!v.isAlive) {
                         this.fail("NonexistenceException", op.line, op.col, name, "variable is dead (moved, unset, or already consumed)");
                     }
@@ -802,7 +801,7 @@ class MemoryGuard {
     }
 
     public void checkProgram(Node[] program) {
-        file.writeBytes("TG0_guard_start.txt", [49]);
+        file.writeBytes("build/diag/TG0_guard_start.txt", [49]);
         for (int i = 0; i < program.length; i++) {
             Node n = program[i];
             if (n.kind == ND_CONST) {
@@ -823,6 +822,6 @@ class MemoryGuard {
             Node n = program[i];
             this.checkTop(n);
         }
-        file.writeBytes("TG1_guard_end.txt", [49]);
+        file.writeBytes("build/diag/TG1_guard_end.txt", [49]);
     }
 }

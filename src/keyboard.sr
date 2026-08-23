@@ -215,13 +215,10 @@ int vkDigit(char c) {
     // returns inside if-ladders of char comparisons, so we use the
     // string's indexOf to map the digit to its position in the
     // lookup string, then add the VK_0 base (0x30) to that index.
-    printline("DBG vkDigit called with c=" + c.toString());
     string digits = "0123456789";
     int idx = digits.indexOf(c.toString());
-    printline("DBG vkDigit idx=" + idx.toString());
     if (idx < 0) { return 0; }
     int rv = 0x30 + idx;
-    printline("DBG vkDigit returning " + rv.toString());
     return rv;
 }
 

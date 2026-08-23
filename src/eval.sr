@@ -32,7 +32,7 @@ class Evaluator {
     public prop string[] win32Grants;
 
     construct () {
-        file.writeBytes("TE0_ctor.txt", [49]);
+        file.writeBytes("build/diag/TE0_ctor.txt", [49]);
         this.globals = GC.acquireEnv(null);
         this.functions = {};
         this.structs = {};
@@ -51,7 +51,7 @@ class Evaluator {
         this.win32Dlls = [];
         this.win32Grants = [];
         this.registerBuiltins();
-        file.writeBytes("TE1_ctor_end.txt", [49]);
+        file.writeBytes("build/diag/TE1_ctor_end.txt", [49]);
     }
 
     private void maybeGC(Env env) {
@@ -76,10 +76,8 @@ class Evaluator {
     }
 
     private void registerBuiltins() {
-        printline("E-REG-START");
     Value v = makeBuiltin("printline");
     this.globals.define("printline", v);
-        printline("E-PL-TAG=" + v.tag);
     this.globals.define("print", makeBuiltin("print"));
         this.globals.define("input", makeBuiltin("input"));
         this.globals.define("assert", makeBuiltin("assert"));
@@ -334,11 +332,11 @@ class Evaluator {
     }
 
     public void run(Node[] program) {
-        file.writeBytes("TR0.txt", [49]);
+        file.writeBytes("build/diag/TR0.txt", [49]);
         this.registerItems(program);
-        file.writeBytes("TR1.txt", [49]);
+        file.writeBytes("build/diag/TR1.txt", [49]);
         this.runMain(program);
-        file.writeBytes("TR2.txt", [49]);
+        file.writeBytes("build/diag/TR2.txt", [49]);
     }
 
     public void register(Node[] program) {
@@ -409,7 +407,7 @@ class Evaluator {
             }
         }
         if (this.functions.contains("main")) {
-            file.writeBytes("TR3.txt", [49]);
+            file.writeBytes("build/diag/TR3.txt", [49]);
             this.callFunction("main", [], this.globals);
         }
         if (this.hasThrown) {
@@ -438,7 +436,7 @@ class Evaluator {
     }
 
     public Value callFunction(string name, Value[] args, Env callerEnv) {
-        file.writeBytes("TF0.txt", [49]);
+        file.writeBytes("build/diag/TF0.txt", [49]);
         if (this.functions.contains(name)) {
             Node fn = this.functions[name];
             return this.callNode(fn, args, callerEnv);
@@ -457,7 +455,7 @@ class Evaluator {
     }
 
     public Value callNode(Node fn, Value[] args, Env callerEnv) {
-        file.writeBytes("TN0.txt", [49]);
+        file.writeBytes("build/diag/TN0.txt", [49]);
         int rooted = 0;
         for (int i = 0; i < args.length; i++) {
             GC.pushRoot(args[i]);
@@ -465,7 +463,7 @@ class Evaluator {
         }
         Node params = fn.child(0);
         Env fnEnv = this.globals.push();
-        file.writeBytes("TN1.txt", [49]);
+        file.writeBytes("build/diag/TN1.txt", [49]);
         for (int i = 0; i < params.childCount(); i++) {
             Node param = params.child(i);
             if (i < args.length) {
@@ -1397,7 +1395,7 @@ class Evaluator {
     }
 
     public void execBlock(Node block, Env env) {
-        file.writeBytes("TX0.txt", [49]);
+        file.writeBytes("build/diag/TX0.txt", [49]);
         Env blockEnv = env.push();
         for (int i = 0; i < block.childCount(); i++) {
             if (this.hasReturned || this.hasBroken || this.hasContinued || this.hasThrown) { return; }

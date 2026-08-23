@@ -12,7 +12,7 @@ class Parser {
     private bool rangeIsSliceBoundary;
 
     construct (Token[] toks) {
-        file.writeBytes("TP_c.txt", [49]);
+        file.writeBytes("build/diag/TP_c.txt", [49]);
         this.tokens = toks;
         this.pos = 0;
         this.rangeIsSliceBoundary = false;
@@ -70,7 +70,7 @@ class Parser {
     private int col() { return this.peek().col; }
 
 public Node[] parseProgram() {
-    file.writeBytes("TP_p.txt", [49]);
+    file.writeBytes("build/diag/TP_p.txt", [49]);
     Node[] items = [];
     int safety = 0;
     // Bound by the token count rather than a fixed 100: large preludes (the
@@ -93,7 +93,7 @@ public Node[] parseProgram() {
 }
 
 private Node? parseItem() {
-    file.writeBytes("TP_i.txt", [49]);
+    file.writeBytes("build/diag/TP_i.txt", [49]);
     if (this.check(TK_HASH)) {
             return this.parseAnnotation();
         }

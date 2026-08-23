@@ -91,7 +91,6 @@ class GCState {
     }
 
     public Value acquireValue() {
-    if (gs == null) { file.writeBytes("GSNULL.txt", [71]); }
         this.allocs = this.allocs + 1;
         Value v;
         if (this.poolCount > 0) {
@@ -353,7 +352,6 @@ const int GC_BYTE_SOFT_LIMIT = 536870912;
 const int GC_BYTE_HARD_LIMIT = 1073741824;
 
 public Value acquireValue() {
-    if (gs == null) { file.writeBytes("GSNULL.txt", [71]); }
     return gs.acquireValue();
 }
 

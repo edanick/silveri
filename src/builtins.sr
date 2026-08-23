@@ -19,7 +19,7 @@ class BuiltinMethods {
         if (receiver.tag == VAL_INT || receiver.tag == VAL_FLOAT || receiver.tag == VAL_BOOL) { return numberMethod(receiver, method, args); }
         if (receiver.tag == VAL_CHAR) { return charMethod(receiver, method, args); }
         if (receiver.tag == VAL_BUILTIN) { return moduleMethod(ev, receiver, method, args); }
-        printline("Runtime error: no method '" + method + "' on " + receiver.typeString() + " tag=" + receiver.tag);
+        printline("Runtime error: no method '" + method + "' on " + receiver.typeString());
         return makeNull();
     }
 
