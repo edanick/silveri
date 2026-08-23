@@ -61,6 +61,19 @@ const int TK_CASE = 57;
 const int TK_ASSERT = 58;
 const int TK_AWAIT = 59;
 const int TK_SLEEP = 60;
+const int TK_FUN = 61;
+const int TK_ELIF = 62;
+const int TK_BREAK = 63;
+const int TK_CONTINUE = 64;
+const int TK_THROW = 65;
+const int TK_FINALLY = 66;
+const int TK_EXTENDS = 67;
+const int TK_LOCAL = 68;
+const int TK_ALIAS = 69;
+const int TK_FIXED = 70;
+const int TK_LIVE = 71;
+const int TK_ONCE = 72;
+const int TK_SHARED = 73;
 
 const int TK_LPAREN = 100;
 const int TK_RPAREN = 101;
@@ -109,6 +122,7 @@ const int TK_ARROW = 145;
 const int TK_FAT_ARROW = 146;
 const int TK_SPREAD = 147;
 const int TK_QUESTIONQUESTION = 148;
+const int TK_AT = 150;
 
 class Token {
     public prop int kind;
@@ -213,5 +227,8 @@ string kindToString(int kind) {
     if (kind == TK_PIPE) { return "|"; }
     if (kind == TK_SPREAD) { return "..."; }
     if (kind == TK_QUESTIONQUESTION) { return "??"; }
+    if (kind == TK_BREAK) { return "break"; }
+    if (kind == TK_CONTINUE) { return "continue"; }
+    if (kind == TK_EXTENDS) { return "extends"; }
     return "UNKNOWN(" + kind.toString() + ")";
 }

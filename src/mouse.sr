@@ -1,0 +1,149 @@
+import * from win32.msvcrt;
+import * from win32.user32;
+
+// ---------------------------------------------------------------------------
+// mouse - Win32 mouse input for the silveri interpreter.
+//
+// Mirror of silverc/std/mouse.sr. Used by interpreted scripts that do
+// `import * from mouse;`. Method dispatch goes through the mouse_module
+// case in builtins.sr (press/hold/release/click/tap/scroll/setCursor/
+// clipCursor/getClipCursor). The free Win32 calls (mouse_event, GetKeyState,
+// SetCursorPos) end up forwarded to native user32 by the silveri.exe
+// compiler via the silverc-rs user32 dispatcher.
+// ---------------------------------------------------------------------------
+
+mod export mouse;
+
+const int MOUSEEVENTF_LEFTDOWN  = 0x0002;
+const int MOUSEEVENTF_LEFTUP    = 0x0004;
+const int MOUSEEVENTF_RIGHTDOWN = 0x0008;
+const int MOUSEEVENTF_RIGHTUP   = 0x0010;
+const int MOUSEEVENTF_MIDDLEDOWN = 0x0020;
+const int MOUSEEVENTF_MIDDLEUP  = 0x0040;
+const int MOUSEEVENTF_WHEEL     = 0x0800;
+
+const int VK_LBUTTON = 0x01;
+const int VK_RBUTTON = 0x02;
+const int VK_MBUTTON = 0x04;
+
+const int MouseButtons_LEFT   = 1;
+const int MouseButtons_RIGHT  = 2;
+const int MouseButtons_MIDDLE = 4;
+
+const int ScrollDirections_UP   = 1;
+const int ScrollDirections_DOWN = 0;
+
+class Position {
+    public int x;
+    public int y;
+
+    construct (int xv, int yv) {
+        this.x = xv;
+        this.y = yv;
+    }
+}
+
+class ScrollDirection {
+    public int type;
+    construct (int t) { this.type = t; }
+}
+
+class MouseButton {
+    public int type;
+    construct (int t) { this.type = t; }
+}
+
+class Cursor {
+    private int xPos;
+    private int yPos;
+
+    construct () {
+        this.xPos = 0;
+        this.yPos = 0;
+    }
+
+    public int getX() { return GetCursorX(); }
+    public int getY() { return GetCursorY(); }
+    public void setX(int v) {
+        this.xPos = v;
+        SetCursorPos(v, this.yPos);
+    }
+    public void setY(int v) {
+        this.yPos = v;
+        SetCursorPos(this.xPos, v);
+    }
+
+    public Position getPosition() {
+        return Position(this.xPos, this.yPos);
+    }
+
+    public void setPosition(int newX, int newY) {
+        this.xPos = newX;
+        this.yPos = newY;
+        SetCursorPos(newX, newY);
+    }
+}
+
+class mouse {
+    public Cursor cursor;
+
+    construct () {
+        this.cursor = new Cursor();
+    }
+
+    public void press(int button) {
+        mouse_event(0x0002 | button, 0, 0, 0, 0);
+    }
+
+    public void hold(int button) {
+        this.press(button);
+    }
+
+    public void release(int button) {
+        mouse_event(0x0004 | button, 0, 0, 0, 0);
+    }
+
+    public void click(int button) {
+        this.press(button);
+        this.release(button);
+    }
+
+    public void tap(int button) {
+        this.click(button);
+    }
+
+    public void scroll(int amount) {
+        mouse_event(MOUSEEVENTF_WHEEL, 0, 0, amount, 0);
+    }
+
+    public void scroll(int amount, ScrollDirection direction) {
+        int delta = amount;
+        if (direction.type == ScrollDirections_UP) {
+            if (delta > 0) { delta = -delta; }
+        } else {
+            if (delta < 0) { delta = -delta; }
+        }
+        mouse_event(MOUSEEVENTF_WHEEL, 0, 0, delta, 0);
+    }
+
+    public int cursorX() { return GetCursorX(); }
+    public int cursorY() { return GetCursorY(); }
+    public int getCursorX() { return GetCursorX(); }
+    public int getCursorY() { return GetCursorY(); }
+}
+
+public mouse instance = new mouse();
+
+// Stand-alone probe.
+public bool isMouseDown(int buttonCode) {
+    if (buttonCode == MouseButtons_LEFT) {
+        return (GetKeyState(VK_LBUTTON) & 0x8000) != 0;
+    }
+    if (buttonCode == MouseButtons_RIGHT) {
+        return (GetKeyState(VK_RBUTTON) & 0x8000) != 0;
+    }
+    if (buttonCode == MouseButtons_MIDDLE) {
+        return (GetKeyState(VK_MBUTTON) & 0x8000) != 0;
+    }
+    return false;
+}

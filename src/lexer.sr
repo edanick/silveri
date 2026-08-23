@@ -102,7 +102,31 @@ class Lexer {
                     else if (esc == '\\') { s += "\\"; }
                     else if (esc == '"') { s += "\""; }
                     else if (esc == '$') { s += "$"; }
-                    else if (esc == '0') { s += "\0"; }
+                    else if (esc == '0') { s += char(0); }
+                    else if (esc == 'x') {
+                        // Hex escape \xHH: decode 1-2 hex digits into a raw
+                        // byte (matches the compiler's lexer). With no hex
+                        // digit following, keep the literal `\x`.
+                        int hv = 0;
+                        int nd = 0;
+                        while (nd < 2 && this.pos < this.src.length) {
+                            char hc = this.src[this.pos];
+                            int dv = -1;
+                            if (hc >= '0' && hc <= '9') { dv = hc - '0'; }
+                            elif (hc >= 'a' && hc <= 'f') { dv = hc - 'a' + 10; }
+                            elif (hc >= 'A' && hc <= 'F') { dv = hc - 'A' + 10; }
+                            if (dv < 0) { break; }
+                            this.advance();
+                            hv = hv * 16 + dv;
+                            nd = nd + 1;
+                        }
+                        if (nd > 0) {
+                            char xc = char(hv);
+                            s += xc.toString();
+                        } else {
+                            s += "\\x";
+                        }
+                    }
                     else { s += esc.toString(); }
                 }
             } else {
@@ -130,7 +154,26 @@ class Lexer {
                     else if (esc == 'r') { ch = '\r'; }
                     else if (esc == '\\') { ch = '\\'; }
                     else if (esc == '\'') { ch = '\''; }
-                    else if (esc == '0') { ch = '\0'; }
+                    else if (esc == '0') { ch = char(0); }
+                    else if (esc == 'x') {
+                        // Hex escape \xHH: decode 1-2 hex digits into a raw
+                        // byte (matches the compiler's lexer). With no hex
+                        // digit following, the char is a literal 'x'.
+                        int hv = 0;
+                        int nd = 0;
+                        while (nd < 2 && this.pos < this.src.length) {
+                            char hc = this.src[this.pos];
+                            int dv = -1;
+                            if (hc >= '0' && hc <= '9') { dv = hc - '0'; }
+                            elif (hc >= 'a' && hc <= 'f') { dv = hc - 'a' + 10; }
+                            elif (hc >= 'A' && hc <= 'F') { dv = hc - 'A' + 10; }
+                            if (dv < 0) { break; }
+                            this.advance();
+                            hv = hv * 16 + dv;
+                            nd = nd + 1;
+                        }
+                        if (nd > 0) { ch = char(hv); } else { ch = esc; }
+                    }
                     else { ch = esc; }
                 }
             }
@@ -162,7 +205,7 @@ class Lexer {
                         break;
                     }
                 }
-                return makeIntToken(s, 16, ln, c);
+                return this.makeIntToken(s, 16, ln, c);
             }
             if (next == 'b' || next == 'B') {
                 s += next.toString();
@@ -176,7 +219,7 @@ class Lexer {
                         break;
                     }
                 }
-                return makeIntToken(s, 2, ln, c);
+                return this.makeIntToken(s, 2, ln, c);
             }
         }
         while (this.pos < this.src.length) {
@@ -222,10 +265,28 @@ class Lexer {
         Token tok = new Token(TK_INT_LIT, clean, ln, c);
         if (base == 16) {
             string hex = clean.substr(2);
-            tok.intVal = hex.toLongFromBase(16);
+            // Parse the digit string manually: toLongFromBase/toInt64FromBase
+            // are not dispatched by every backend, so compute the value with
+            // arithmetic that all stages support (matches the compiler's lexer).
+            int64 val = 0;
+            for (int i = 0; i < hex.length; i++) {
+                char ch = hex[i];
+                int d = -1;
+                if (ch >= '0' && ch <= '9') { d = ch - '0'; }
+                else if (ch >= 'a' && ch <= 'f') { d = ch - 'a' + 10; }
+                else if (ch >= 'A' && ch <= 'F') { d = ch - 'A' + 10; }
+                if (d >= 0) { val = val * 16 + d; }
+            }
+            tok.intVal = val;
         } else if (base == 2) {
             string bin = clean.substr(2);
-            tok.intVal = bin.toLongFromBase(2);
+            int64 val = 0;
+            for (int i = 0; i < bin.length; i++) {
+                char ch = bin[i];
+                if (ch == '1') { val = val * 2 + 1; }
+                else if (ch == '0') { val = val * 2; }
+            }
+            tok.intVal = val;
         } else {
             tok.intVal = clean.toInt64();
         }
@@ -254,6 +315,7 @@ class Lexer {
     }
 
     public Token[] tokenize() {
+        file.writeBytes("TL0_lex_start.txt", [49]);
         Token[] tokens = [];
         while (true) {
             this.skipWhitespace();
@@ -266,6 +328,7 @@ class Lexer {
                 tokens.add(tok);
             }
         }
+        file.writeBytes("TL1_lex_end.txt", [49]);
         return tokens;
     }
 
@@ -389,7 +452,7 @@ class Lexer {
             return new Token(TK_BANG, "!", ln, cl);
         }
         if (c == '#') { return new Token(TK_HASH, "#", ln, cl); }
-        if (c == '@') { return new Token(TK_DOLLAR, "@", ln, cl); }
+        if (c == '@') { return new Token(TK_AT, "@", ln, cl); }
         if (c == '_') { return new Token(TK_UNDERSCORE, "_", ln, cl); }
 
         printline("Warning: unexpected character '" + c.toString() + "' at " + ln.toString() + ":" + cl.toString());
@@ -442,13 +505,25 @@ int keywordKind(string s) {
     if (s == "ref") { return TK_REF; }
     if (s == "try") { return TK_TRY; }
     if (s == "catch") { return TK_CATCH; }
+    if (s == "throw") { return TK_THROW; }
+    if (s == "finally") { return TK_FINALLY; }
+    if (s == "extends") { return TK_EXTENDS; }
     if (s == "in") { return TK_IN; }
     if (s == "to") { return TK_TO; }
     if (s == "switch") { return TK_SWITCH; }
     if (s == "case") { return TK_CASE; }
     if (s == "assert") { return TK_ASSERT; }
     if (s == "await") { return TK_AWAIT; }
-    if (s == "sleep") { return TK_SLEEP; }
+    if (s == "fun") { return TK_FUN; }
+    if (s == "elif") { return TK_ELIF; }
+    if (s == "break") { return TK_BREAK; }
+    if (s == "continue") { return TK_CONTINUE; }
+    if (s == "local") { return TK_LOCAL; }
+    if (s == "alias") { return TK_ALIAS; }
+    if (s == "fixed") { return TK_FIXED; }
+    if (s == "live") { return TK_LIVE; }
+    if (s == "once") { return TK_ONCE; }
+    if (s == "shared") { return TK_SHARED; }
     return TK_IDENT;
 }
 

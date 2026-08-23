@@ -1,0 +1,229 @@
+import * from win32.msvcrt;
+import * from win32.user32;
+import * from win32.ws2_32;
+
+// ---------------------------------------------------------------------------
+// keyboard - Win32 keyboard input for the silveri interpreter.
+//
+// Mirror of silverc/std/keyboard.sr.  Used by interpreted scripts that do
+// `import * from keyboard;`. The interpreter dispatches each method name
+// (press / release / etc.) to the keyboard_module builtin in builtins.sr,
+// which re-uses these free user32 Win32 calls (keybd_event, VkKeyScanA,
+// GetKeyState).  silveri.exe picks up those bindings when silverc-rs
+// compiles it (silverc-rs/src/stdlib/keyboard.rs and the dispatcher in
+// codegen.rs).
+// ---------------------------------------------------------------------------
+
+mod export keyboard;
+
+const int VK_BACKSPACE = 0x08;
+const int VK_TAB       = 0x09;
+const int VK_RETURN    = 0x0D;
+const int VK_SHIFT     = 0x10;
+const int VK_CONTROL   = 0x11;
+const int VK_MENU      = 0x12;
+const int VK_CAPITAL   = 0x14;
+const int VK_ESCAPE    = 0x1B;
+const int VK_SPACE     = 0x20;
+const int VK_END       = 0x23;
+const int VK_HOME      = 0x24;
+const int VK_LEFT      = 0x25;
+const int VK_UP        = 0x26;
+const int VK_RIGHT     = 0x27;
+const int VK_DOWN      = 0x28;
+const int VK_INSERT    = 0x2D;
+const int VK_DELETE    = 0x2E;
+const int VK_LWIN      = 0x5B;
+const int VK_NUMLOCK   = 0x90;
+const int VK_SCROLL    = 0x91;
+const int VK_F1  = 0x70; const int VK_F2  = 0x71; const int VK_F3  = 0x72;
+const int VK_F4  = 0x73; const int VK_F5  = 0x74; const int VK_F6  = 0x75;
+const int VK_F7  = 0x76; const int VK_F8  = 0x77; const int VK_F9  = 0x78;
+const int VK_F10 = 0x79; const int VK_F11 = 0x7A; const int VK_F12 = 0x7B;
+
+const int KEYEVENTF_KEYUP = 0x0002;
+
+// ---------------------------------------------------------------------------
+// Keyboard instance class. Produced at the bottom of this file as
+// `keyboard`; user code does `keyboard.press("a")`.
+// ---------------------------------------------------------------------------
+
+class Keyboard {
+    public void press(string keyName) {
+        int vk = this.vk(keyName);
+        keybd_event(vk, 0, 0, 0);
+    }
+
+    public void press(int vk) {
+        keybd_event(vk, 0, 0, 0);
+    }
+
+    public void hold(string keyName) { this.press(keyName); }
+
+    public void hold(int vk)         { this.press(vk); }
+
+    public void release(string keyName) {
+        int vk = this.vk(keyName);
+        keybd_event(vk, 0, KEYEVENTF_KEYUP, 0);
+    }
+
+    public void release(int vk) {
+        keybd_event(vk, 0, KEYEVENTF_KEYUP, 0);
+    }
+
+    public void send(string text) {
+        for (int i = 0; i < text.length; i = i + 1) {
+            string one = "";
+            one += text[i];
+            int vk = this.vk(one);
+            if (vk == 0) {
+                int scan = VkKeyScanA(one);
+                if (scan != -1) { vk = scan & 0xFF; }
+            }
+            if (vk != 0) {
+                keybd_event(vk, 0, 0, 0);
+                keybd_event(vk, 0, KEYEVENTF_KEYUP, 0);
+            }
+        }
+    }
+
+    public void type(string text) { this.send(text); }
+
+    public bool isDown(string keyName) {
+        int vk = this.vk(keyName);
+        if (vk == 0) { return false; }
+        return (GetKeyState(vk) & 0x8000) != 0;
+    }
+
+    public bool isDown(int vk) {
+        return (GetKeyState(vk) & 0x8000) != 0;
+    }
+
+    public int vk(string name) {
+        if (name.length == 1) {
+            char c = name[0];
+            // VK codes for ASCII letters map A-Z to 0x41..0x5A and a..z to the same
+            // uppercase VK. The self-hosted compiler's parser doesn't grok `(int) c`,
+            // so we use a manual encode via arithmetic with the helpers below.
+            if (c >= 'A' && c <= 'Z') { return vkUpper(c); }
+            if (c >= 'a' && c <= 'z') { return vkLower(c); }
+            if (c >= '0' && c <= '9') { return vkDigit(c); }
+            if (c == ' ')  { return VK_SPACE; }
+            if (c == '\n' || c == '\r') { return VK_RETURN; }
+            if (c == '\t') { return VK_TAB; }
+        }
+        if (name == "TAB")       { return VK_TAB; }
+        if (name == "SPACE")     { return VK_SPACE; }
+        if (name == "ENTER" || name == "RETURN") { return VK_RETURN; }
+        if (name == "ESC" || name == "ESCAPE") { return VK_ESCAPE; }
+        if (name == "BACKSPACE")        { return VK_BACKSPACE; }
+        if (name == "DELETE" || name == "DEL") { return VK_DELETE; }
+        if (name == "INSERT")           { return VK_INSERT; }
+        if (name == "HOME")             { return VK_HOME; }
+        if (name == "END")              { return VK_END; }
+        if (name == "LEFT")             { return VK_LEFT; }
+        if (name == "UP")               { return VK_UP; }
+        if (name == "RIGHT")            { return VK_RIGHT; }
+        if (name == "DOWN")             { return VK_DOWN; }
+        if (name == "SHIFT")            { return VK_SHIFT; }
+        if (name == "CTRL" || name == "CONTROL") { return VK_CONTROL; }
+        if (name == "ALT" || name == "MENU")     { return VK_MENU; }
+        if (name == "WIN_KEY" || name == "WIN")  { return VK_LWIN; }
+        if (name == "CAPS_LOCK")        { return VK_CAPITAL; }
+        if (name == "NUM_LOCK")         { return VK_NUMLOCK; }
+        if (name == "SCROLL_LOCK")      { return VK_SCROLL; }
+        if (name == "F1")  { return VK_F1; }
+        if (name == "F2")  { return VK_F2; }
+        if (name == "F3")  { return VK_F3; }
+        if (name == "F4")  { return VK_F4; }
+        if (name == "F5")  { return VK_F5; }
+        if (name == "F6")  { return VK_F6; }
+        if (name == "F7")  { return VK_F7; }
+        if (name == "F8")  { return VK_F8; }
+        if (name == "F9")  { return VK_F9; }
+        if (name == "F10") { return VK_F10; }
+        if (name == "F11") { return VK_F11; }
+        if (name == "F12") { return VK_F12; }
+        return 0;
+    }
+}
+
+// Lowercase ASCII letters map to the same uppercase VK (0x41..0x5A).
+int vkLower(char c) {
+    if (c == 'a') { return 0x41; }
+    if (c == 'b') { return 0x42; }
+    if (c == 'c') { return 0x43; }
+    if (c == 'd') { return 0x44; }
+    if (c == 'e') { return 0x45; }
+    if (c == 'f') { return 0x46; }
+    if (c == 'g') { return 0x47; }
+    if (c == 'h') { return 0x48; }
+    if (c == 'i') { return 0x49; }
+    if (c == 'j') { return 0x4A; }
+    if (c == 'k') { return 0x4B; }
+    if (c == 'l') { return 0x4C; }
+    if (c == 'm') { return 0x4D; }
+    if (c == 'n') { return 0x4E; }
+    if (c == 'o') { return 0x4F; }
+    if (c == 'p') { return 0x50; }
+    if (c == 'q') { return 0x51; }
+    if (c == 'r') { return 0x52; }
+    if (c == 's') { return 0x53; }
+    if (c == 't') { return 0x54; }
+    if (c == 'u') { return 0x55; }
+    if (c == 'v') { return 0x56; }
+    if (c == 'w') { return 0x57; }
+    if (c == 'x') { return 0x58; }
+    if (c == 'y') { return 0x59; }
+    if (c == 'z') { return 0x5A; }
+    return 0;
+}
+
+int vkUpper(char c) {
+    if (c == 'A') { return 0x41; }
+    if (c == 'B') { return 0x42; }
+    if (c == 'C') { return 0x43; }
+    if (c == 'D') { return 0x44; }
+    if (c == 'E') { return 0x45; }
+    if (c == 'F') { return 0x46; }
+    if (c == 'G') { return 0x47; }
+    if (c == 'H') { return 0x48; }
+    if (c == 'I') { return 0x49; }
+    if (c == 'J') { return 0x4A; }
+    if (c == 'K') { return 0x4B; }
+    if (c == 'L') { return 0x4C; }
+    if (c == 'M') { return 0x4D; }
+    if (c == 'N') { return 0x4E; }
+    if (c == 'O') { return 0x4F; }
+    if (c == 'P') { return 0x50; }
+    if (c == 'Q') { return 0x51; }
+    if (c == 'R') { return 0x52; }
+    if (c == 'S') { return 0x53; }
+    if (c == 'T') { return 0x54; }
+    if (c == 'U') { return 0x55; }
+    if (c == 'V') { return 0x56; }
+    if (c == 'W') { return 0x57; }
+    if (c == 'X') { return 0x58; }
+    if (c == 'Y') { return 0x59; }
+    if (c == 'Z') { return 0x5A; }
+    return 0;
+}
+
+int vkDigit(char c) {
+    // Returns the Win32 VK code for an ASCII digit (0x30..0x39).
+    // silverc.exe's self-hosted codegen has a known bug with literal
+    // returns inside if-ladders of char comparisons, so we use the
+    // string's indexOf to map the digit to its position in the
+    // lookup string, then add the VK_0 base (0x30) to that index.
+    printline("DBG vkDigit called with c=" + c.toString());
+    string digits = "0123456789";
+    int idx = digits.indexOf(c.toString());
+    printline("DBG vkDigit idx=" + idx.toString());
+    if (idx < 0) { return 0; }
+    int rv = 0x30 + idx;
+    printline("DBG vkDigit returning " + rv.toString());
+    return rv;
+}
+
+// Default instance used by user scripts importing this module.
+public Keyboard instance = new Keyboard();

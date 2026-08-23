@@ -1,5 +1,7 @@
 mod export value;
 
+import gc;
+
 const int VAL_NULL = 0;
 const int VAL_INT = 1;
 const int VAL_FLOAT = 2;
@@ -32,7 +34,10 @@ class Value {
     public prop string funcName;
     public prop string parentType;
     public prop bool isNullable;
-    public prop Value? nullableInner;
+    public prop Value nullableInner;
+    public prop bool gcMark;
+    public prop int64 gcEpoch;
+    public prop Value[] objVals;
 
     construct () {
         this.tag = VAL_NULL;
@@ -48,119 +53,19 @@ class Value {
         this.parentType = "";
         this.isNullable = false;
         this.nullableInner = null;
+        this.gcMark = false;
+        this.gcEpoch = 0;
+        this.objVals = [];
     }
 
-    public static Value makeInt(int64 v) {
-        Value val = new Value();
-        val.tag = VAL_INT;
-        val.intVal = v;
-        return val;
-    }
-
-    public static Value makeFloat(float64 v) {
-        Value val = new Value();
-        val.tag = VAL_FLOAT;
-        val.floatVal = v;
-        return val;
-    }
-
-    public static Value makeBool(bool v) {
-        Value val = new Value();
-        val.tag = VAL_BOOL;
-        val.boolVal = v;
-        return val;
-    }
-
-    public static Value makeString(string v) {
-        Value val = new Value();
-        val.tag = VAL_STRING;
-        val.strVal = v;
-        return val;
-    }
-
-    public static Value makeChar(char v) {
-        Value val = new Value();
-        val.tag = VAL_CHAR;
-        val.charVal = v;
-        return val;
-    }
-
-    public static Value makeNull() {
-        Value val = new Value();
-        val.tag = VAL_NULL;
-        return val;
-    }
-
-    public static Value makeArray(Value[] v) {
-        Value val = new Value();
-        val.tag = VAL_ARRAY;
-        val.arrVal = v;
-        return val;
-    }
-
-    public static Value makeObject(dict<string, Value> v, string typeName) {
-        Value val = new Value();
-        val.tag = VAL_OBJECT;
-        val.objVal = v;
-        val.typeName = typeName;
-        return val;
-    }
-
-    public static Value makeTuple(Value[] v) {
-        Value val = new Value();
-        val.tag = VAL_TUPLE;
-        val.arrVal = v;
-        return val;
-    }
-
-    public static Value makeFunc(string name) {
-        Value val = new Value();
-        val.tag = VAL_FUNC;
-        val.funcName = name;
-        return val;
-    }
-
-    public static Value makeBuiltin(string name) {
-        Value val = new Value();
-        val.tag = VAL_BUILTIN;
-        val.funcName = name;
-        return val;
-    }
-
-    public static Value makeClassInst(dict<string, Value> fields, string typeName) {
-        Value val = new Value();
-        val.tag = VAL_CLASS_INST;
-        val.objVal = fields;
-        val.typeName = typeName;
-        return val;
-    }
-
-    public static Value makeEnumVal(string enumName, string variant) {
-        Value val = new Value();
-        val.tag = VAL_ENUM_VAL;
-        val.typeName = enumName;
-        val.strVal = variant;
-        return val;
-    }
-
-    public static Value makeRange(int64 start, int64 end) {
-        Value val = new Value();
-        val.tag = VAL_RANGE;
-        val.intVal = start;
-        val.floatVal = end.toFloat64();
-        return val;
-    }
-
-    public static Value makeDict(dict<string, Value> v) {
-        Value val = new Value();
-        val.tag = VAL_DICT;
-        val.objVal = v;
-        return val;
+    private void adoptDict(dict<string, Value> d, Value[] vals) {
+        this.objVal = d;
+        this.objVals = vals;
     }
 
     public bool isTruthy() {
         if (this.tag == VAL_BOOL) { return this.boolVal; }
-        if (this.tag == VAL_INT) { return this.intVal != 0; }
+        if (this.tag == VAL_INT || this.tag == VAL_BYTE) { return this.intVal != 0; }
         if (this.tag == VAL_FLOAT) { return this.floatVal != 0.0; }
         if (this.tag == VAL_STRING) { return this.strVal.length > 0; }
         if (this.tag == VAL_NULL) { return false; }
@@ -176,9 +81,30 @@ class Value {
             if (this.tag == VAL_FLOAT && other.tag == VAL_INT) {
                 return this.floatVal == other.intVal.toFloat64();
             }
+            if (this.tag == VAL_BYTE && other.tag == VAL_INT) {
+                return this.intVal == other.intVal;
+            }
+            if (this.tag == VAL_INT && other.tag == VAL_BYTE) {
+                return this.intVal == other.intVal;
+            }
+            // The compiled runtime stores `char` as an integer code point, so
+            // char == int (and char == float) compare numerically. Without this
+            // the UTF-8 byte round-trip test (char byte vs int literal) fails.
+            if (this.tag == VAL_CHAR && other.tag == VAL_INT) {
+                return this.charVal.toInt64() == other.intVal;
+            }
+            if (this.tag == VAL_INT && other.tag == VAL_CHAR) {
+                return this.intVal == other.charVal.toInt64();
+            }
+            if (this.tag == VAL_CHAR && other.tag == VAL_FLOAT) {
+                return this.charVal.toInt64().toFloat64() == other.floatVal;
+            }
+            if (this.tag == VAL_FLOAT && other.tag == VAL_CHAR) {
+                return this.floatVal == other.charVal.toInt64().toFloat64();
+            }
             return false;
         }
-        if (this.tag == VAL_INT) { return this.intVal == other.intVal; }
+        if (this.tag == VAL_INT || this.tag == VAL_BYTE) { return this.intVal == other.intVal; }
         if (this.tag == VAL_FLOAT) { return this.floatVal == other.floatVal; }
         if (this.tag == VAL_BOOL) { return this.boolVal == other.boolVal; }
         if (this.tag == VAL_STRING) { return this.strVal == other.strVal; }
@@ -188,7 +114,7 @@ class Value {
     }
 
     public string toString() {
-        if (this.tag == VAL_INT) { return this.intVal.toString(); }
+        if (this.tag == VAL_INT || this.tag == VAL_BYTE) { return this.intVal.toString(); }
         if (this.tag == VAL_FLOAT) { return this.floatVal.toString(); }
         if (this.tag == VAL_BOOL) { return this.boolVal.toString(); }
         if (this.tag == VAL_STRING) { return this.strVal; }
@@ -219,6 +145,7 @@ class Value {
 
     public string typeString() {
         if (this.tag == VAL_INT) { return "int"; }
+        if (this.tag == VAL_BYTE) { return "byte"; }
         if (this.tag == VAL_FLOAT) { return "float"; }
         if (this.tag == VAL_BOOL) { return "bool"; }
         if (this.tag == VAL_STRING) { return "string"; }
@@ -234,7 +161,7 @@ class Value {
     }
 
     public int64 toInt() {
-        if (this.tag == VAL_INT) { return this.intVal; }
+        if (this.tag == VAL_INT || this.tag == VAL_BYTE) { return this.intVal; }
         if (this.tag == VAL_FLOAT) { return this.floatVal.toInt64(); }
         if (this.tag == VAL_BOOL) { return this.boolVal ? 1 : 0; }
         if (this.tag == VAL_STRING) { return this.strVal.toInt64(); }
@@ -244,7 +171,7 @@ class Value {
 
     public float64 toFloat() {
         if (this.tag == VAL_FLOAT) { return this.floatVal; }
-        if (this.tag == VAL_INT) { return this.intVal.toFloat64(); }
+        if (this.tag == VAL_INT || this.tag == VAL_BYTE) { return this.intVal.toFloat64(); }
         if (this.tag == VAL_STRING) { return this.strVal.toFloat64(); }
         return 0.0;
     }
@@ -258,4 +185,201 @@ string arrayToString(Value[] arr) {
     }
     result += "]";
     return result;
+}
+
+void dictSet(dict<string, Value> d, Value[] vals, string k, Value v) {
+    if (!d.contains(k)) {
+        vals.add(v);
+    }
+    d[k] = v;
+}
+
+// ---------------------------------------------------------------------------
+// Mirror helpers.  The compiled runtime cannot enumerate a dict, so every
+// Value keeps a parallel Value[] (objVals) listing the values stored in its
+// objVal dict.  All maintenance and all cross-module reads go through the
+// module-level functions below -- same-module access is reliable, while
+// cross-module Value[]-field access miscompiles.
+// ---------------------------------------------------------------------------
+
+public void mirrorPut(Value v, string k, Value val) {
+    // Always append to the mirror: on key update the old value stays in the
+    // mirror (harmless -- it is kept alive one extra cycle) while the new
+    // value is recorded so marking never misses it.
+    v.objVals.add(val);
+    v.objVal[k] = val;
+    GC.writeBarrier(v, val);
+}
+
+public void setObjVals(Value v, Value[] vals) {
+    v.objVals = vals;
+}
+
+public int objValsLen(Value v) {
+    return v.objVals.length;
+}
+
+public Value objValsGet(Value v, int i) {
+    return v.objVals[i];
+}
+
+public int arrValLen(Value v) {
+    return v.arrVal.length;
+}
+
+public string arrValStrAt(Value v, int i) {
+    return v.arrVal[i].strVal;
+}
+
+// High-offset fields of the 16-field Value struct are unreliable to touch
+// cross-module (miscompiled offsets), so marking/sweeping goes through these.
+
+public bool isMarked(Value v) {
+    return v.gcMark;
+}
+
+public void setMarked(Value v, bool m) {
+    v.gcMark = m;
+}
+
+public int64 epochOf(Value v) {
+    return v.gcEpoch;
+}
+
+public void setEpoch(Value v, int64 e) {
+    v.gcEpoch = e;
+}
+
+public void resetForPool(Value v) {
+    // Do not assign fresh arrays/dicts here. Those native backing buffers are
+    // not individually freeable; the next factory overwrites the relevant
+    // container for aggregate Values, while primitive Values simply leave
+    // their inactive containers unused.
+    v.tag = VAL_NULL;
+    v.gcMark = false;
+    v.nullableInner = null;
+}
+
+// ---------------------------------------------------------------------------
+// Value factories.  NOTE: these must never be called as `Value.makeXxx(...)`
+// -- the compiler special-cases any call with a `Value` receiver into a raw
+// 112-byte tagged-union allocation (genValueFactoryCall) that bypasses the
+// GC registry/pool.  All interpreter code calls these module functions
+// unqualified, so every Value goes through GC.acquireValue() and shares one
+// consistent layout (a 16-field `new Value()` block).
+// ---------------------------------------------------------------------------
+
+Value makeInt(int64 v) {
+    Value val = GC.acquireValue();
+    val.tag = VAL_INT;
+    val.intVal = v;
+    return val;
+}
+
+Value makeByte(int64 v) {
+    Value val = GC.acquireValue();
+    val.tag = VAL_BYTE;
+    val.intVal = v;
+    return val;
+}
+
+Value makeFloat(float64 v) {
+    Value val = GC.acquireValue();
+    val.tag = VAL_FLOAT;
+    val.floatVal = v;
+    return val;
+}
+
+Value makeBool(bool v) {
+    Value val = GC.acquireValue();
+    val.tag = VAL_BOOL;
+    val.boolVal = v;
+    return val;
+}
+
+Value makeString(string v) {
+    Value val = GC.acquireValue();
+    val.tag = VAL_STRING;
+    val.strVal = v;
+    return val;
+}
+
+Value makeChar(char v) {
+    Value val = GC.acquireValue();
+    val.tag = VAL_CHAR;
+    val.charVal = v;
+    return val;
+}
+
+Value makeNull() {
+    Value val = GC.acquireValue();
+    val.tag = VAL_NULL;
+    return val;
+}
+
+Value makeArray(Value[] v) {
+    Value val = GC.acquireValue();
+    val.tag = VAL_ARRAY;
+    val.arrVal = v;
+    return val;
+}
+
+Value makeObject(dict<string, Value> v, string typeName) {
+    Value val = GC.acquireValue();
+    val.tag = VAL_OBJECT;
+    val.adoptDict(v, []);
+    val.typeName = typeName;
+    return val;
+}
+
+Value makeTuple(Value[] v) {
+    Value val = GC.acquireValue();
+    val.tag = VAL_TUPLE;
+    val.arrVal = v;
+    return val;
+}
+
+Value makeFunc(string name) {
+    Value val = GC.acquireValue();
+    val.tag = VAL_FUNC;
+    val.funcName = name;
+    return val;
+}
+
+Value makeBuiltin(string name) {
+    Value val = GC.acquireValue();
+    val.tag = VAL_BUILTIN;
+    val.funcName = name;
+    return val;
+}
+
+Value makeClassInst(dict<string, Value> fields, string typeName) {
+    Value val = GC.acquireValue();
+    val.tag = VAL_CLASS_INST;
+    val.adoptDict(fields, []);
+    val.typeName = typeName;
+    return val;
+}
+
+Value makeEnumVal(string enumName, string variant) {
+    Value val = GC.acquireValue();
+    val.tag = VAL_ENUM_VAL;
+    val.typeName = enumName;
+    val.strVal = variant;
+    return val;
+}
+
+Value makeRange(int64 start, int64 end) {
+    Value val = GC.acquireValue();
+    val.tag = VAL_RANGE;
+    val.intVal = start;
+    val.floatVal = end.toFloat64();
+    return val;
+}
+
+Value makeDict(dict<string, Value> v) {
+    Value val = GC.acquireValue();
+    val.tag = VAL_DICT;
+    val.adoptDict(v, []);
+    return val;
 }

@@ -41,6 +41,13 @@ const int ND_TRY_CATCH = 59;
 const int ND_UNSET = 60;
 const int ND_EXPR_STMT = 61;
 const int ND_SWITCH = 62;
+const int ND_BREAK = 63;
+const int ND_CONTINUE = 64;
+const int ND_THROW = 65;
+const int ND_ALIAS_DECL = 66;
+const int ND_LIVE_DECL = 67;
+const int ND_ONCE_DECL = 68;
+const int ND_ADDRESS_OF = 69;
 
 const int ND_FUNC = 100;
 const int ND_STRUCT_DEF = 101;
@@ -87,6 +94,7 @@ const int UOP_NEG = 0;
 const int UOP_NOT = 1;
 const int UOP_DEREF = 2;
 const int UOP_REF = 3;
+const int UOP_ADDRESS = 4;
 
 const int PAT_WILDCARD = 0;
 const int PAT_INT = 1;
@@ -113,6 +121,12 @@ class Node {
     public prop bool isMut;
     public prop bool isPublic;
     public prop bool isStatic;
+    public prop bool isFixed;
+    public prop bool isLive;
+    public prop bool isOnce;
+    public prop bool isAlias;
+    public prop bool isShared;
+    public prop bool hasFinally;
     public prop string parentClass;
     public prop Node[] children;
     public prop dict<string, Node> props;
@@ -132,6 +146,12 @@ class Node {
         this.isMut = false;
         this.isPublic = true;
         this.isStatic = false;
+        this.isFixed = false;
+        this.isLive = false;
+        this.isOnce = false;
+        this.isAlias = false;
+        this.isShared = false;
+        this.hasFinally = false;
         this.parentClass = "";
         this.children = [];
         this.props = {};
@@ -204,7 +224,12 @@ string kindName(int k) {
     if (k == ND_FOREACH) { return "Foreach"; }
     if (k == ND_MATCH_STMT) { return "MatchStmt"; }
     if (k == ND_TRY_CATCH) { return "TryCatch"; }
+    if (k == ND_THROW) { return "Throw"; }
     if (k == ND_EXPR_STMT) { return "ExprStmt"; }
+    if (k == ND_ALIAS_DECL) { return "AliasDecl"; }
+    if (k == ND_LIVE_DECL) { return "LiveDecl"; }
+    if (k == ND_ONCE_DECL) { return "OnceDecl"; }
+    if (k == ND_ADDRESS_OF) { return "AddressOf"; }
     if (k == ND_FUNC) { return "Func"; }
     if (k == ND_STRUCT_DEF) { return "StructDef"; }
     if (k == ND_CLASS_DEF) { return "ClassDef"; }

@@ -1,0 +1,14 @@
+# Build artifacts and debug traces
+build/
+*.exe
+CRASHED_BEFORE_START.txt
+T*.txt
+TB*.txt
+TC_early.txt
+TE*.txt
+TL*.txt
+TM_ctor.txt
+TP_*.txt
+GSNULL.txt
+MARKER.txt
+src/eval.sr.bak_gated

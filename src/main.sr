@@ -9,6 +9,91 @@ import env;
 import eval;
 import builtins;
 import fs;
+import cli;
+import llmai_std;
+import exception_std;
+import project;
+import guard;
+
+// Native modules the interpreter provides without needing a source file.
+bool nativeModule(string name) {
+    string n = name.lower();
+    return cli.eq(n, "fs") || cli.eq(n, "json") || cli.eq(n, "yaml")
+        || cli.eq(n, "env") || cli.eq(n, "url") || cli.eq(n, "hash")
+        || cli.eq(n, "path") || cli.eq(n, "bom") || cli.eq(n, "console")
+        || cli.eq(n, "math") || cli.eq(n, "llmai") || cli.eq(n, "os");
+}
+
+// Case-insensitive substring search.
+int findCI(string text, string needle, int start) {
+    string t = text.lower();
+    string n = needle.lower();
+    return t.indexOf(n, start);
+}
+
+// Read std/<module>.sr from the standard checkout locations, returning empty
+// string when the file is not found at any candidate path.
+string readStdModule(string name, string inputFile) {
+    string lower = name.lower();
+    string[] paths = [];
+    // Resolve user modules beside the script before probing the standard
+    // library.  `silveri tests/main.sr` must be able to load tests/helper.sr,
+    // not just std/helper.sr.
+    int lastSep = -1;
+    for (int i = 0; i < inputFile.length; i = i + 1) {
+        if (inputFile[i] == '\\' || inputFile[i] == '/') { lastSep = i; }
+    }
+    if (lastSep >= 0) {
+        paths.add(inputFile.substr(0, lastSep + 1) + lower + ".sr");
+    }
+    paths.add(lower + ".sr");
+    paths.add("std\\" + lower + ".sr");
+    paths.add("silverc\\std\\" + lower + ".sr");
+    paths.add("..\\std\\" + lower + ".sr");
+    paths.add("..\\silverc\\std\\" + lower + ".sr");
+    for (int i = 0; i < paths.length; i = i + 1) {
+        string src = "";
+        try {
+            src = fs.readFile(paths[i]);
+        } catch (int e) {
+            src = "";
+        }
+        if (src.length > 0) { return src; }
+    }
+    return "";
+}
+
+// Resolve `import * from <module>` statements in `source` by prepending
+// std/<module>.sr content for non-native modules. Native modules are
+// handled directly by the interpreter and must not be loaded from disk.
+string resolveImports(string source, string inputFile) {
+    string prepend = "";
+    int cursor = 0;
+    while (cursor < source.length) {
+        int importPos = findCI(source, "import * from ", cursor);
+        if (importPos < 0) { break; }
+        int semi = source.indexOf(";", importPos);
+        if (semi < 0) { break; }
+        int nameStart = importPos + 13;
+        while (nameStart < semi && source[nameStart] == ' ') { nameStart = nameStart + 1; }
+        int nameEnd = nameStart;
+        while (nameEnd < semi && ((source[nameEnd] >= 'a' && source[nameEnd] <= 'z') || (source[nameEnd] >= 'A' && source[nameEnd] <= 'Z') || (source[nameEnd] >= '0' && source[nameEnd] <= '9') || source[nameEnd] == '_')) {
+            nameEnd = nameEnd + 1;
+        }
+        string module = source.substr(nameStart, nameEnd - nameStart);
+        if (module.length > 0 && !nativeModule(module)) {
+            string modSrc = readStdModule(module, inputFile);
+            if (modSrc.length > 0) {
+                prepend = prepend + modSrc + "\n";
+            }
+        }
+        cursor = semi + 1;
+    }
+    if (prepend.length > 0) {
+        return prepend + source;
+    }
+    return source;
+}
 
 void printHelp() {
     printline("silveri " + APP_VERSION);
@@ -30,6 +115,14 @@ void printHelp() {
 }
 
 void main() {
+    printline("INTERP-START");
+    fs.writeBytes("CRASHED_BEFORE_START.txt", [0]);
+    file.writeBytes("T2_ARGPARSE.txt", [50]);
+    // Option parsing goes through the `cli` module (DOCS/252) so the same
+    // spelling rules apply as silverc and the self-hosted compiler.
+    string[] helpNames = ["-h", "--help"];
+    string[] versionNames = ["--version"];
+
     string[] args = cargs;
 
     if (args.length < 2) {
@@ -41,37 +134,42 @@ void main() {
 
     for (int i = 1; i < args.length; i += 1) {
         string arg = args[i];
-        if (arg == "--help" || arg == "-h") {
+        if (cli.isFlag(arg, helpNames)) {
             printHelp();
             return;
         }
-        if (arg == "--version") {
+        if (cli.isFlag(arg, versionNames)) {
             printline("silveri " + APP_VERSION);
             printline("Silver " + LANG_VERSION);
             printline("Copyright: © 2025 Edan M.");
-    printline("License: " + APP_LICENSE);
+            printline("License: " + APP_LICENSE);
             return;
         }
-        if (arg == "-i") {
-            if (i + 1 < args.length) {
+        if (cli.eq(arg, "-i")) {
+            string v = cli.valueAfter(args, i);
+            if (v != "") {
+                filename = v;
                 i += 1;
-                filename = args[i];
             } else {
                 printline("Error: -i requires a filename");
                 exit(1);
             }
-        } else if (arg == "-o") {
-            if (i + 1 < args.length) {
+        } elif (cli.eq(arg, "-o")) {
+            // -o is accepted for command compatibility but ignored because
+            // silveri executes source directly instead of producing a
+            // compiled output file.
+            string v = cli.valueAfter(args, i);
+            if (v != "") {
                 i += 1;
             } else {
                 printline("Error: -o requires a filename");
                 exit(1);
             }
-        } else if (arg.startsWith("-")) {
+        } elif (cli.isOption(arg)) {
             printline("Error: Unknown option '" + arg + "'");
             printHelp();
             exit(1);
-        } else if (filename == "") {
+        } elif (filename == "") {
             filename = arg;
         } else {
             printline("Error: Unknown option '" + arg + "'");
@@ -86,14 +184,73 @@ void main() {
         exit(1);
     }
 
-    string source = fs.readFile(filename);
+    file.writeBytes("T1_args.txt", [49]);
 
-    Lexer lexer = new Lexer(source);
+    string inputSource = "";
+    if (isProjectPath(filename)) {
+        inputSource = loadProjectSource(filename);
+    } else {
+        // `.col` declarations require a project manifest. Reuse the project
+        // loader's validation so standalone scripts report
+        // UnknownCollectionException instead of a generic parser error.
+        inputSource = projExpandCollections(fs.readFile(filename), ".", "");
+    }
+    file.writeBytes("T2_read.txt", [49]);
+    printline("DBG1 read ok len=" + inputSource.length);
+
+    // Resolve `import * from <module>` statements by prepending the module
+    // source (like the compiler driver does) so its classes, constants and
+    // functions are registered before the user source runs.
+    inputSource = resolveImports(inputSource, filename);
+    file.writeBytes("T3_READ.txt", [51]);
+    file.writeBytes("T3_imp.txt", [49]);
+    printline("DBG2 imports ok");
+
+    file.writeBytes("T4_IMPORTS.txt", [52]);
+    Lexer lexer = new Lexer(inputSource);
     Token[] tokens = lexer.tokenize();
+    file.writeBytes("T4_lex.txt", [49]);
+    printline("DBG3 lex ok " + tokens.length);
 
+    file.writeBytes("T5_LEX.txt", [53]);
     Parser p = new Parser(tokens);
+    file.writeBytes("TM_ctor.txt", [49]);
     Node[] program = p.parseProgram();
+    int plenEarly = program.length;
+    file.writeBytes("TC_early.txt", [49]);
+    file.writeBytes("T7_PCTOR.txt", [55]);
+    file.writeBytes("T5_parse.txt", [49]);
+    file.writeBytes("TB0.txt", [49]);
+    int plen = program.length;
+    file.writeBytes("TB1.txt", [49]);
+    string dbg4s = "DBG4 parse ok " + plen;
+    file.writeBytes("TB2.txt", [49]);
+    printline(dbg4s);
+    file.writeBytes("TB3.txt", [49]);
 
+    file.writeBytes("T6_PARSE.txt", [54]);
     Evaluator evaluator = new Evaluator();
+    file.writeBytes("T6_eval.txt", [49]);
+    string preludeSrc = source();
+    Lexer preludeLexer = new Lexer(preludeSrc);
+    Token[] preludeTokens = preludeLexer.tokenize();
+    Parser preludeParser = new Parser(preludeTokens);
+    Node[] llmaiPrelude = preludeParser.parseProgram();
+    evaluator.register(llmaiPrelude);
+    file.writeBytes("T7_reg1.txt", [49]);
+
+    string excSrc = exceptionSource();
+    Lexer excLexer = new Lexer(excSrc);
+    Token[] excTokens = excLexer.tokenize();
+    Parser excParser = new Parser(excTokens);
+    Node[] excPrelude = excParser.parseProgram();
+    evaluator.register(excPrelude);
+    file.writeBytes("T8_reg2.txt", [49]);
+
+    MemoryGuard guard = new MemoryGuard();
+    guard.checkProgram(program);
+    file.writeBytes("T9_guard.txt", [49]);
+
     evaluator.run(program);
+    file.writeBytes("T10_run.txt", [49]);
 }

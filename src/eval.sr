@@ -4,9 +4,9 @@ import ast;
 import value;
 import env;
 import builtins;
-
+import fs;
 class ReturnSignal {
-    public prop Value? val;
+    public prop Value val;
     construct () { this.val = null; }
     construct (Value v) { this.val = v; }
 }
@@ -20,10 +20,20 @@ class Evaluator {
     public prop dict<string, string> typeAliases;
     public prop dict<string, Node> modules;
     public prop bool hasReturned;
-    public prop Value? returnValue;
+    public prop bool hasBroken;
+    public prop bool hasContinued;
+    public prop bool hasThrown;
+    public prop Value returnValue;
+    public prop Value thrownValue;
+    public prop int loopTicks;
+    public prop string currentClassName;
+    // DOCS/213 -- win32 module grants collected from import statements.
+    public prop string[] win32Dlls;
+    public prop string[] win32Grants;
 
     construct () {
-        this.globals = new Env();
+        file.writeBytes("TE0_ctor.txt", [49]);
+        this.globals = GC.acquireEnv(null);
         this.functions = {};
         this.structs = {};
         this.classes = {};
@@ -31,29 +41,308 @@ class Evaluator {
         this.typeAliases = {};
         this.modules = {};
         this.hasReturned = false;
+        this.hasBroken = false;
+        this.hasContinued = false;
+        this.hasThrown = false;
         this.returnValue = null;
+        this.thrownValue = null;
+        this.loopTicks = 0;
+        this.currentClassName = "";
+        this.win32Dlls = [];
+        this.win32Grants = [];
         this.registerBuiltins();
+        file.writeBytes("TE1_ctor_end.txt", [49]);
+    }
+
+    private void maybeGC(Env env) {
+        // Cooperative interpreter scheduling: intentional infinite loops stay
+        // infinite, but after a bounded iteration count they yield 1 ms so they
+        // cannot monopolize a CPU core. The counter is per evaluator and reset
+        // explicitly (compound assignment on object fields is not safe here).
+        this.loopTicks = this.loopTicks + 1;
+        if (this.loopTicks >= 256) {
+            this.loopTicks = 0;
+            Sleep(1);
+        }
+        if (GC.shouldCollect()) {
+            if (this.returnValue != null) {
+                GC.pushRoot(this.returnValue);
+                GC.collectGarbage(env, this.globals);
+                GC.popRoot();
+            } else {
+                GC.collectGarbage(env, this.globals);
+            }
+        }
     }
 
     private void registerBuiltins() {
-    Value v = Value.makeBuiltin("printline");
+        printline("E-REG-START");
+    Value v = makeBuiltin("printline");
     this.globals.define("printline", v);
-    this.globals.define("print", Value.makeBuiltin("print"));
-        this.globals.define("input", Value.makeBuiltin("input"));
-        this.globals.define("assert", Value.makeBuiltin("assert"));
-        this.globals.define("sleep", Value.makeBuiltin("sleep"));
-        this.globals.define("exit", Value.makeBuiltin("exit"));
-        this.globals.define("end", Value.makeBuiltin("exit"));
-        this.globals.define("int", Value.makeBuiltin("int"));
-        this.globals.define("float", Value.makeBuiltin("float"));
-        this.globals.define("string", Value.makeBuiltin("string_cast"));
-        this.globals.define("now", Value.makeBuiltin("now"));
-        this.globals.define("time", Value.makeBuiltin("time_module"));
+        printline("E-PL-TAG=" + v.tag);
+    this.globals.define("print", makeBuiltin("print"));
+        this.globals.define("input", makeBuiltin("input"));
+        this.globals.define("assert", makeBuiltin("assert"));
+        this.globals.define("sleep", makeBuiltin("sleep"));
+        this.globals.define("exit", makeBuiltin("exit"));
+        this.globals.define("end", makeBuiltin("exit"));
+        this.globals.define("int", makeBuiltin("int"));
+        this.globals.define("float", makeBuiltin("float"));
+        this.globals.define("byte", makeBuiltin("byte"));
+        this.globals.define("char", makeBuiltin("char"));
+        this.globals.define("string", makeBuiltin("string_cast"));
+        this.globals.define("now", makeBuiltin("now"));
+        this.globals.define("time", makeBuiltin("time_module"));
+        this.globals.define("url", makeBuiltin("url_module"));
+        this.globals.define("hash", makeBuiltin("hash_module"));
+        this.globals.define("path", makeBuiltin("path_module"));
+        this.globals.define("fs", makeBuiltin("fs_module"));
+        this.globals.define("file", makeBuiltin("file_module"));
+        this.globals.define("folder", makeBuiltin("folder_module"));
+        this.globals.define("env", makeBuiltin("env_module"));
+        this.globals.define("bom", makeBuiltin("bom_module"));
+        this.globals.define("process", makeBuiltin("process_module"));
+        this.globals.define("Process", makeBuiltin("process_class"));
+        this.globals.define("__getFocusedProcessData", makeBuiltin("__getFocusedProcessData"));
+        // DOCS/251 -- native bridges used by std/binary_metadata.sr. They
+        // remain private implementation details; the public API is
+        // BinaryMetadata.getMetadata(path).
+        this.globals.define("__binaryMetadataStatus", makeBuiltin("__binaryMetadataStatus"));
+        this.globals.define("__binaryMetadataField", makeBuiltin("__binaryMetadataField"));
+        this.globals.define("llmai", makeBuiltin("llmai_module"));
+        this.globals.define("keyboard", makeBuiltin("keyboard_module"));
+        this.globals.define("mouse", makeBuiltin("mouse_module"));
+        this.globals.define("console", makeBuiltin("console_module"));
+        this.globals.define("math", makeBuiltin("math_module"));
+        this.globals.define("notifications", makeBuiltin("notifications_module"));
+        // DOCS/247 — nativeToastShow: silverc-rs emits real Win32 DLL calls for
+        // it; the interpreter simulates the side effect by returning null (the
+        // notifications.sr `show` function already printed the NOTIFY: line).
+        this.globals.define("nativeToastShow", makeBuiltin("nativeToastShow"));
+
+        // DOCS/213 -- raw Win32 free identifiers (keybd_event, CloseHandle,
+        // GetModuleHandleA, ...) are NO LONGER predefined globals. They become
+        // available only when the script imports the owning module:
+        //   import * from win32.user32;   /   import kernel32 from win32;
+        // See registerWin32Import / defineGrantedExports below.
+
+        // DOCS/249 -- system tray icon bridges. The self-hosted compiler
+        // links these as no-ops (returning 0), so the TrayIcon class runs
+        // without a native tray shell; silverc-rs emits the real Win32 path.
+        this.globals.define("trayAdd", makeBuiltin("trayAdd"));
+        this.globals.define("traySetTooltip", makeBuiltin("traySetTooltip"));
+        this.globals.define("trayDelete", makeBuiltin("trayDelete"));
+        this.globals.define("trayRemove", makeBuiltin("trayRemove"));
+        this.globals.define("traySetMenu", makeBuiltin("traySetMenu"));
+        this.globals.define("trayRunLoop", makeBuiltin("trayRunLoop"));
+        this.globals.define("trayPollMenu", makeBuiltin("trayPollMenu"));
+        this.globals.define("trayPollClick", makeBuiltin("trayPollClick"));
+        // DOCS/250 -- Windows registry bridges. No-op in the interpreter
+        // backend (see builtins.sr callBuiltin); silverc-rs emits the real
+        // advapi32 Reg* sequence. Registered so the RegistryKey class in
+        // silverc/std/registry.sr resolves its bare reg* calls.
+        this.globals.define("regOpen", makeBuiltin("regOpen"));
+        this.globals.define("regCreate", makeBuiltin("regCreate"));
+        this.globals.define("regClose", makeBuiltin("regClose"));
+        this.globals.define("regSubKey", makeBuiltin("regSubKey"));
+        this.globals.define("regGetString", makeBuiltin("regGetString"));
+        this.globals.define("regSetString", makeBuiltin("regSetString"));
+        this.globals.define("regGetInt", makeBuiltin("regGetInt"));
+        this.globals.define("regSetInt", makeBuiltin("regSetInt"));
+        this.globals.define("regGetInt64", makeBuiltin("regGetInt64"));
+        this.globals.define("regSetInt64", makeBuiltin("regSetInt64"));
+        this.globals.define("regDeleteValue", makeBuiltin("regDeleteValue"));
+        this.globals.define("regDeleteKey", makeBuiltin("regDeleteKey"));
+        this.globals.define("regValueExists", makeBuiltin("regValueExists"));
+        this.globals.define("regEnumSubKeyName", makeBuiltin("regEnumSubKeyName"));
+        this.globals.define("regEnumValueName", makeBuiltin("regEnumValueName"));
+        this.globals.define("regSubKeyCount", makeBuiltin("regSubKeyCount"));
+        this.globals.define("regValueCount", makeBuiltin("regValueCount"));
+    }
+
+    // ------------------------------------------------------------------
+    // DOCS/213 -- win32 module system. Raw Win32 free identifiers become
+    // available only after the script imports the owning DLL module.
+    // ------------------------------------------------------------------
+
+    // The raw Win32 exports the interpreter's callBuiltin can execute,
+    // mapped to their owning DLL.
+    public string win32DllForFn(string fn) {
+        if (fn == "keybd_event" || fn == "mouse_event" || fn == "VkKeyScanA" || fn == "GetKeyState" || fn == "GetAsyncKeyState" || fn == "MapVirtualKeyA" || fn == "GetCursorPos" || fn == "SetCursorPos" || fn == "SendInput" || fn == "SetCursor" || fn == "ClipCursor" || fn == "GetClipCursor" || fn == "GetDoubleClickTime" || fn == "SetDoubleClickTime" || fn == "RegisterHotKey" || fn == "UnregisterHotKey" || fn == "MessageBeep" || fn == "RegisterRawInputDevices" || fn == "GetRawInputData" || fn == "GetRawInputDeviceList") { return "user32.dll"; }
+        if (fn == "GetForegroundWindow" || fn == "GetWindowTextA" || fn == "GetWindowThreadProcessId" || fn == "RegisterClassExA" || fn == "CreateWindowExA" || fn == "ShowWindow" || fn == "UpdateWindow" || fn == "SetWindowTextA" || fn == "DestroyWindow" || fn == "GetSystemMetrics" || fn == "LoadImageA" || fn == "SendMessageA") { return "user32.dll"; }
+        if (fn == "OpenProcess" || fn == "QueryFullProcessImageNameA" || fn == "CloseHandle" || fn == "GetModuleHandleA") { return "kernel32.dll"; }
+        return "";
+    }
+
+    public void win32AddDll(string dll) {
+        for (int i = 0; i < this.win32Dlls.length; i++) {
+            if (this.win32Dlls[i] == dll) { return; }
+        }
+        this.win32Dlls.add(dll);
+    }
+
+    public void win32AddGrant(string dll, string fn) {
+        string grant = dll + "|" + fn;
+        for (int i = 0; i < this.win32Grants.length; i++) {
+            if (this.win32Grants[i] == grant) { return; }
+        }
+        this.win32Grants.add(grant);
+    }
+
+    public bool win32HasExport(string dll, string fn) {
+        if (this.win32DllForFn(fn) != dll) { return false; }
+        for (int i = 0; i < this.win32Dlls.length; i++) {
+            if (this.win32Dlls[i] == dll) { return true; }
+        }
+        string grant = dll + "|" + fn;
+        for (int i = 0; i < this.win32Grants.length; i++) {
+            if (this.win32Grants[i] == grant) { return true; }
+        }
+        return false;
+    }
+
+    public string win32ModuleDll(string module) {
+        if (module == "kernel32") { return "kernel32.dll"; }
+        if (module == "ws2_32") { return "ws2_32.dll"; }
+        if (module == "winhttp") { return "winhttp.dll"; }
+        if (module == "wininet") { return "wininet.dll"; }
+        if (module == "shell32") { return "shell32.dll"; }
+        if (module == "msvcrt") { return "msvcrt.dll"; }
+        if (module == "user32") { return "user32.dll"; }
+        if (module == "registry" || module == "advapi32") { return "advapi32.dll"; }
+        if (module == "version") { return "version.dll"; }
+        return "";
+    }
+
+    public void importWin32Module(string module) {
+        string dll = this.win32ModuleDll(module);
+        if (dll.length == 0) { return; }
+        this.win32AddDll(dll);
+        this.defineGrantedExports(dll);
+    }
+
+    public string evalSliceStr(string s, int start, int end) {
+        string r = "";
+        for (int i = start; i < end; i++) { r += s[i]; }
+        return r;
+    }
+
+    public void defineGrantedExports(string dll) {
+        if (dll == "user32.dll") {
+            string[] fns = [];
+            fns.add("keybd_event");
+            fns.add("mouse_event");
+            fns.add("VkKeyScanA");
+            fns.add("GetKeyState");
+            fns.add("GetAsyncKeyState");
+            fns.add("MapVirtualKeyA");
+            fns.add("GetCursorPos");
+            fns.add("SetCursorPos");
+            fns.add("SendInput");
+            fns.add("SetCursor");
+            fns.add("ClipCursor");
+            fns.add("GetClipCursor");
+            fns.add("GetDoubleClickTime");
+            fns.add("SetDoubleClickTime");
+            fns.add("RegisterHotKey");
+            fns.add("UnregisterHotKey");
+            fns.add("MessageBeep");
+            fns.add("RegisterRawInputDevices");
+            fns.add("GetRawInputData");
+            fns.add("GetRawInputDeviceList");
+            fns.add("GetForegroundWindow");
+            fns.add("GetWindowTextA");
+            fns.add("GetWindowThreadProcessId");
+            fns.add("RegisterClassExA");
+            fns.add("CreateWindowExA");
+            fns.add("ShowWindow");
+            fns.add("UpdateWindow");
+            fns.add("SetWindowTextA");
+            fns.add("DestroyWindow");
+            fns.add("GetSystemMetrics");
+            fns.add("LoadImageA");
+            fns.add("SendMessageA");
+            for (int i = 0; i < fns.length; i++) {
+                if (this.win32HasExport(dll, fns[i])) {
+                    this.globals.define(fns[i], makeBuiltin(fns[i]));
+                }
+            }
+            return;
+        }
+        if (dll == "kernel32.dll") {
+            string[] k32 = [];
+            k32.add("OpenProcess");
+            k32.add("QueryFullProcessImageNameA");
+            k32.add("CloseHandle");
+            k32.add("GetModuleHandleA");
+            for (int j = 0; j < k32.length; j++) {
+                if (this.win32HasExport(dll, k32[j])) {
+                    this.globals.define(k32[j], makeBuiltin(k32[j]));
+                }
+            }
+        }
+    }
+
+    // Register one parsed `import ... [from ...];` statement and define the
+    // matching builtin globals.
+    public void registerWin32Import(Node node) {
+        string source = node.strVal;
+        bool all = node.name == "*";
+        if (source != "win32" && source.length > 6) {
+            if (this.evalSliceStr(source, 0, 6) != "win32.") { return; }
+        } elif (source != "win32") {
+            return;
+        }
+        if (source == "win32") {
+            if (!all) {
+                int start = 0;
+                for (int i = 0; i <= node.name.length; i++) {
+                    if (i == node.name.length || node.name[i] == ',') {
+                        if (i > start) { this.importWin32Module(this.evalSliceStr(node.name, start, i)); }
+                        start = i + 1;
+                    }
+                }
+                return;
+            }
+            this.importWin32Module("kernel32");
+            this.importWin32Module("user32");
+            this.importWin32Module("msvcrt");
+            this.importWin32Module("ws2_32");
+            this.importWin32Module("wininet");
+            this.importWin32Module("winhttp");
+            this.importWin32Module("shell32");
+            this.importWin32Module("registry");
+            this.importWin32Module("version");
+            return;
+        }
+        string module = this.evalSliceStr(source, 6, source.length);
+        string dll = this.win32ModuleDll(module);
+        if (dll.length == 0) { return; }
+        if (all) {
+            this.win32AddDll(dll);
+        } else {
+            this.win32AddGrant(dll, node.name);
+            int start2 = 0;
+            for (int i = 0; i <= node.name.length; i++) {
+                if (i == node.name.length || node.name[i] == ',') {
+                    if (i > start2) { this.win32AddGrant(dll, this.evalSliceStr(node.name, start2, i)); }
+                    start2 = i + 1;
+                }
+            }
+        }
+        this.defineGrantedExports(dll);
     }
 
     public void run(Node[] program) {
+        file.writeBytes("TR0.txt", [49]);
         this.registerItems(program);
+        file.writeBytes("TR1.txt", [49]);
         this.runMain(program);
+        file.writeBytes("TR2.txt", [49]);
+    }
+
+    public void register(Node[] program) {
+        this.registerItems(program);
     }
 
     private void registerItems(Node[] program) {
@@ -63,10 +352,14 @@ class Evaluator {
     }
 
     private void registerItem(Node item) {
+        if (item.kind == ND_IMPORT) {
+            // DOCS/213 -- grant access to the imported win32 DLL modules.
+            this.registerWin32Import(item);
+        }
         if (item.kind == ND_FUNC) {
             this.functions[item.name] = item;
             if (item.isPublic) {
-                this.globals.define(item.name, Value.makeFunc(item.name));
+                this.globals.define(item.name, makeFunc(item.name));
             }
         }
         if (item.kind == ND_STRUCT_DEF) {
@@ -74,6 +367,12 @@ class Evaluator {
         }
         if (item.kind == ND_CLASS_DEF) {
             this.classes[item.name] = item;
+            for (int i = 0; i < item.childCount(); i++) {
+                Node child = item.child(i);
+                if (child.kind == ND_FUNC) {
+                    this.functions[item.name + "." + child.name] = child;
+                }
+            }
         }
         if (item.kind == ND_ENUM_DEF) {
             this.enums[item.name] = item.strVal;
@@ -94,7 +393,7 @@ class Evaluator {
                 Env fnEnv = this.globals.push();
                 Node params = item.child(0);
                 for (int i = 0; i < params.childCount(); i++) {
-                    fnEnv.define(params.child(i).name, Value.makeNull());
+                    fnEnv.define(params.child(i).name, makeNull());
                 }
             }
             if (item.kind == ND_VAR_DECL) {
@@ -102,7 +401,7 @@ class Evaluator {
                     Value val = this.evalExpr(item.child(0), this.globals);
                     this.globals.define(item.name, val);
                 } else {
-                    this.globals.define(item.name, Value.makeNull());
+                    this.globals.define(item.name, makeNull());
                 }
             }
             if (item.kind == ND_EXPR_STMT && item.childCount() > 0) {
@@ -110,24 +409,100 @@ class Evaluator {
             }
         }
         if (this.functions.contains("main")) {
+            file.writeBytes("TR3.txt", [49]);
             this.callFunction("main", [], this.globals);
+        }
+        if (this.hasThrown) {
+            Value thrown = this.thrownValue;
+            string className = "Exception";
+            string message = "";
+            if (thrown != null && thrown.tag == VAL_OBJECT) {
+                Value msgField = this.callMethod(thrown, "getProp", [makeString("message")]);
+                if (msgField.tag == VAL_STRING) {
+                    message = msgField.strVal;
+                }
+                Value clsField = this.callMethod(thrown, "getProp", [makeString("className")]);
+                if (clsField != null && clsField.tag == VAL_STRING) {
+                    className = clsField.strVal;
+                } else {
+                    className = thrown.objVal.className;
+                }
+            } else if (thrown != null && thrown.tag == VAL_STRING) {
+                message = thrown.strVal;
+            }
+            printline("Unhandled exception: " + className + ": " + message);
+            this.hasThrown = false;
+            this.thrownValue = null;
+            exit(1);
         }
     }
 
     public Value callFunction(string name, Value[] args, Env callerEnv) {
+        file.writeBytes("TF0.txt", [49]);
         if (this.functions.contains(name)) {
             Node fn = this.functions[name];
             return this.callNode(fn, args, callerEnv);
         }
-        Value? globalFn = this.globals.get(name);
-        if (globalFn != null && globalFn.tag == VAL_BUILTIN) {
-            return callBuiltin(globalFn.funcName, args);
+        // Split the null check from the field access: the self-hosted backend
+        // does not always short-circuit `x != null && x.tag == ...`, and the
+        // compiled interpreter would dereference a null value and crash.
+        Value globalFn = this.globals.get(name);
+        if (globalFn != null) {
+            if (globalFn.tag == VAL_BUILTIN) {
+                return callBuiltin(globalFn.funcName, args);
+            }
         }
         printline("Runtime error: undefined function '" + name + "'");
-        return Value.makeNull();
+        return makeNull();
     }
 
     public Value callNode(Node fn, Value[] args, Env callerEnv) {
+        file.writeBytes("TN0.txt", [49]);
+        int rooted = 0;
+        for (int i = 0; i < args.length; i++) {
+            GC.pushRoot(args[i]);
+            rooted += 1;
+        }
+        Node params = fn.child(0);
+        Env fnEnv = this.globals.push();
+        file.writeBytes("TN1.txt", [49]);
+        for (int i = 0; i < params.childCount(); i++) {
+            Node param = params.child(i);
+            if (i < args.length) {
+                fnEnv.define(param.name, args[i]);
+            } elif (param.childCount() > 0) {
+                fnEnv.define(param.name, this.evalExpr(param.child(0), fnEnv));
+            } else {
+                fnEnv.define(param.name, makeNull());
+            }
+        }
+        Value result = makeNull();
+        if (fn.childCount() >= 2) {
+            Node body = fn.child(1);
+            this.hasReturned = false;
+            this.hasBroken = false;
+            this.hasContinued = false;
+            this.returnValue = null;
+            this.execBlock(body, fnEnv);
+            if (this.hasReturned && this.returnValue != null) {
+                Value ret = this.returnValue;
+                this.hasReturned = false;
+                this.returnValue = null;
+                result = ret;
+            }
+        }
+        for (int i = 0; i < rooted; i++) {
+            GC.popRoot();
+        }
+        return result;
+    }
+
+    public Value callNodeWithRefs(Node fn, Value[] args, Env callerEnv, string[] refNames) {
+        int rooted = 0;
+        for (int i = 0; i < args.length; i++) {
+            GC.pushRoot(args[i]);
+            rooted += 1;
+        }
         Node params = fn.child(0);
         Env fnEnv = this.globals.push();
         for (int i = 0; i < params.childCount(); i++) {
@@ -137,22 +512,37 @@ class Evaluator {
             } elif (param.childCount() > 0) {
                 fnEnv.define(param.name, this.evalExpr(param.child(0), fnEnv));
             } else {
-                fnEnv.define(param.name, Value.makeNull());
+                fnEnv.define(param.name, makeNull());
             }
         }
+        Value result = makeNull();
         if (fn.childCount() >= 2) {
             Node body = fn.child(1);
             this.hasReturned = false;
+            this.hasBroken = false;
+            this.hasContinued = false;
             this.returnValue = null;
             this.execBlock(body, fnEnv);
             if (this.hasReturned && this.returnValue != null) {
                 Value ret = this.returnValue;
                 this.hasReturned = false;
                 this.returnValue = null;
-                return ret;
+                result = ret;
             }
         }
-        return Value.makeNull();
+        // A reference argument aliases the caller's binding, not merely the
+        // Value object that was passed.  Compound assignment rebinds the
+        // callee-local name, so copy that final binding back after execution.
+        for (int i = 0; i < params.childCount(); i++) {
+            if (i < refNames.length && refNames[i] != "") {
+                Value updated = fnEnv.get(params.child(i).name);
+                if (updated != null) { callerEnv.set(refNames[i], updated); }
+            }
+        }
+        for (int i = 0; i < rooted; i++) {
+            GC.popRoot();
+        }
+        return result;
     }
 
     public Value callMethod(Value receiver, string method, Value[] args) {
@@ -160,27 +550,34 @@ class Evaluator {
     }
 
     public Value evalExpr(Node node, Env env) {
-        if (node.kind == ND_INT_LIT) { return Value.makeInt(node.intVal); }
-        if (node.kind == ND_FLOAT_LIT) { return Value.makeFloat(node.floatVal); }
-        if (node.kind == ND_STRING_LIT) { return Value.makeString(node.strVal); }
-        if (node.kind == ND_CHAR_LIT) { return Value.makeChar(node.charVal); }
-        if (node.kind == ND_BOOL_LIT) { return Value.makeBool(node.boolVal); }
-        if (node.kind == ND_NULL_LIT) { return Value.makeNull(); }
+        if (node.kind == ND_INT_LIT) { return makeInt(node.intVal); }
+        if (node.kind == ND_FLOAT_LIT) { return makeFloat(node.floatVal); }
+        if (node.kind == ND_STRING_LIT) { return makeString(node.strVal); }
+        if (node.kind == ND_CHAR_LIT) { return makeChar(node.charVal); }
+        if (node.kind == ND_BOOL_LIT) { return makeBool(node.boolVal); }
+        if (node.kind == ND_NULL_LIT) { return makeNull(); }
 
         if (node.kind == ND_IDENT) {
-            Value? val = env.get(node.name);
+            Value val = env.get(node.name);
             if (val != null) { return val; }
             if (this.enums.contains(node.name)) {
-                return Value.makeBuiltin(node.name);
+                return makeBuiltin(node.name);
             }
             if (this.structs.contains(node.name)) {
-                return Value.makeBuiltin("struct_" + node.name);
+                return makeBuiltin("struct_" + node.name);
             }
             if (this.classes.contains(node.name)) {
-                return Value.makeBuiltin("class_" + node.name);
+                return makeBuiltin("class_" + node.name);
             }
             printline("Runtime error: undefined variable '" + node.name + "' at " + node.line.toString() + ":" + node.col.toString());
-            return Value.makeNull();
+            return makeNull();
+        }
+
+        if (node.kind == ND_ADDRESS_OF) {
+            if (node.childCount() > 0 && node.child(0).kind == ND_IDENT) {
+                return makeInt(this.pseudoAddress(node.child(0).name));
+            }
+            return makeInt(0);
         }
 
         if (node.kind == ND_BINARY) { return this.evalBinary(node, env); }
@@ -207,10 +604,18 @@ class Evaluator {
             Value cond = this.evalExpr(node.child(0), env);
             if (cond.isTruthy()) { return this.evalExpr(node.child(1), env); }
             if (node.childCount() >= 3) { return this.evalExpr(node.child(2), env); }
-            return Value.makeNull();
+            return makeNull();
         }
 
-        return Value.makeNull();
+        return makeNull();
+    }
+
+    private int64 pseudoAddress(string name) {
+        int64 result = 5381;
+        for (int i = 0; i < name.length; i++) {
+            result = result * 33 + name[i];
+        }
+        return result;
     }
 
     private Value evalBinary(Node node, Env env) {
@@ -218,13 +623,28 @@ class Evaluator {
 
         if (op == OP_ASSIGN) {
             Value val = this.evalExpr(node.child(1), env);
-            return this.assignTo(node.child(0), val, env);
+            GC.pushRoot(val);
+            Value assignResult = this.assignTo(node.child(0), val, env);
+            GC.popRoot();
+            return assignResult;
+        }
+        if (op == OP_MOVE) {
+            return this.evalExpr(node.child(1), env);
         }
         if (op == OP_ADD_ASSIGN || op == OP_SUB_ASSIGN || op == OP_MUL_ASSIGN || op == OP_DIV_ASSIGN) {
             Value current = this.evalExpr(node.child(0), env);
+            GC.pushRoot(current);
             Value rhs = this.evalExpr(node.child(1), env);
-            Value result = this.computeOp(current, op, rhs);
+            int baseOp = op;
+            if (op == OP_ADD_ASSIGN) { baseOp = OP_ADD; }
+            elif (op == OP_SUB_ASSIGN) { baseOp = OP_SUB; }
+            elif (op == OP_MUL_ASSIGN) { baseOp = OP_MUL; }
+            elif (op == OP_DIV_ASSIGN) { baseOp = OP_DIV; }
+            Value result = this.computeOp(current, baseOp, rhs);
+            GC.pushRoot(result);
             this.assignTo(node.child(0), result, env);
+            GC.popRoot();
+            GC.popRoot();
             return result;
         }
 
@@ -236,7 +656,7 @@ class Evaluator {
         }
 
         if (op == OP_AND) {
-            if (!lhs.isTruthy()) { return Value.makeBool(false); }
+            if (!lhs.isTruthy()) { return makeBool(false); }
             return this.evalExpr(node.child(1), env);
         }
         if (op == OP_OR) {
@@ -244,16 +664,18 @@ class Evaluator {
             return this.evalExpr(node.child(1), env);
         }
 
+        GC.pushRoot(lhs);
         Value rhs = this.evalExpr(node.child(1), env);
+        GC.popRoot();
 
         if (op == OP_RANGE) {
             int64 start = lhs.toInt();
             int64 end = rhs.toInt();
             Value[] items = [];
             for (int64 i = start; i < end; i += 1) {
-                items.add(Value.makeInt(i));
+                items.add(makeInt(i));
             }
-            return Value.makeArray(items);
+            return makeArray(items);
         }
 
         if (op == OP_JOIN) {
@@ -264,19 +686,19 @@ class Evaluator {
                     if (i > 0) { result += sep; }
                     result += lhs.arrVal[i].toString();
                 }
-                return Value.makeString(result);
+                return makeString(result);
             }
         }
 
         if (op == OP_ADD) {
             if (lhs.tag == VAL_STRING || rhs.tag == VAL_STRING) {
-                return Value.makeString(lhs.toString() + rhs.toString());
+                return makeString(lhs.toString() + rhs.toString());
             }
             if (lhs.tag == VAL_ARRAY && rhs.tag == VAL_ARRAY) {
                 Value[] combined = [];
                 foreach (Value v in lhs.arrVal) { combined.add(v); }
                 foreach (Value v in rhs.arrVal) { combined.add(v); }
-                return Value.makeArray(combined);
+                return makeArray(combined);
             }
         }
 
@@ -285,39 +707,58 @@ class Evaluator {
 
     private Value computeOp(Value lhs, int op, Value rhs) {
         if (op == OP_ADD) {
-            if (lhs.tag == VAL_FLOAT || rhs.tag == VAL_FLOAT) {
-                return Value.makeFloat(lhs.toFloat() + rhs.toFloat());
+            if (lhs.tag == VAL_STRING || rhs.tag == VAL_STRING) {
+                return makeString(lhs.toString() + rhs.toString());
             }
-            return Value.makeInt(lhs.toInt() + rhs.toInt());
+            if (lhs.tag == VAL_ARRAY && rhs.tag == VAL_ARRAY) {
+                Value[] combined = [];
+                foreach (Value v in lhs.arrVal) { combined.add(v); }
+                foreach (Value v in rhs.arrVal) { combined.add(v); }
+                return makeArray(combined);
+            }
+            if (lhs.tag == VAL_FLOAT || rhs.tag == VAL_FLOAT) {
+                return makeFloat(lhs.toFloat() + rhs.toFloat());
+            }
+            return makeInt(lhs.toInt() + rhs.toInt());
         }
-        if (op == OP_SUB) { return Value.makeInt(lhs.toInt() - rhs.toInt()); }
+        if (op == OP_SUB) { return makeInt(lhs.toInt() - rhs.toInt()); }
         if (op == OP_MUL) {
             if (lhs.tag == VAL_FLOAT || rhs.tag == VAL_FLOAT) {
-                return Value.makeFloat(lhs.toFloat() * rhs.toFloat());
+                return makeFloat(lhs.toFloat() * rhs.toFloat());
             }
-            return Value.makeInt(lhs.toInt() * rhs.toInt());
+            return makeInt(lhs.toInt() * rhs.toInt());
         }
         if (op == OP_DIV) {
             if (lhs.tag == VAL_FLOAT || rhs.tag == VAL_FLOAT) {
-                return Value.makeFloat(lhs.toFloat() / rhs.toFloat());
+                return makeFloat(lhs.toFloat() / rhs.toFloat());
             }
             int64 divisor = rhs.toInt();
-            if (divisor == 0) { return Value.makeInt(0); }
-            return Value.makeInt(lhs.toInt() / divisor);
+            if (divisor == 0) {
+                this.throwException("DivideByZeroException", "division by zero");
+                return makeInt(0);
+            }
+            return makeInt(lhs.toInt() / divisor);
         }
-        if (op == OP_MOD) { return Value.makeInt(lhs.toInt() % rhs.toInt()); }
-        if (op == OP_EQ) { return Value.makeBool(lhs.equals(rhs)); }
-        if (op == OP_NEQ) { return Value.makeBool(!lhs.equals(rhs)); }
-        if (op == OP_LT) { return Value.makeBool(lhs.toInt() < rhs.toInt()); }
-        if (op == OP_LEQ) { return Value.makeBool(lhs.toInt() <= rhs.toInt()); }
-        if (op == OP_GT) { return Value.makeBool(lhs.toInt() > rhs.toInt()); }
-        if (op == OP_GEQ) { return Value.makeBool(lhs.toInt() >= rhs.toInt()); }
-        if (op == OP_SHL) { return Value.makeInt(lhs.toInt() << rhs.toInt()); }
-        if (op == OP_SHR) { return Value.makeInt(lhs.toInt() >> rhs.toInt()); }
-        if (op == OP_BIT_AND) { return Value.makeInt(lhs.toInt() & rhs.toInt()); }
-        if (op == OP_BIT_OR) { return Value.makeInt(lhs.toInt() | rhs.toInt()); }
-        if (op == OP_BIT_XOR) { return Value.makeInt(lhs.toInt() ^ rhs.toInt()); }
-        return Value.makeNull();
+        if (op == OP_MOD) {
+            int64 divisor = rhs.toInt();
+            if (divisor == 0) {
+                this.throwException("DivideByZeroException", "division by zero");
+                return makeInt(0);
+            }
+            return makeInt(lhs.toInt() % divisor);
+        }
+        if (op == OP_EQ) { return makeBool(lhs.equals(rhs)); }
+        if (op == OP_NEQ) { return makeBool(!lhs.equals(rhs)); }
+        if (op == OP_LT) { return makeBool(lhs.toInt() < rhs.toInt()); }
+        if (op == OP_LEQ) { return makeBool(lhs.toInt() <= rhs.toInt()); }
+        if (op == OP_GT) { return makeBool(lhs.toInt() > rhs.toInt()); }
+        if (op == OP_GEQ) { return makeBool(lhs.toInt() >= rhs.toInt()); }
+        if (op == OP_SHL) { return makeInt(lhs.toInt() << rhs.toInt()); }
+        if (op == OP_SHR) { return makeInt(lhs.toInt() >> rhs.toInt()); }
+        if (op == OP_BIT_AND) { return makeInt(lhs.toInt() & rhs.toInt()); }
+        if (op == OP_BIT_OR) { return makeInt(lhs.toInt() | rhs.toInt()); }
+        if (op == OP_BIT_XOR) { return makeInt(lhs.toInt() ^ rhs.toInt()); }
+        return makeNull();
     }
 
     private Value assignTo(Node target, Value val, Env env) {
@@ -331,23 +772,34 @@ class Evaluator {
         }
         if (target.kind == ND_MEMBER) {
             Value obj = this.evalExpr(target.child(0), env);
+            if (obj.tag == VAL_BUILTIN && obj.funcName == "console_module" && target.name == "title") {
+                obj.strVal = val.toString();
+                Value[] titleArgs = [val];
+                callBuiltin("console_set_title", titleArgs);
+                return val;
+            }
             if (obj.tag == VAL_OBJECT || obj.tag == VAL_CLASS_INST) {
-                obj.objVal[target.name] = val;
+                mirrorPut(obj, target.name, val);
                 return val;
             }
         }
         if (target.kind == ND_INDEX) {
             Value collection = this.evalExpr(target.child(0), env);
+            GC.pushRoot(collection);
             Value idx = this.evalExpr(target.child(1), env);
+            GC.popRoot();
             if (collection.tag == VAL_ARRAY) {
                 int i = idx.toInt().toInt();
                 if (i >= 0 && i < collection.arrVal.length) {
                     collection.arrVal[i] = val;
+                    GC.writeBarrier(collection, val);
+                } else {
+                    this.throwException("IndexOutOfRangeException", "index out of range");
                 }
                 return val;
             }
             if (collection.tag == VAL_DICT || collection.tag == VAL_OBJECT) {
-                collection.objVal[idx.strVal] = val;
+                mirrorPut(collection, idx.strVal, val);
                 return val;
             }
         }
@@ -357,10 +809,10 @@ class Evaluator {
     private Value evalUnary(Node node, Env env) {
         Value operand = this.evalExpr(node.child(0), env);
         if (node.op == UOP_NEG) {
-            if (operand.tag == VAL_FLOAT) { return Value.makeFloat(-operand.floatVal); }
-            return Value.makeInt(-operand.toInt());
+            if (operand.tag == VAL_FLOAT) { return makeFloat(-operand.floatVal); }
+            return makeInt(-operand.toInt());
         }
-        if (node.op == UOP_NOT) { return Value.makeBool(!operand.isTruthy()); }
+        if (node.op == UOP_NOT) { return makeBool(!operand.isTruthy()); }
         if (node.op == UOP_REF) { return operand; }
         if (node.op == UOP_DEREF) { return operand; }
         return operand;
@@ -368,87 +820,234 @@ class Evaluator {
 
     private Value evalCall(Node node, Env env) {
         Value[] args = [];
+        string[] refNames = [];
+        int rooted = 0;
         for (int i = 0; i < node.childCount(); i++) {
-            args.add(this.evalExpr(node.child(i), env));
+            Node argNode = node.child(i);
+            Value a = this.evalExpr(argNode, env);
+            args.add(a);
+            if (argNode.kind == ND_UNARY && argNode.op == UOP_REF && argNode.childCount() > 0 && argNode.child(0).kind == ND_IDENT) {
+                refNames.add(argNode.child(0).name);
+            } else {
+                refNames.add("");
+            }
+            GC.pushRoot(a);
+            rooted += 1;
         }
-        if (this.functions.contains(node.name)) {
-            return this.callNode(this.functions[node.name], args, env);
+        Value result = makeNull();
+        if (node.name == "super") {
+            result = this.evalSuper(args, env);
+        } else if (this.functions.contains(node.name)) {
+            result = this.callNodeWithRefs(this.functions[node.name], args, env, refNames);
+        } else {
+        // Split the null check from the field access: the self-hosted backend
+        // does not always short-circuit `x != null && x.tag == ...`, and the
+        // compiled interpreter would dereference a null value and crash.
+        Value globalFn = this.globals.get(node.name);
+        if (globalFn != null) {
+            if (globalFn.tag == VAL_BUILTIN) {
+                result = callBuiltin(globalFn.funcName, args);
+            }
+        } else if (this.classes.contains(node.name)) {
+            result = this.constructClass(node.name, args);
+        } else if (this.structs.contains(node.name)) {
+            result = this.constructStruct(node.name, args);
+        } else {
+            printline("Runtime error: undefined function '" + node.name + "'");
         }
-    Value? globalFn = this.globals.get(node.name);
-    if (globalFn != null && globalFn.tag == VAL_BUILTIN) {
-            return callBuiltin(globalFn.funcName, args);
         }
-        if (this.classes.contains(node.name)) {
-            return this.constructClass(node.name, args);
+        for (int i = 0; i < rooted; i++) {
+            GC.popRoot();
         }
-        if (this.structs.contains(node.name)) {
-            return this.constructStruct(node.name, args);
+        return result;
+    }
+
+    // super(args...) - call the parent class constructor with the current
+    // `this` instance. Only valid inside a class `construct` method.
+    private Value evalSuper(Value[] args, Env env) {
+        if (this.currentClassName == "") { return makeNull(); }
+        if (!this.classes.contains(this.currentClassName)) { return makeNull(); }
+        string parent = this.classes[this.currentClassName].parentClass;
+        if (parent == "") { return makeNull(); }
+        if (!this.classes.contains(parent)) { return makeNull(); }
+        Node parentDef = this.classes[parent];
+        for (int i = 0; i < parentDef.childCount(); i++) {
+            Node child = parentDef.child(i);
+            if (child.kind == ND_FUNC && child.name == "construct") {
+                Value thisVal = env.get("this");
+                if (thisVal != null) {
+                    Value[] methodArgs = [thisVal];
+                    foreach (Value a in args) { methodArgs.add(a); }
+                    string savedClass = this.currentClassName;
+                    this.currentClassName = parent;
+                    Value result = this.callNode(child, methodArgs, env);
+                    this.currentClassName = savedClass;
+                    return result;
+                }
+            }
         }
-        printline("Runtime error: undefined function '" + node.name + "'");
-        return Value.makeNull();
+        return makeNull();
     }
 
     private Value evalMethodCall(Node node, Env env) {
         Value receiver = this.evalExpr(node.child(0), env);
+        GC.pushRoot(receiver);
+        int rooted = 1;
         Value[] args = [];
         for (int i = 1; i < node.childCount(); i++) {
-            args.add(this.evalExpr(node.child(i), env));
+            Value a = this.evalExpr(node.child(i), env);
+            args.add(a);
+            GC.pushRoot(a);
+            rooted += 1;
         }
+        Value result = makeNull();
         if (receiver.tag == VAL_CLASS_INST) {
-            string methodKey = receiver.typeName + "." + node.name;
+            string methodKey = this.resolveMethodKey(receiver.typeName, node.name);
             if (this.functions.contains(methodKey)) {
                 Value[] methodArgs = [receiver];
                 foreach (Value a in args) { methodArgs.add(a); }
-                return this.callNode(this.functions[methodKey], methodArgs, env);
+                result = this.callNode(this.functions[methodKey], methodArgs, env);
+                for (int i = 0; i < rooted; i++) { GC.popRoot(); }
+                return result;
             }
         }
-        return this.callMethod(receiver, node.name, args);
+        if (receiver.tag == VAL_BUILTIN) {
+            string cn = receiver.funcName;
+            if (cn.startsWith("class_")) {
+                string className = cn.substr(6);
+                if (className == "Value") {
+                    Value factory = this.makeValueFactory(node.name, args);
+                    if (factory != null) {
+                        result = factory;
+                        for (int i = 0; i < rooted; i++) { GC.popRoot(); }
+                        return result;
+                    }
+                }
+                string staticKey = className + "." + node.name;
+                if (this.functions.contains(staticKey)) {
+                    result = this.callNode(this.functions[staticKey], args, env);
+                    for (int i = 0; i < rooted; i++) { GC.popRoot(); }
+                    return result;
+                }
+            }
+        }
+        result = this.callMethod(receiver, node.name, args);
+        for (int i = 0; i < rooted; i++) { GC.popRoot(); }
+        return result;
+    }
+
+    private Value makeValueFactory(string m, Value[] args) {
+        if (m != "makeInt" && m != "makeFloat" && m != "makeBool" && m != "makeString"
+            && m != "makeChar" && m != "makeArray" && m != "makeTuple" && m != "makeObject"
+            && m != "makeFunc" && m != "makeBuiltin" && m != "makeClassInst"
+            && m != "makeEnumVal" && m != "makeDict" && m != "makeRange" && m != "makeNull") {
+            return null;
+        }
+        dict<string, Value> fields = {};
+        Value[] fvals = [];
+        if (m == "makeInt") {
+            dictSet(fields, fvals, "tag", makeInt(1));
+            if (args.length > 0) { dictSet(fields, fvals, "intVal", makeInt(args[0].toInt())); }
+        }
+        elif (m == "makeFloat") {
+            dictSet(fields, fvals, "tag", makeInt(2));
+            if (args.length > 0) { dictSet(fields, fvals, "floatVal", makeFloat(args[0].toFloat())); }
+        }
+        elif (m == "makeBool") {
+            dictSet(fields, fvals, "tag", makeInt(3));
+            if (args.length > 0) { dictSet(fields, fvals, "boolVal", makeBool(args[0].isTruthy())); }
+        }
+        elif (m == "makeString") {
+            dictSet(fields, fvals, "tag", makeInt(4));
+            if (args.length > 0) { dictSet(fields, fvals, "strVal", makeString(args[0].strVal)); }
+        }
+        elif (m == "makeChar") {
+            dictSet(fields, fvals, "tag", makeInt(5));
+            if (args.length > 0) { dictSet(fields, fvals, "charVal", makeChar(args[0].charVal)); }
+        }
+        elif (m == "makeArray" || m == "makeTuple") {
+            dictSet(fields, fvals, "tag", makeInt(m == "makeArray" ? 6 : 7));
+            if (args.length > 0) { dictSet(fields, fvals, "arrVal", args[0]); }
+        }
+        elif (m == "makeObject" || m == "makeClassInst") {
+            dictSet(fields, fvals, "tag", makeInt(m == "makeObject" ? 8 : 12));
+            if (args.length > 0) { dictSet(fields, fvals, "objVal", args[0]); }
+            if (args.length > 1) { dictSet(fields, fvals, "typeName", makeString(args[1].strVal)); }
+        }
+        elif (m == "makeFunc" || m == "makeBuiltin") {
+            dictSet(fields, fvals, "tag", makeInt(m == "makeFunc" ? 9 : 10));
+            if (args.length > 0) { dictSet(fields, fvals, "funcName", makeString(args[0].strVal)); }
+        }
+        elif (m == "makeEnumVal") {
+            dictSet(fields, fvals, "tag", makeInt(13));
+            if (args.length > 0) { dictSet(fields, fvals, "typeName", makeString(args[0].strVal)); }
+            if (args.length > 1) { dictSet(fields, fvals, "strVal", makeString(args[1].strVal)); }
+        }
+        elif (m == "makeDict") {
+            dictSet(fields, fvals, "tag", makeInt(15));
+            if (args.length > 0) { dictSet(fields, fvals, "objVal", args[0]); }
+        }
+        elif (m == "makeRange") {
+            dictSet(fields, fvals, "tag", makeInt(14));
+            if (args.length > 0) { dictSet(fields, fvals, "intVal", makeInt(args[0].toInt())); }
+            if (args.length > 1) { dictSet(fields, fvals, "floatVal", makeFloat(args[1].toFloat())); }
+        }
+        elif (m == "makeNull") {
+            dictSet(fields, fvals, "tag", makeInt(0));
+        }
+        Value inst = makeClassInst(fields, "Value");
+        setObjVals(inst, fvals);
+        return inst;
     }
 
     private Value evalIndex(Node node, Env env) {
         Value collection = this.evalExpr(node.child(0), env);
+        GC.pushRoot(collection);
         Value idx = this.evalExpr(node.child(1), env);
+        GC.popRoot();
         if (collection.tag == VAL_ARRAY) {
             int i = idx.toInt().toInt();
             if (i >= 0 && i < collection.arrVal.length) {
                 return collection.arrVal[i];
             }
-            printline("Runtime error: array index out of bounds: " + i.toString());
-            return Value.makeNull();
+            this.throwException("IndexOutOfRangeException", "index out of range");
+            return makeNull();
         }
         if (collection.tag == VAL_STRING) {
             int i = idx.toInt().toInt();
             if (i >= 0 && i < collection.strVal.length) {
-                return Value.makeChar(collection.strVal[i]);
+                return makeChar(collection.strVal[i]);
             }
-            return Value.makeNull();
+            return makeNull();
         }
         if (collection.tag == VAL_DICT || collection.tag == VAL_OBJECT || collection.tag == VAL_CLASS_INST) {
             if (collection.objVal.contains(idx.strVal)) {
                 return collection.objVal[idx.strVal];
             }
-            return Value.makeNull();
+            return makeNull();
         }
         if (collection.tag == VAL_TUPLE) {
             int i = idx.toInt().toInt();
             if (i >= 0 && i < collection.arrVal.length) {
                 return collection.arrVal[i];
             }
-            return Value.makeNull();
+            return makeNull();
         }
-        return Value.makeNull();
+        return makeNull();
     }
 
     private Value evalSlice(Node node, Env env) {
         Value collection = this.evalExpr(node.child(0), env);
+        GC.pushRoot(collection);
         int64 start = this.evalExpr(node.child(1), env).toInt();
         int64 end = this.evalExpr(node.child(2), env).toInt();
+        GC.popRoot();
         if (collection.tag == VAL_STRING) {
             int s = start.toInt();
             int e = end.toInt();
             if (s < 0) { s = 0; }
             if (e > collection.strVal.length) { e = collection.strVal.length; }
-            return Value.makeString(collection.strVal[s..e]);
+            return makeString(collection.strVal[s..e]);
         }
         if (collection.tag == VAL_ARRAY) {
             int s = start.toInt();
@@ -459,9 +1058,9 @@ class Evaluator {
             for (int i = s; i < e; i += 1) {
                 result.add(collection.arrVal[i]);
             }
-            return Value.makeArray(result);
+            return makeArray(result);
         }
-        return Value.makeNull();
+        return makeNull();
     }
 
     private Value evalMember(Node node, Env env) {
@@ -473,25 +1072,39 @@ class Evaluator {
                 return obj.objVal[member];
             }
             if (obj.tag == VAL_CLASS_INST && this.classes.contains(obj.typeName)) {
-                Node classDef = this.classes[obj.typeName];
-                for (int i = 0; i < classDef.childCount(); i++) {
-                    Node child = classDef.child(i);
-                    if (child.kind == ND_FUNC && child.name == member) {
-                        return Value.makeFunc(obj.typeName + "." + member);
-                    }
-                }
+                string key = this.resolveMethodKey(obj.typeName, member);
+                if (key.length > 0) { return makeFunc(key); }
             }
         }
         if (obj.tag == VAL_ENUM_VAL) {
             if (member == obj.strVal) { return obj; }
-            return Value.makeEnumVal(obj.typeName, member);
+            return makeEnumVal(obj.typeName, member);
         }
         if (obj.tag == VAL_BUILTIN) {
+            if (obj.funcName == "console_module") {
+                if (member == "Black") { return makeInt(0); }
+                if (member == "DarkBlue") { return makeInt(1); }
+                if (member == "DarkGreen") { return makeInt(2); }
+                if (member == "DarkCyan") { return makeInt(3); }
+                if (member == "DarkRed") { return makeInt(4); }
+                if (member == "DarkMagenta") { return makeInt(5); }
+                if (member == "DarkYellow") { return makeInt(6); }
+                if (member == "Gray") { return makeInt(7); }
+                if (member == "DarkGray") { return makeInt(8); }
+                if (member == "Blue") { return makeInt(9); }
+                if (member == "Green" || member == "BrightGreen") { return makeInt(10); }
+                if (member == "Cyan") { return makeInt(11); }
+                if (member == "Red" || member == "BrightRed") { return makeInt(12); }
+                if (member == "Magenta") { return makeInt(13); }
+                if (member == "Yellow") { return makeInt(14); }
+                if (member == "White") { return makeInt(15); }
+                if (member == "title") { return makeString(obj.strVal); }
+            }
             if (obj.funcName == "time_module") {
-                if (member == "now") { return Value.makeBuiltin("now"); }
+                if (member == "now") { return makeBuiltin("now"); }
             }
             if (this.enums.contains(obj.funcName)) {
-                return Value.makeEnumVal(obj.funcName, member);
+                return makeEnumVal(obj.funcName, member);
             }
         }
         return BuiltinMethods.getProperty(obj, member);
@@ -499,105 +1112,226 @@ class Evaluator {
 
     private Value evalNew(Node node, Env env) {
         Value[] args = [];
+        int rooted = 0;
         for (int i = 0; i < node.childCount(); i++) {
-            args.add(this.evalExpr(node.child(i), env));
+            Value a = this.evalExpr(node.child(i), env);
+            args.add(a);
+            GC.pushRoot(a);
+            rooted += 1;
         }
-        if (this.classes.contains(node.name)) {
-            return this.constructClass(node.name, args);
+        Value result = makeNull();
+        if (node.name == "byte" && node.childCount() == 1) {
+            int count = this.evalExpr(node.child(0), env).toInt().toInt();
+            if (count < 0) {
+                printline("Runtime error: byte array size cannot be negative");
+                exit(1);
+            }
+            Value[] bytes = [];
+            for (int i = 0; i < count; i += 1) {
+                bytes.add(makeByte(0));
+            }
+            result = makeArray(bytes);
+        } elif (this.classes.contains(node.name)) {
+            result = this.constructClass(node.name, args);
+        } else if (this.structs.contains(node.name)) {
+            result = this.constructStruct(node.name, args);
+        } else if (node.name == "kvp") {
+            result = makeDict({});
+        } else {
+            printline("Runtime error: unknown type '" + node.name + "'");
         }
-        if (this.structs.contains(node.name)) {
-            return this.constructStruct(node.name, args);
+        for (int i = 0; i < rooted; i++) {
+            GC.popRoot();
         }
-        if (node.name == "kvp") {
-            return Value.makeDict({});
-        }
-        printline("Runtime error: unknown type '" + node.name + "'");
-        return Value.makeNull();
+        return result;
     }
 
     private Value constructClass(string name, Value[] args) {
         dict<string, Value> fields = {};
-        Value inst = Value.makeClassInst(fields, name);
-        if (this.classes.contains(name)) {
-            Node classDef = this.classes[name];
+        Value inst = makeClassInst(fields, name);
+        GC.pushRoot(inst);
+        int rooted = 1;
+        for (int i = 0; i < args.length; i++) {
+            GC.pushRoot(args[i]);
+            rooted += 1;
+        }
+        // Collect the inheritance chain leaf -> root (`class Foo : Parent`).
+        string[] chain = [];
+        string cur = name;
+        int guard = 0;
+        while (this.classes.contains(cur) && guard < 64) {
+            chain.add(cur);
+            cur = this.classes[cur].parentClass;
+            guard += 1;
+        }
+        // Initialize fields root -> leaf so inherited fields exist before the
+        // constructor runs. A subclass field that redeclares a parent field
+        // simply overwrites it.
+        for (int ci = chain.length - 1; ci >= 0; ci--) {
+            Node classDef = this.classes[chain[ci]];
             for (int i = 0; i < classDef.childCount(); i++) {
                 Node child = classDef.child(i);
                 if (child.kind == ND_VAR_DECL) {
                     if (child.childCount() > 0) {
-                        fields[child.name] = this.evalExpr(child.child(0), this.globals);
+                        Value fv = this.evalExpr(child.child(0), this.globals);
+                        mirrorPut(inst, child.name, fv);
                     } else {
-                        fields[child.name] = Value.makeNull();
+                        Value fv = makeNull();
+                        mirrorPut(inst, child.name, fv);
                     }
                 }
             }
+        }
+        // Call the nearest constructor walking leaf -> root. A subclass with
+        // no `construct` inherits the nearest ancestor's constructor, which
+        // writes inherited fields on the same instance (`this`).
+        for (int ci = 0; ci < chain.length; ci++) {
+            Node classDef = this.classes[chain[ci]];
+            bool called = false;
             for (int i = 0; i < classDef.childCount(); i++) {
                 Node child = classDef.child(i);
                 if (child.kind == ND_FUNC && child.name == "construct") {
                     Value[] methodArgs = [inst];
                     foreach (Value a in args) { methodArgs.add(a); }
+                    string savedClass = this.currentClassName;
+                    this.currentClassName = chain[ci];
                     this.callNode(child, methodArgs, this.globals);
+                    this.currentClassName = savedClass;
+                    called = true;
                     break;
                 }
             }
+            if (called) { break; }
+        }
+        for (int i = 0; i < rooted; i++) {
+            GC.popRoot();
         }
         return inst;
     }
 
+    // Raise a standard-library exception (embedded in exception_std.sr).
+    // Builtins call this instead of manipulating hasThrown directly so every
+    // auto-thrown error carries the standard message/line/column/reason props.
+    public void throwException(string className, string message) {
+        Value[] ctorArgs = [];
+        ctorArgs.push(makeString(message));
+        Value exc = this.constructClass(className, ctorArgs);
+        this.thrownValue = exc;
+        this.hasThrown = true;
+    }
+
     private Value constructStruct(string name, Value[] args) {
         dict<string, Value> fields = {};
+        Value[] fvals = [];
         if (this.structs.contains(name)) {
             Node structDef = this.structs[name];
             for (int i = 0; i < structDef.childCount() && i < args.length; i++) {
-                fields[structDef.child(i).name] = args[i];
+                dictSet(fields, fvals, structDef.child(i).name, args[i]);
             }
         }
-        return Value.makeObject(fields, name);
+        Value inst = makeObject(fields, name);
+        setObjVals(inst, fvals);
+        return inst;
+    }
+
+    // Resolve a method key ("Type.method") walking the class inheritance
+    // chain leaf -> root, so subclasses inherit and can override parent
+    // methods. Returns "" when no class in the chain defines the method.
+    private string resolveMethodKey(string typeName, string method) {
+        string cur = typeName;
+        int guard = 0;
+        while (this.classes.contains(cur) && guard < 64) {
+            string key = cur + "." + method;
+            if (this.functions.contains(key)) { return key; }
+            cur = this.classes[cur].parentClass;
+            guard += 1;
+        }
+        return "";
     }
 
     private Value evalArrayLit(Node node, Env env) {
         Value[] items = [];
+        int rooted = 0;
         for (int i = 0; i < node.childCount(); i++) {
             Node child = node.child(i);
             if (child.name == "spread") {
                 Value spread = this.evalExpr(child, env);
                 if (spread.tag == VAL_ARRAY) {
-                    foreach (Value v in spread.arrVal) { items.add(v); }
+                    foreach (Value v in spread.arrVal) {
+                        items.add(v);
+                        GC.pushRoot(v);
+                        rooted += 1;
+                    }
                 }
             } else {
-                items.add(this.evalExpr(child, env));
+                Value v = this.evalExpr(child, env);
+                items.add(v);
+                GC.pushRoot(v);
+                rooted += 1;
             }
         }
-        return Value.makeArray(items);
+        Value result = makeArray(items);
+        for (int i = 0; i < rooted; i++) {
+            GC.popRoot();
+        }
+        return result;
     }
 
     private Value evalDictLit(Node node, Env env) {
         dict<string, Value> entries = {};
+        Value[] evals = [];
+        int rooted = 0;
         for (int i = 0; i < node.childCount(); i++) {
             Node pair = node.child(i);
             if (pair.childCount() >= 2) {
                 Value key = this.evalExpr(pair.child(0), env);
                 Value val = this.evalExpr(pair.child(1), env);
-                entries[key.toString()] = val;
+                dictSet(entries, evals, key.toString(), val);
+                GC.pushRoot(val);
+                rooted += 1;
             }
         }
-        return Value.makeDict(entries);
+        Value result = makeDict(entries);
+        setObjVals(result, evals);
+        for (int i = 0; i < rooted; i++) {
+            GC.popRoot();
+        }
+        return result;
     }
 
     private Value evalTupleLit(Node node, Env env) {
         Value[] items = [];
+        int rooted = 0;
         for (int i = 0; i < node.childCount(); i++) {
-            items.add(this.evalExpr(node.child(i), env));
+            Value v = this.evalExpr(node.child(i), env);
+            items.add(v);
+            GC.pushRoot(v);
+            rooted += 1;
         }
-        return Value.makeTuple(items);
+        Value result = makeTuple(items);
+        for (int i = 0; i < rooted; i++) {
+            GC.popRoot();
+        }
+        return result;
     }
 
     private Value evalStructLit(Node node, Env env) {
         dict<string, Value> fields = {};
+        Value[] fvals = [];
+        int rooted = 0;
         for (int i = 0; i < node.childCount(); i++) {
             Node field = node.child(i);
-            fields[field.name] = this.evalExpr(field.child(0), env);
+            Value v = this.evalExpr(field.child(0), env);
+            dictSet(fields, fvals, field.name, v);
+            GC.pushRoot(v);
+            rooted += 1;
         }
-        return Value.makeObject(fields, "");
+        Value result = makeObject(fields, "");
+        setObjVals(result, fvals);
+        for (int i = 0; i < rooted; i++) {
+            GC.popRoot();
+        }
+        return result;
     }
 
     private Value evalInterp(Node node, Env env) {
@@ -611,20 +1345,24 @@ class Evaluator {
                 result += val.toString();
             }
         }
-        return Value.makeString(result);
+        return makeString(result);
     }
 
     private Value evalMatch(Node node, Env env) {
         Value target = this.evalExpr(node.child(0), env);
+        GC.pushRoot(target);
+        Value result = makeNull();
         for (int i = 1; i < node.childCount(); i++) {
             Node arm = node.child(i);
             Node pattern = arm.child(0);
             Node body = arm.child(1);
             if (this.matchPattern(pattern, target, env)) {
-                return this.evalExpr(body, env);
+                result = this.evalExpr(body, env);
+                break;
             }
         }
-        return Value.makeNull();
+        GC.popRoot();
+        return result;
     }
 
     private bool matchPattern(Node pattern, Value target, Env env) {
@@ -659,15 +1397,32 @@ class Evaluator {
     }
 
     public void execBlock(Node block, Env env) {
+        file.writeBytes("TX0.txt", [49]);
         Env blockEnv = env.push();
         for (int i = 0; i < block.childCount(); i++) {
-            if (this.hasReturned) { return; }
+            if (this.hasReturned || this.hasBroken || this.hasContinued || this.hasThrown) { return; }
             this.execStmt(block.child(i), blockEnv);
         }
     }
 
+    public void execBlockInto(Node block, Env env) {
+        for (int i = 0; i < block.childCount(); i++) {
+            if (this.hasReturned || this.hasBroken || this.hasContinued || this.hasThrown) { return; }
+            this.execStmt(block.child(i), env);
+        }
+    }
+
     public void execStmt(Node stmt, Env env) {
-        if (this.hasReturned) { return; }
+        if (this.hasReturned || this.hasBroken || this.hasContinued || this.hasThrown) { return; }
+
+        if (stmt.kind == ND_BREAK) {
+            this.hasBroken = true;
+            return;
+        }
+        if (stmt.kind == ND_CONTINUE) {
+            this.hasContinued = true;
+            return;
+        }
 
         if (stmt.kind == ND_EXPR_STMT) {
             if (stmt.childCount() > 0) {
@@ -679,9 +1434,46 @@ class Evaluator {
         if (stmt.kind == ND_VAR_DECL) {
             if (stmt.childCount() > 0) {
                 Value val = this.evalExpr(stmt.child(0), env);
+                if (stmt.typeHint == "byte") {
+                    val = checkedByte(val);
+                } elif (stmt.typeHint == "byte[]") {
+                    val = checkedByteArray(val);
+                }
                 env.define(stmt.name, val);
             } else {
-                env.define(stmt.name, Value.makeNull());
+                if (stmt.typeHint == "byte") { env.define(stmt.name, makeByte(0)); }
+                else { env.define(stmt.name, makeNull()); }
+            }
+            return;
+        }
+
+        if (stmt.kind == ND_LIVE_DECL || stmt.kind == ND_ONCE_DECL) {
+            if (stmt.childCount() > 0) {
+                Value val = this.evalExpr(stmt.child(0), env);
+                if (stmt.typeHint == "byte") {
+                    val = checkedByte(val);
+                } elif (stmt.typeHint == "byte[]") {
+                    val = checkedByteArray(val);
+                }
+                env.define(stmt.name, val);
+            } else {
+                if (stmt.typeHint == "byte") { env.define(stmt.name, makeByte(0)); }
+                else { env.define(stmt.name, makeNull()); }
+            }
+            return;
+        }
+
+        if (stmt.kind == ND_ALIAS_DECL) {
+            if (stmt.childCount() > 0) {
+                if (stmt.child(0).kind == ND_IDENT) {
+                    env.setAlias(stmt.name, stmt.child(0).name);
+                    env.define(stmt.name, makeNull());
+                } else {
+                    Value val = this.evalExpr(stmt.child(0), env);
+                    env.define(stmt.name, val);
+                }
+            } else {
+                env.define(stmt.name, makeNull());
             }
             return;
         }
@@ -690,7 +1482,7 @@ class Evaluator {
             if (stmt.childCount() > 0) {
                 this.returnValue = this.evalExpr(stmt.child(0), env);
             } else {
-                this.returnValue = Value.makeNull();
+                this.returnValue = makeNull();
             }
             this.hasReturned = true;
             return;
@@ -711,22 +1503,30 @@ class Evaluator {
         }
 
         if (stmt.kind == ND_WHILE) {
+            Env loopEnv = env.push();
             while (true) {
-                if (this.hasReturned) { break; }
+                if (this.hasReturned || this.hasThrown) { break; }
                 Value cond = this.evalExpr(stmt.child(0), env);
                 if (!cond.isTruthy()) { break; }
-                this.execBlock(stmt.child(1), env);
+                this.execBlockInto(stmt.child(1), loopEnv);
+                if (this.hasBroken) { this.hasBroken = false; break; }
+                if (this.hasContinued) { this.hasContinued = false; }
+                this.maybeGC(loopEnv);
             }
             return;
         }
 
         if (stmt.kind == ND_FOR_C) {
             this.execStmt(stmt.child(0), env);
+            Env loopEnv = env.push();
             while (true) {
-                if (this.hasReturned) { break; }
+                if (this.hasReturned || this.hasThrown) { break; }
                 Value cond = this.evalExpr(stmt.child(1), env);
                 if (!cond.isTruthy()) { break; }
-                this.execBlock(stmt.child(3), env);
+                this.execBlockInto(stmt.child(3), loopEnv);
+                if (this.hasBroken) { this.hasBroken = false; break; }
+                if (this.hasContinued) { this.hasContinued = false; continue; }
+                this.maybeGC(loopEnv);
                 this.evalExpr(stmt.child(2), env);
             }
             return;
@@ -736,11 +1536,14 @@ class Evaluator {
             int64 start = this.evalExpr(stmt.child(0), env).toInt();
             int64 end = this.evalExpr(stmt.child(1), env).toInt();
             Env forEnv = env.push();
-            forEnv.define(stmt.name, Value.makeInt(start));
+            forEnv.define(stmt.name, makeInt(start));
             for (int64 i = start; i < end; i += 1) {
-                if (this.hasReturned) { break; }
-                forEnv.set(stmt.name, Value.makeInt(i));
-                this.execBlock(stmt.child(2), forEnv);
+                if (this.hasReturned || this.hasThrown) { break; }
+                forEnv.set(stmt.name, makeInt(i));
+                this.execBlockInto(stmt.child(2), forEnv);
+                if (this.hasBroken) { this.hasBroken = false; break; }
+                if (this.hasContinued) { this.hasContinued = false; }
+                this.maybeGC(forEnv);
             }
             return;
         }
@@ -748,18 +1551,24 @@ class Evaluator {
         if (stmt.kind == ND_FOREACH) {
             Value collection = this.evalExpr(stmt.child(0), env);
             if (collection.tag == VAL_ARRAY) {
+                GC.pushRoot(collection);
                 Env forEnv = env.push();
                 for (int i = 0; i < collection.arrVal.length; i++) {
-                    if (this.hasReturned) { break; }
+                    if (this.hasReturned || this.hasThrown) { break; }
                     forEnv.define(stmt.name, collection.arrVal[i]);
-                    this.execBlock(stmt.child(1), forEnv);
+                    this.execBlockInto(stmt.child(1), forEnv);
+                    if (this.hasBroken) { this.hasBroken = false; break; }
+                    if (this.hasContinued) { this.hasContinued = false; }
+                    this.maybeGC(forEnv);
                 }
+                GC.popRoot();
             }
             return;
         }
 
         if (stmt.kind == ND_MATCH_STMT) {
             Value target = this.evalExpr(stmt.child(0), env);
+            GC.pushRoot(target);
             for (int i = 1; i < stmt.childCount(); i++) {
                 Node arm = stmt.child(i);
                 Node pattern = arm.child(0);
@@ -769,11 +1578,13 @@ class Evaluator {
                     break;
                 }
             }
+            GC.popRoot();
             return;
         }
 
         if (stmt.kind == ND_SWITCH) {
             Value target = this.evalExpr(stmt.child(0), env);
+            GC.pushRoot(target);
             for (int i = 1; i < stmt.childCount(); i++) {
                 Node arm = stmt.child(i);
                 Node caseExpr = arm.child(0);
@@ -783,11 +1594,55 @@ class Evaluator {
                     break;
                 }
             }
+            GC.popRoot();
             return;
         }
 
         if (stmt.kind == ND_TRY_CATCH) {
+            bool hasCatch = stmt.name != "";
+            bool hasFinally = stmt.hasFinally;
             this.execBlock(stmt.child(0), env);
+
+            bool pendingReturn = this.hasReturned;
+            Value pendingReturnVal = this.returnValue;
+            bool pendingThrow = this.hasThrown;
+            Value pendingThrowVal = this.thrownValue;
+
+            if (pendingThrow && hasCatch) {
+                this.hasThrown = false;
+                this.thrownValue = null;
+                Value thrown = makeNull();
+                if (pendingThrowVal != null) {
+                    thrown = pendingThrowVal;
+                }
+                Env catchEnv = env.push();
+                catchEnv.define(stmt.name, thrown);
+                this.execBlock(stmt.child(1), catchEnv);
+                pendingReturn = this.hasReturned;
+                pendingReturnVal = this.returnValue;
+                pendingThrow = this.hasThrown;
+                pendingThrowVal = this.thrownValue;
+            }
+
+            if (hasFinally && !this.hasBroken && !this.hasContinued) {
+                this.hasReturned = false;
+                this.returnValue = null;
+                this.hasThrown = false;
+                this.thrownValue = null;
+                this.execBlock(stmt.child(2), env);
+                if (!this.hasReturned && !this.hasThrown && !this.hasBroken && !this.hasContinued) {
+                    this.hasReturned = pendingReturn;
+                    this.returnValue = pendingReturnVal;
+                    this.hasThrown = pendingThrow;
+                    this.thrownValue = pendingThrowVal;
+                }
+            }
+            return;
+        }
+
+        if (stmt.kind == ND_THROW) {
+            this.thrownValue = this.evalExpr(stmt.child(0), env);
+            this.hasThrown = true;
             return;
         }
 
@@ -796,4 +1651,60 @@ class Evaluator {
             return;
         }
     }
+}
+
+// Byte-conversion guards used by byte / byte[] variable declarations. Values
+// outside the 0..255 range raise OverflowException (mirrors the compiled
+// checked-byte conversion in the native backend).
+Value checkedByte(Value value) {
+    if (value.tag == VAL_INT || value.tag == VAL_BYTE) {
+        if (value.intVal < 0 || value.intVal > 255) {
+            throw new OverflowException("byte value out of range: " + value.intVal);
+        }
+        return makeByte(value.intVal);
+    }
+    throw new ValueException("byte conversion requires an integer value");
+}
+
+Value checkedByteArray(Value value) {
+    if (value.tag == VAL_ARRAY) {
+        for (int i = 0; i < value.arrVal.length; i++) {
+            Value el = value.arrVal[i];
+            if (el.tag == VAL_INT || el.tag == VAL_BYTE) {
+                if (el.intVal < 0 || el.intVal > 255) {
+                    throw new OverflowException("byte[] element out of range: " + el.intVal);
+                }
+            }
+        }
+        return value;
+    }
+    throw new ValueException("byte[] conversion requires an array value");
+}
+
+// Byte-conversion guards used by byte / byte[] variable declarations. Values
+// outside the 0..255 range raise OverflowException (mirrors the compiled
+// checked-byte conversion in the native backend).
+Value checkedByte(Value value) {
+    if (value.tag == VAL_INT || value.tag == VAL_BYTE) {
+        if (value.intVal < 0 || value.intVal > 255) {
+            throw new OverflowException("byte value out of range: " + value.intVal);
+        }
+        return makeByte(value.intVal);
+    }
+    throw new ValueException("byte conversion requires an integer value");
+}
+
+Value checkedByteArray(Value value) {
+    if (value.tag == VAL_ARRAY) {
+        for (int i = 0; i < value.arrVal.length; i++) {
+            Value el = value.arrVal[i];
+            if (el.tag == VAL_INT || el.tag == VAL_BYTE) {
+                if (el.intVal < 0 || el.intVal > 255) {
+                    throw new OverflowException("byte[] element out of range: " + el.intVal);
+                }
+            }
+        }
+        return value;
+    }
+    throw new ValueException("byte[] conversion requires an array value");
 }

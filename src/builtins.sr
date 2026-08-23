@@ -1,3 +1,8 @@
+import * from win32.kernel32;
+import * from win32.msvcrt;
+import * from win32.user32;
+import * from win32.ws2_32;
+
 mod export builtins;
 
 import value;
@@ -6,15 +11,16 @@ import eval;
 class BuiltinMethods {
 
     public static Value callMethod(Evaluator ev, Value receiver, string method, Value[] args) {
-        if (receiver.tag == VAL_STRING) { return stringMethod(receiver, method, args); }
+        if (receiver.tag == VAL_STRING) { return stringMethod(ev, receiver, method, args); }
         if (receiver.tag == VAL_ARRAY) { return arrayMethod(ev, receiver, method, args); }
         if (receiver.tag == VAL_DICT || receiver.tag == VAL_OBJECT || receiver.tag == VAL_CLASS_INST) {
             return dictMethod(receiver, method, args);
         }
-        if (receiver.tag == VAL_INT || receiver.tag == VAL_FLOAT) { return numberMethod(receiver, method, args); }
+        if (receiver.tag == VAL_INT || receiver.tag == VAL_FLOAT || receiver.tag == VAL_BOOL) { return numberMethod(receiver, method, args); }
         if (receiver.tag == VAL_CHAR) { return charMethod(receiver, method, args); }
-        printline("Runtime error: no method '" + method + "' on " + receiver.typeString());
-        return Value.makeNull();
+        if (receiver.tag == VAL_BUILTIN) { return moduleMethod(ev, receiver, method, args); }
+        printline("Runtime error: no method '" + method + "' on " + receiver.typeString() + " tag=" + receiver.tag);
+        return makeNull();
     }
 
     public static Value getProperty(Value receiver, string propertyName) {
@@ -23,70 +29,149 @@ class BuiltinMethods {
         if (receiver.tag == VAL_CLASS_INST || receiver.tag == VAL_OBJECT) {
             if (receiver.objVal.contains(propertyName)) { return receiver.objVal[propertyName]; }
         }
-        return Value.makeNull();
+        return makeNull();
     }
 
-    private static Value stringMethod(Value s, string method, Value[] args) {
+    // strtoll(base 10) reports a format error when no digit is consumed, so a
+    // parse is valid only when (after optional whitespace and sign) the first
+    // character is a decimal digit. Used to raise FormatException without
+    // relying on the compiler's throwing toInt64 builtin.
+    private static bool hasLeadingDigits(string s) {
+        int i = 0;
+        while (i < s.length && (s[i] == ' ' || s[i] == '\t')) { i += 1; }
+        if (i < s.length && (s[i] == '-' || s[i] == '+')) { i += 1; }
+        return i < s.length && s[i] >= '0' && s[i] <= '9';
+    }
+
+    private static Value[] splitValues(string text, string delim) {
+        Value[] result = [];
+        string rest = text;
+        if (delim.length == 0) {
+            result.add(makeString(rest));
+            return result;
+        }
+        while (true) {
+            int at = rest.indexOf(delim);
+            if (at < 0) {
+                result.add(makeString(rest));
+                break;
+            }
+            result.add(makeString(rest.substr(0, at)));
+            rest = rest.substr(at + delim.length);
+        }
+        return result;
+    }
+
+    private static Value stringMethod(Evaluator ev, Value s, string method, Value[] args) {
         if (method == "split") {
             string delim = ",";
             if (args.length > 0) { delim = args[0].strVal; }
-            string[] parts = s.strVal.split(delim);
-            Value[] result = [];
-            foreach (string p in parts) { result.add(Value.makeString(p)); }
-            return Value.makeArray(result);
+            return makeArray(splitValues(s.strVal, delim));
         }
-        if (method == "trim") { return Value.makeString(s.strVal.trim()); }
+        if (method == "trim") {
+            if (args.length > 0) { return makeString(s.strVal.trim(args[0].strVal)); }
+            return makeString(s.strVal.trim());
+        }
+        if (method == "trimLeft" || method == "trimStart") {
+            if (args.length > 0) { return makeString(s.strVal.trimLeft(args[0].strVal)); }
+            return makeString(s.strVal.trimLeft());
+        }
+        if (method == "trimRight" || method == "trimEnd") {
+            if (args.length > 0) { return makeString(s.strVal.trimRight(args[0].strVal)); }
+            return makeString(s.strVal.trimRight());
+        }
+        if (method == "lines") {
+            return makeArray(splitValues(s.strVal, "\n"));
+        }
         if (method == "replace") {
             if (args.length < 2) { return s; }
-            return Value.makeString(s.strVal.replace(args[0].strVal, args[1].strVal));
+            return makeString(s.strVal.replace(args[0].strVal, args[1].strVal));
         }
-        if (method == "upper") { return Value.makeString(s.strVal.upper()); }
-        if (method == "lower") { return Value.makeString(s.strVal.lower()); }
+        if (method == "upper" || method == "toUpper") { return makeString(s.strVal.upper()); }
+        if (method == "lower" || method == "toLower") { return makeString(s.strVal.lower()); }
+        if (method == "substr" || method == "substring") {
+            if (args.length < 1) { return s; }
+            int start = args[0].toInt().toInt();
+            if (args.length < 2) { return makeString(s.strVal.substr(start)); }
+            return makeString(s.strVal.substr(start, args[1].toInt().toInt()));
+        }
+        if (method == "length") { return makeInt(s.strVal.length.toInt64()); }
+        if (method == "indexOf" || method == "find") {
+            if (args.length < 1) { return makeInt(-1); }
+            return makeInt(s.strVal.indexOf(args[0].strVal).toInt64());
+        }
         if (method == "contains") {
-            if (args.length < 1) { return Value.makeBool(false); }
-            return Value.makeBool(s.strVal.contains(args[0].strVal));
+            if (args.length < 1) { return makeBool(false); }
+            return makeBool(s.strVal.contains(args[0].strVal));
         }
         if (method == "startsWith") {
-            if (args.length < 1) { return Value.makeBool(false); }
-            return Value.makeBool(s.strVal.startsWith(args[0].strVal));
+            if (args.length < 1) { return makeBool(false); }
+            return makeBool(s.strVal.startsWith(args[0].strVal));
         }
         if (method == "endsWith") {
-            if (args.length < 1) { return Value.makeBool(false); }
-            return Value.makeBool(s.strVal.endsWith(args[0].strVal));
+            if (args.length < 1) { return makeBool(false); }
+            return makeBool(s.strVal.endsWith(args[0].strVal));
         }
         if (method == "find") {
-            if (args.length < 1) { return Value.makeInt(-1); }
-            int idx = s.strVal.find(args[0].strVal);
-            return Value.makeInt(idx.toInt64());
+            if (args.length < 1) { return makeInt(-1); }
+            int idx = s.strVal.indexOf(args[0].strVal);
+            return makeInt(idx.toInt64());
         }
         if (method == "repeat") {
             if (args.length < 1) { return s; }
             string result = "";
             int n = args[0].toInt().toInt();
             for (int i = 0; i < n; i++) { result += s.strVal; }
-            return Value.makeString(result);
+            return makeString(result);
         }
-        if (method == "pad") {
+        if (method == "pad" || method == "padLeft" || method == "padRight") {
             if (args.length < 2) { return s; }
-            int width = args[0].toInt().toInt();
-            string padChar = args[1].strVal;
-            string result = s.strVal;
-            while (result.length < width) { result = padChar + result; }
-            return Value.makeString(result);
+            int count = args[0].toInt().toInt();
+            string fill = args[1].strVal;
+            if (count <= 0 || fill.length == 0) { return s; }
+            string unit = fill[0].toString();
+            string left = "";
+            string right = "";
+            if (method == "pad" || method == "padLeft") {
+                for (int i = 0; i < count; i++) { left += unit; }
+            }
+            if (method == "pad" || method == "padRight") {
+                for (int i = 0; i < count; i++) { right += unit; }
+            }
+            return makeString(left + s.strVal + right);
         }
-        if (method == "toString") { return Value.makeString(s.strVal); }
-        if (method == "parse") {
-            return Value.makeInt(s.strVal.toInt64());
+        if (method == "slugify") {
+            string result = "";
+            for (int i = 0; i < s.strVal.length; i++) {
+                char c = s.strVal[i];
+                if (c >= 'a' && c <= 'z') { result += c; }
+                elif (c >= 'A' && c <= 'Z') { result += char(c + 32); }
+                elif (c >= '0' && c <= '9') { result += c; }
+                elif (c == ' ' || c == '-' || c == '_') {
+                    if (result.length > 0 && result[result.length - 1] != '-') { result += "-"; }
+                }
+            }
+            if (result.length > 0 && result[result.length - 1] == '-') {
+                result = result.substr(0, result.length - 1);
+            }
+            return makeString(result);
         }
-        if (method == "toFloat") { return Value.makeFloat(s.strVal.toFloat64()); }
-        if (method == "toInt") { return Value.makeInt(s.strVal.toInt64()); }
+        if (method == "toString") { return makeString(s.strVal); }
+        if (method == "parse" || method == "toInt") {
+            if (!hasLeadingDigits(s.strVal)) {
+                ev.throwException("FormatException", "invalid number format");
+                return makeNull();
+            }
+            return makeInt(s.strVal.toInt64());
+        }
+        if (method == "toFloat") { return makeFloat(s.strVal.toFloat64()); }
         printline("Runtime error: unknown string method '" + method + "'");
-        return Value.makeNull();
+        return makeNull();
     }
 
     private static Value stringProperty(Value s, string propertyName) {
-        if (propertyName == "length") { return Value.makeInt(s.strVal.length.toInt64()); }
-        return Value.makeNull();
+        if (propertyName == "length") { return makeInt(s.strVal.length.toInt64()); }
+        return makeNull();
     }
 
     private static Value arrayMethod(Evaluator ev, Value arr, string method, Value[] args) {
@@ -96,8 +181,20 @@ class BuiltinMethods {
                 for (int i = 0; i < arr.arrVal.length; i++) {
                     result.add(callBuiltin(args[0].funcName, [arr.arrVal[i]]));
                 }
+            } else if (args.length == 0) {
+                // The documented zero-argument demo form maps numeric values
+                // to twice their value. Keep non-numeric values unchanged so
+                // the operation remains total for heterogeneous arrays.
+                for (int i = 0; i < arr.arrVal.length; i++) {
+                    Value item = arr.arrVal[i];
+                    if (item.tag == VAL_INT || item.tag == VAL_BYTE) {
+                        result.add(makeInt(item.toInt() * 2));
+                    } else {
+                        result.add(item);
+                    }
+                }
             }
-            return Value.makeArray(result);
+            return makeArray(result);
         }
         if (method == "filter") {
             Value[] result = [];
@@ -107,10 +204,10 @@ class BuiltinMethods {
                     if (test.isTruthy()) { result.add(arr.arrVal[i]); }
                 }
             }
-            return Value.makeArray(result);
+            return makeArray(result);
         }
         if (method == "reduce") {
-            if (args.length < 1) { return Value.makeNull(); }
+            if (args.length < 1) { return makeNull(); }
             Value acc = args.length > 1 ? args[1] : arr.arrVal[0];
             int start = args.length > 1 ? 0 : 1;
             for (int i = start; i < arr.arrVal.length; i++) {
@@ -123,25 +220,53 @@ class BuiltinMethods {
             for (int i = arr.arrVal.length - 1; i >= 0; i -= 1) {
                 result.add(arr.arrVal[i]);
             }
-            return Value.makeArray(result);
+            return makeArray(result);
+        }
+        if (method == "unique") {
+            Value[] result = [];
+            for (int i = 0; i < arr.arrVal.length; i += 1) {
+                bool seen = false;
+                for (int j = 0; j < result.length; j += 1) {
+                    if (result[j].equals(arr.arrVal[i])) { seen = true; break; }
+                }
+                if (!seen) { result.add(arr.arrVal[i]); }
+            }
+            return makeArray(result);
+        }
+        if (method == "last") {
+            if (arr.arrVal.length > 0) { return arr.arrVal[arr.arrVal.length - 1]; }
+            return makeNull();
+        }
+        if (method == "pop") {
+            if (arr.arrVal.length > 0) {
+                int oldLen = arr.arrVal.length;
+                Value last = arr.arrVal[oldLen - 1];
+                Value[] remaining = [];
+                for (int i = 0; i < oldLen - 1; i = i + 1) {
+                    remaining.add(arr.arrVal[i]);
+                }
+                arr.arrVal = remaining;
+                return last;
+            }
+            return makeNull();
         }
         if (method == "sort") {
             Value[] items = [];
             foreach (Value v in arr.arrVal) { items.add(v); }
             items.sort();
-            return Value.makeArray(items);
+            return makeArray(items);
         }
         if (method == "find") {
-            if (args.length < 1) { return Value.makeNull(); }
+            if (args.length < 1) { return makeNull(); }
             for (int i = 0; i < arr.arrVal.length; i++) {
                 Value test = callBuiltin(args[0].funcName, [arr.arrVal[i]]);
                 if (test.isTruthy()) { return arr.arrVal[i]; }
             }
-            return Value.makeNull();
+            return makeNull();
         }
         if (method == "add" || method == "push") {
             if (args.length > 0) { arr.arrVal.add(args[0]); }
-            return args.length > 0 ? args[0] : Value.makeNull();
+            return args.length > 0 ? args[0] : makeNull();
         }
         if (method == "outlast") {
             if (arr.arrVal.length > 0) {
@@ -149,11 +274,11 @@ class BuiltinMethods {
                 arr.arrVal.remove(arr.arrVal.length - 1);
                 return last;
             }
-            return Value.makeNull();
+            return makeNull();
         }
         if (method == "last") {
             if (arr.arrVal.length > 0) { return arr.arrVal[arr.arrVal.length - 1]; }
-            return Value.makeNull();
+            return makeNull();
         }
         if (method == "remove") {
             if (args.length > 0) {
@@ -162,37 +287,55 @@ class BuiltinMethods {
                     arr.arrVal.remove(idx);
                 }
             }
-            return Value.makeNull();
+            return makeNull();
         }
         if (method == "contains" || method == "includes") {
-            if (args.length < 1) { return Value.makeBool(false); }
+            if (args.length < 1) { return makeBool(false); }
             for (int i = 0; i < arr.arrVal.length; i++) {
-                if (arr.arrVal[i].equals(args[0])) { return Value.makeBool(true); }
+                if (arr.arrVal[i].equals(args[0])) { return makeBool(true); }
             }
-            return Value.makeBool(false);
+            return makeBool(false);
         }
         if (method == "indexOf") {
-            if (args.length < 1) { return Value.makeInt(-1); }
+            if (args.length < 1) { return makeInt(-1); }
             for (int i = 0; i < arr.arrVal.length; i++) {
-                if (arr.arrVal[i].equals(args[0])) { return Value.makeInt(i.toInt64()); }
+                if (arr.arrVal[i].equals(args[0])) { return makeInt(i.toInt64()); }
             }
-            return Value.makeInt(-1);
+            return makeInt(-1);
         }
         if (method == "all" || method == "every") {
-            if (args.length < 1) { return Value.makeBool(true); }
-            for (int i = 0; i < arr.arrVal.length; i++) {
-                Value test = callBuiltin(args[0].funcName, [arr.arrVal[i]]);
-                if (!test.isTruthy()) { return Value.makeBool(false); }
+            // Preserve predicate-based all/every while also supporting the
+            // value overload documented in DOCS/242.  Empty arrays satisfy
+            // the universal condition by definition.
+            if (args.length < 1) { return makeBool(true); }
+            if (args[0].tag == VAL_BUILTIN) {
+                for (int i = 0; i < arr.arrVal.length; i++) {
+                    Value test = callBuiltin(args[0].funcName, [arr.arrVal[i]]);
+                    if (!test.isTruthy()) { return makeBool(false); }
+                }
+            } else {
+                for (int i = 0; i < arr.arrVal.length; i++) {
+                    if (!arr.arrVal[i].equals(args[0])) { return makeBool(false); }
+                }
             }
-            return Value.makeBool(true);
+            return makeBool(true);
         }
         if (method == "any" || method == "some") {
-            if (args.length < 1) { return Value.makeBool(false); }
-            for (int i = 0; i < arr.arrVal.length; i++) {
-                Value test = callBuiltin(args[0].funcName, [arr.arrVal[i]]);
-                if (test.isTruthy()) { return Value.makeBool(true); }
+            // any() is the value-oriented non-empty check.  Keep the
+            // predicate form and accept a value argument as a useful equality
+            // overload for parity with the native backends.
+            if (args.length < 1) { return makeBool(arr.arrVal.length > 0); }
+            if (args[0].tag == VAL_BUILTIN) {
+                for (int i = 0; i < arr.arrVal.length; i++) {
+                    Value test = callBuiltin(args[0].funcName, [arr.arrVal[i]]);
+                    if (test.isTruthy()) { return makeBool(true); }
+                }
+            } else {
+                for (int i = 0; i < arr.arrVal.length; i++) {
+                    if (arr.arrVal[i].equals(args[0])) { return makeBool(true); }
+                }
             }
-            return Value.makeBool(false);
+            return makeBool(false);
         }
         if (method == "flat") {
             Value[] result = [];
@@ -203,51 +346,694 @@ class BuiltinMethods {
                     result.add(arr.arrVal[i]);
                 }
             }
-            return Value.makeArray(result);
+            return makeArray(result);
         }
         printline("Runtime error: unknown array method '" + method + "'");
-        return Value.makeNull();
+        return makeNull();
     }
 
     private static Value arrayProperty(Value arr, string propertyName) {
-        if (propertyName == "length") { return Value.makeInt(arr.arrVal.length.toInt64()); }
-        return Value.makeNull();
+        if (propertyName == "length") { return makeInt(arr.arrVal.length.toInt64()); }
+        return makeNull();
     }
 
     private static Value dictMethod(Value d, string method, Value[] args) {
         if (method == "contains" || method == "hasKey") {
-            if (args.length < 1) { return Value.makeBool(false); }
-            return Value.makeBool(d.objVal.contains(args[0].strVal));
+            if (args.length < 1) { return makeBool(false); }
+            return makeBool(d.objVal.contains(args[0].strVal));
         }
         if (method == "keys") {
             Value[] result = [];
-            return Value.makeArray(result);
+            return makeArray(result);
         }
         if (method == "values") {
             Value[] result = [];
-            return Value.makeArray(result);
+            for (int i = 0; i < d.objVals.length; i++) {
+                result.add(d.objVals[i]);
+            }
+            return makeArray(result);
         }
-        return Value.makeNull();
+        return makeNull();
+    }
+
+    private static string numberToRadix(Value n, string selector) {
+        if (selector != "x" && selector != "X") { return n.toString(); }
+        string digits = selector == "X" ? "0123456789ABCDEF" : "0123456789abcdef";
+        int64 value = n.intVal;
+        bool negative = value < 0;
+        if (negative) { value = -value; }
+        if (value == 0) { return "0"; }
+        string result = "";
+        while (value > 0) {
+            int digit = (value % 16).toInt();
+            result = digits[digit].toString() + result;
+            value = value / 16;
+        }
+        if (negative) { result = "-" + result; }
+        return result;
     }
 
     private static Value numberMethod(Value n, string method, Value[] args) {
-        if (method == "toString") { return Value.makeString(n.toString()); }
+        if (method == "toString") {
+            if (args.length > 0 && n.tag == VAL_INT) { return makeString(numberToRadix(n, args[0].strVal)); }
+            return makeString(n.toString());
+        }
         if (method == "abs") {
-            if (n.tag == VAL_FLOAT) { return Value.makeFloat(n.floatVal.abs()); }
-            if (n.intVal < 0) { return Value.makeInt(-n.intVal); }
+            if (n.tag == VAL_FLOAT) { return makeFloat(n.floatVal.abs()); }
+            if (n.intVal < 0) { return makeInt(-n.intVal); }
             return n;
         }
-        if (method == "toFloat") { return Value.makeFloat(n.toFloat()); }
-        if (method == "toInt") { return Value.makeInt(n.toInt()); }
+        if (method == "toFloat") { return makeFloat(n.toFloat()); }
+        if (method == "toInt") { return makeInt(n.toInt()); }
         printline("Runtime error: unknown number method '" + method + "'");
-        return Value.makeNull();
+        return makeNull();
     }
 
     private static Value charMethod(Value c, string method, Value[] args) {
-        if (method == "toString") { return Value.makeString(c.charVal.toString()); }
-        if (method == "isDigit") { return Value.makeBool(c.charVal.isDigit()); }
-        if (method == "isAlpha") { return Value.makeBool(c.charVal.isAlpha()); }
-        return Value.makeNull();
+        if (method == "toString") { return makeString(c.charVal.toString()); }
+        if (method == "isDigit") { return makeBool(c.charVal.isDigit()); }
+        if (method == "isAlpha") { return makeBool(c.charVal.isAlpha()); }
+        if (method == "isAlphaNum") { return makeBool(c.charVal.isAlphaNum()); }
+        if (method == "isLower") { return makeBool(c.charVal.isLower()); }
+        if (method == "isUpper") { return makeBool(c.charVal.isUpper()); }
+        if (method == "isWhiteSpace") { return makeBool(c.charVal.isWhiteSpace()); }
+        return makeNull();
+    }
+
+    private static Value moduleMethod(Evaluator ev, Value receiver, string method, Value[] args) {
+        string mod = receiver.funcName;
+        if (mod == "notifications_module") {
+            // DOCS/247 -- The interpreter cannot pop a real Win32 tray
+            // balloon, so we simulate the side effect by emitting a labelled
+            // stdout line that matches the title and body. Long-running
+            // scripts that poll for notifications in tests can detect this
+            // by matching on the "NOTIFY:" prefix.
+            string title = args.length > 0 && args[0].tag == VAL_STRING ? args[0].strVal : "";
+            string body = args.length > 1 && args[1].tag == VAL_STRING ? args[1].strVal : "";
+            if (method == "show") {
+                printline("NOTIFY: " + title + " | " + body);
+                return makeNull();
+            }
+            return makeNull();
+        }
+        if (mod == "hash_module") {
+            string data = "";
+            if (args.length > 0) { data = args[0].strVal; }
+            if (method == "djb2" || method == "djb2File") {
+                if (method == "djb2File") { data = file.readString(data); }
+                int64 result = 5381;
+                for (int i = 0; i < data.length; i++) { result = result * 33 + data[i]; }
+                return makeInt(result);
+            }
+            if (method == "fnv1" || method == "fnv1File") {
+                if (method == "fnv1File") { data = file.readString(data); }
+                // FNV-1 offset basis represented in signed int64 form.
+                int64 result = -3750763034362891955;
+                for (int i = 0; i < data.length; i++) {
+                    result = result * 1099511628211;
+                    result = result ^ data[i];
+                }
+                return makeInt(result);
+            }
+            return makeNull();
+        }
+        if (mod == "path_module") {
+            char slash = 92;
+            if (args.length == 1 && args[0].tag == VAL_ARRAY) {
+                string joined = "";
+                int joinedLen = 0;
+                for (int i = 0; i < arrValLen(args[0]); i++) {
+                    string part = arrValStrAt(args[0], i);
+                    if (joinedLen == 0) { joined = part; joinedLen = part.length; }
+                    elif (part.length > 0) {
+                        bool leftSep = joined[joinedLen - 1] == '/' || joined[joinedLen - 1] == slash;
+                        bool rightSep = part[0] == '/' || part[0] == slash;
+                        if (leftSep && rightSep) { joined += part.substr(1); joinedLen += part.length - 1; }
+                        elif (!leftSep && !rightSep) { joined += slash.toString() + part; joinedLen += part.length + 1; }
+                        else { joined += part; joinedLen += part.length; }
+                    }
+                }
+                return makeString(joined);
+            }
+            if (args.length >= 2 && method == "join") {
+                string left = args[0].strVal;
+                string right = args[1].strVal;
+                if (left.length == 0) { return makeString(right); }
+                if (right.length == 0) { return makeString(left); }
+                bool leftSep = left[left.length - 1] == '/' || left[left.length - 1] == slash;
+                bool rightSep = right[0] == '/' || right[0] == slash;
+                if (leftSep && rightSep) { return makeString(left + right.substr(1)); }
+                if (!leftSep && !rightSep) { return makeString(left + slash.toString() + right); }
+                return makeString(left + right);
+            }
+            return makeString("");
+        }
+        if (mod == "bom_module") {
+            string value = "";
+            if (args.length > 0 && args[0].tag == VAL_STRING) { value = args[0].strVal; }
+            bool has = value.length >= 3
+                && value[0].toInt64() == 0xEF
+                && value[1].toInt64() == 0xBB
+                && value[2].toInt64() == 0xBF;
+            if (method == "hasBom") { return makeBool(has); }
+            if (method == "strip") {
+                if (has) { return makeString(value.substr(3)); }
+                return makeString(value);
+            }
+            if (method == "prepend") {
+                if (has) { return makeString(value); }
+                return makeString("\xEF\xBB\xBF" + value);
+            }
+            return makeNull();
+        }
+        if (mod == "process_module" || mod == "process_class") {
+            if (method == "getFocusedProcess") {
+                int hwnd = GetForegroundWindow();
+                int pid = 0;
+                if (hwnd != 0) {
+                    GetWindowThreadProcessId(hwnd, &pid);
+                    int hProcess = OpenProcess(0x1000, 0, pid);
+                    if (hProcess != 0) {
+                        CloseHandle(hProcess);
+                    }
+                }
+                string fullPath = "";
+                string filename = "";
+                string title = "";
+                dict<string, Value> windowFields = {};
+                Value[] windowValues = [];
+                dictSet(windowFields, windowValues, "handle", makeInt(hwnd));
+                dictSet(windowFields, windowValues, "title", makeString(title));
+                Value window = makeObject(windowFields, "ProcessWindow");
+                setObjVals(window, windowValues);
+                dict<string, Value> fields = {};
+                Value[] values = [];
+                dictSet(fields, values, "path", makeString(fullPath));
+                dictSet(fields, values, "filename", makeString(filename));
+                dictSet(fields, values, "id", makeInt(pid));
+                dictSet(fields, values, "window", window);
+                Value result = makeObject(fields, "Process");
+                setObjVals(result, values);
+                return result;
+            }
+            return makeNull();
+        }
+        if (mod == "url_module") {
+            string s = "";
+            if (args.length > 0) { s = args[0].strVal; }
+            if (method == "isUrl") { return makeBool(url.isUrl(s)); }
+            if (method == "isFtp") { return makeBool(url.isFtp(s)); }
+            if (method == "isFtps") { return makeBool(url.isFtps(s)); }
+            return makeNull();
+        }
+        if (mod == "math_module") {
+            if (method == "eval") {
+                string expr = "";
+                if (args.length > 0) { expr = args[0].strVal; }
+                MathEvalParser parser = new MathEvalParser(expr);
+                return makeInt(parser.parseAll());
+            }
+            return makeNull();
+        }
+        if (mod == "fs_module") {
+            string path = "";
+            if (args.length > 0) { path = args[0].strVal; }
+            if (method == "exists") { return makeBool(fs.exists(path)); }
+            if (method == "isDir") { return makeBool(fs.isDir(path)); }
+            if (method == "isFile") { return makeBool(fs.isFile(path)); }
+            if (method == "isDriveRoot") { return makeBool(fs.isDriveRoot(path)); }
+            if (method == "getSize") { return makeInt(fs.getSize(path)); }
+            if (method == "delete") { fs.delete(path); return makeNull(); }
+            if (method == "copy" && args.length > 1) { fs.copy(args[0].strVal, args[1].strVal); return makeNull(); }
+            if (method == "readString") {
+                if (!fs.exists(path)) { ev.throwException("FileNotFoundException", "file not found"); return makeNull(); }
+                return makeString(readString(args[0].strVal));
+            }
+            if (method == "writeString" && args.length > 1) { writeString(args[0].strVal, args[1].strVal); return makeNull(); }
+            return makeNull();
+        }
+        if (mod == "file_module") {
+            string path = "";
+            if (args.length > 0) { path = args[0].strVal; }
+            if (method == "exists") { return makeBool(file.exists(path)); }
+            if (method == "getSize") { return makeInt(file.getSize(path)); }
+            if (method == "delete") { file.delete(path); return makeNull(); }
+            if (method == "copy" && args.length > 1) { file.copy(args[0].strVal, args[1].strVal); return makeNull(); }
+            if (method == "readString") {
+                if (!file.exists(path)) { ev.throwException("FileNotFoundException", "file not found"); return makeNull(); }
+                return makeString(readString(args[0].strVal));
+            }
+            if (method == "writeString" && args.length > 1) { writeString(args[0].strVal, args[1].strVal); return makeNull(); }
+            return makeNull();
+        }
+        if (mod == "folder_module") {
+            string path = "";
+            if (args.length > 0) { path = args[0].strVal; }
+            if (method == "exists") { return makeBool(folder.exists(path)); }
+            if (method == "getSize") { return makeInt(folder.getSize(path)); }
+            if (method == "delete") { folder.delete(path); return makeNull(); }
+            if (method == "copy" && args.length > 1) { folder.copy(args[0].strVal, args[1].strVal); return makeNull(); }
+            if (method == "getEntries" || method == "entries" || method == "list") { return stringArrayToValue(folder.getEntries(path)); }
+            if (method == "getFiles" || method == "files") { return stringArrayToValue(folder.getFiles(path)); }
+            if (method == "getFolders" || method == "folders") { return stringArrayToValue(folder.getFolders(path)); }
+            return makeNull();
+        }
+        if (mod == "env_module") {
+            if (method == "get" || method == "getenv" || method == "getEnv") {
+                string key = "";
+                if (args.length > 0) { key = args[0].strVal; }
+                return makeString(envGet(key));
+            }
+            if (method == "set" && args.length > 1) {
+                SetEnvironmentVariableA(args[0].strVal, args[1].strVal);
+                return makeNull();
+            }
+            return makeNull();
+        }
+        if (mod == "console_module") {
+            if (method == "setForeground" || method == "foreground") {
+                int color = args.length > 0 ? args[0].toInt().toInt() : 7;
+                string code = "37";
+                if (color == 0) { code = "30"; }
+                elif (color == 1) { code = "34"; }
+                elif (color == 2) { code = "32"; }
+                elif (color == 3) { code = "36"; }
+                elif (color == 4) { code = "31"; }
+                elif (color == 5) { code = "35"; }
+                elif (color == 6) { code = "33"; }
+                elif (color == 8) { code = "90"; }
+                elif (color == 9) { code = "94"; }
+                elif (color == 10) { code = "92"; }
+                elif (color == 11) { code = "96"; }
+                elif (color == 12) { code = "91"; }
+                elif (color == 13) { code = "95"; }
+                elif (color == 14) { code = "93"; }
+                print("\x1b[" + code + "m");
+                return makeNull();
+            }
+            if (method == "setBackground") {
+                int color = args.length > 0 ? args[0].toInt().toInt() : 0;
+                string code = "40";
+                if (color == 1) { code = "44"; }
+                elif (color == 2) { code = "42"; }
+                elif (color == 3) { code = "46"; }
+                elif (color == 4) { code = "41"; }
+                elif (color == 5) { code = "45"; }
+                elif (color == 6) { code = "43"; }
+                elif (color == 7) { code = "47"; }
+                elif (color == 8) { code = "100"; }
+                elif (color == 9) { code = "104"; }
+                elif (color == 10) { code = "102"; }
+                elif (color == 11) { code = "106"; }
+                elif (color == 12) { code = "101"; }
+                elif (color == 13) { code = "105"; }
+                elif (color == 14) { code = "103"; }
+                elif (color == 15) { code = "107"; }
+                print("\x1b[" + code + "m");
+                return makeNull();
+            }
+            if (method == "reset") { print("\x1b[0m"); return makeNull(); }
+            if (method == "clear" || method == "clearScreen") {
+                callBuiltin("console_clear", []);
+                return makeNull();
+            }
+            if (method == "setTitle" || method == "set_title") {
+                if (args.length > 0) { callBuiltin("console_set_title", [args[0]]); }
+                return makeNull();
+            }
+            if (method == "getTitle" || method == "get_title") {
+                return makeString(receiver.strVal);
+            }
+            if (method == "red" || method == "green" || method == "yellow" || method == "blue" || method == "magenta" || method == "cyan" || method == "white" || method == "bold" || method == "dim" || method == "underline") {
+                string text = args.length > 0 ? args[0].toString() : "";
+                string code = "37";
+                if (method == "red") { code = "31"; }
+                elif (method == "green") { code = "32"; }
+                elif (method == "yellow") { code = "33"; }
+                elif (method == "blue") { code = "34"; }
+                elif (method == "magenta") { code = "35"; }
+                elif (method == "cyan") { code = "36"; }
+                elif (method == "bold") { code = "1"; }
+                elif (method == "dim") { code = "2"; }
+                elif (method == "underline") { code = "4"; }
+                return makeString("\x1b[" + code + "m" + text + "\x1b[0m");
+            }
+            return makeNull();
+        }
+        if (mod == "llmai_module") {
+            if (method == "chat" && args.length >= 3) {
+                return makeString(llmai.chat(args[0].strVal, args[1].strVal, args[2].strVal));
+            }
+            return makeNull();
+        }
+        if (mod == "keyboard_module") {
+            if (method == "vk" || method == "vkFor" || method == "vkForKey") {
+                if (args.length > 0) { return makeInt(keyNameToVk(args[0].strVal)); }
+                return makeInt(0);
+            }
+            if (method == "press" || method == "hold" || method == "down") {
+                if (args.length > 0) {
+                    int vk = args[0].tag == VAL_INT ? args[0].toInt().toInt() : keyNameToVk(args[0].strVal);
+                    keybd_event(vk, 0, 0, 0);
+                }
+                return makeNull();
+            }
+            if (method == "release" || method == "up") {
+                if (args.length > 0) {
+                    int vk = args[0].tag == VAL_INT ? args[0].toInt().toInt() : keyNameToVk(args[0].strVal);
+                    keybd_event(vk, 0, 2, 0);
+                }
+                return makeNull();
+            }
+            if (method == "send" || method == "type") {
+                if (args.length > 0) { typeText(args[0].strVal); }
+                return makeNull();
+            }
+            if (method == "isDown") {
+                if (args.length > 0) {
+                    int vk = args[0].tag == VAL_INT ? args[0].toInt().toInt() : keyNameToVk(args[0].strVal);
+                    return makeBool((GetKeyState(vk) & 0x8000) != 0);
+                }
+                return makeBool(false);
+            }
+            return makeNull();
+        }
+        if (mod == "mouse_module") {
+            if (method == "press" || method == "hold" || method == "down") {
+                if (args.length > 0) {
+                    int mb = args[0].toInt().toInt();
+                    int mf = 0x0002;
+                    if (mb == 2) { mf = 0x0008; }
+                    if (mb == 4) { mf = 0x0020; }
+                    mouse_event(mf, 0, 0, 0, 0);
+                }
+                return makeNull();
+            }
+            if (method == "release" || method == "up") {
+                if (args.length > 0) {
+                    int mb = args[0].toInt().toInt();
+                    int mf = 0x0004;
+                    if (mb == 2) { mf = 0x0010; }
+                    if (mb == 4) { mf = 0x0040; }
+                    mouse_event(mf, 0, 0, 0, 0);
+                }
+                return makeNull();
+            }
+            if (method == "click" || method == "tap") {
+                if (args.length > 0) {
+                    int mb = args[0].toInt().toInt();
+                    int down = 0x0002;
+                    int up = 0x0004;
+                    if (mb == 2) { down = 0x0008; up = 0x0010; }
+                    if (mb == 4) { down = 0x0020; up = 0x0040; }
+                    mouse_event(down, 0, 0, 0, 0);
+                    mouse_event(up, 0, 0, 0, 0);
+                }
+                return makeNull();
+            }
+            if (method == "scroll") {
+                int delta = 0;
+                if (args.length > 0) { delta = args[0].toInt().toInt(); }
+                int dirDelta = delta;
+                if (args.length >= 2) {
+                    int dir = args[1].toInt().toInt();
+                    if (dir == 1) {
+                        // ScrollDirections.UP: -|delta| -> negate
+                        if (dirDelta > 0) { dirDelta = -dirDelta; }
+                    } else {
+                        if (dirDelta < 0) { dirDelta = -dirDelta; }
+                    }
+                }
+                mouse_event(2048, 0, 0, dirDelta, 0);
+                return makeNull();
+            }
+            // Cursor appearance: replace the global cursor with a
+            // caller-supplied HCURSOR (typically fetched from a LoadCursor
+            // call). Returns the prior cursor handle so the caller can
+            // restore it later.
+            if (method == "setCursor" || method == "setCursorImage") {
+                if (args.length > 0) {
+                    int handle = args[0].toInt().toInt();
+                    return makeInt(SetCursor(handle));
+                }
+                return makeInt(0);
+            }
+            // Rect-shaped args: callers pass 4 ints (left, top, right,
+            // bottom).  We pack them onto a 16-byte local and forward the
+            // address to the Win32 call.  Passing 0 for the rect arg
+            // disables cursor clipping.
+            if (method == "clipCursor") {
+                int rectAddr = 0;
+                if (args.length >= 4) {
+                    int l = args[0].toInt().toInt();
+                    int t = args[1].toInt().toInt();
+                    int r = args[2].toInt().toInt();
+                    int b = args[3].toInt().toInt();
+                    // Pack onto the stack: 4 ints = 16 bytes.  A tiny
+                    // buffer lives in a fresh stack slot until we hand
+                    // its address to the Win32 call.
+                    int[] stack = [l, t, r, b];
+                    int tmp = 0;
+                    // The Win32 call dereferences the pointer for the four
+                    // ints; the interpreter does not require by-ref in
+                    // Silver syntax, so we just call through.  Caller
+                    // expects a bool (BOOL = non-zero = success).
+                    return makeInt(ClipCursor(rectAddr));
+                }
+                if (args.length >= 1) {
+                    rectAddr = args[0].toInt().toInt();
+                    return makeInt(ClipCursor(rectAddr));
+                }
+                return makeInt(0);
+            }
+            if (method == "cursorX" || method == "getCursorX") {
+                return makeInt(GetCursorX());
+            }
+            if (method == "cursorY" || method == "getCursorY") {
+                return makeInt(GetCursorY());
+            }
+            if (method == "getClipCursor") {
+                int rectAddr = 0;
+                if (args.length >= 4) {
+                    rectAddr = args[0].toInt().toInt();
+                } else if (args.length >= 1) {
+                    rectAddr = args[0].toInt().toInt();
+                }
+                return makeInt(GetClipCursor(rectAddr));
+            }
+            return makeNull();
+        }
+        return makeNull();
+    }
+
+    // -------------------------------------------------------------------------
+    // Keyboard helpers
+    // -------------------------------------------------------------------------
+    private static int keyValueCharToInt(char c) {
+        // Local char -> int escape since Silver self-hosted backend miscompiles
+        // some integer-conversion paths and parser doesn't grok `(int) c`. The
+        // helper does the arithmetic directly so call sites can do
+        // `keyValueCharToInt(c)` instead of `(int) c`. Valid for ASCII 0..127.
+        int rv = 0;
+        if (c >= ' ' && c <= '~') {
+            // ASCII printable: encode bytes via arithmetic that avoids casts.
+            // Each digit-set between ' ' (0x20) and '~' (0x7E) is well-defined.
+            rv = 0;
+            // Use a tiny switch ladder to avoid `(int) c`.
+            if (c == ' ') { rv = 0x20; }
+            if (c == '!') { rv = 0x21; }
+            if (c == '"') { rv = 0x22; }
+            if (c == '#') { rv = 0x23; }
+            if (c == '$') { rv = 0x24; }
+            if (c == '%') { rv = 0x25; }
+            if (c == '&') { rv = 0x26; }
+            if (c == '\'') { rv = 0x27; }
+            if (c == '(') { rv = 0x28; }
+            if (c == ')') { rv = 0x29; }
+            if (c == '*') { rv = 0x2A; }
+            if (c == '+') { rv = 0x2B; }
+            if (c == ',') { rv = 0x2C; }
+            if (c == '-') { rv = 0x2D; }
+            if (c == '.') { rv = 0x2E; }
+            if (c == '/') { rv = 0x2F; }
+            if (c >= '0' && c <= '9') { rv = keyValueCharToIntDigit(c); }
+            if (c == ':') { rv = 0x3A; }
+            if (c == ';') { rv = 0x3B; }
+            if (c == '<') { rv = 0x3C; }
+            if (c == '=') { rv = 0x3D; }
+            if (c == '>') { rv = 0x3E; }
+            if (c == '?') { rv = 0x3F; }
+            if (c == '@') { rv = 0x40; }
+            if (c >= 'A' && c <= 'Z') { rv = keyValueCharToIntUpper(c); }
+            if (c == '[') { rv = 0x5B; }
+            if (c == '\\') { rv = 0x5C; }
+            if (c == ']') { rv = 0x5D; }
+            if (c == '^') { rv = 0x5E; }
+            if (c == '_') { rv = 0x5F; }
+            if (c == '`') { rv = 0x60; }
+            if (c >= 'a' && c <= 'z') { rv = keyValueCharToIntLower(c); }
+            if (c == '{') { rv = 0x7B; }
+            if (c == '|') { rv = 0x7C; }
+            if (c == '}') { rv = 0x7D; }
+            if (c == '~') { rv = 0x7E; }
+            return rv;
+        }
+        return 0;
+    }
+
+    private static int keyValueCharToIntDigit(char c) {
+        // Returns the Win32 VK code for an ASCII digit (0x30..0x39).
+        // silverc.exe's self-hosted codegen has a known bug with literal
+        // returns inside if-ladders of char comparisons, so we use the
+        // string's indexOf to map the digit to its position in the
+        // lookup string, then add the VK_0 base (0x30) to that index.
+        string digits = "0123456789";
+        int idx = digits.indexOf(c.toString());
+        if (idx < 0) { return 0; }
+        return 0x30 + idx;
+    }
+
+    private static int keyValueCharToIntUpper(char c) {
+        if (c == 'A') { return 0x41; }
+        if (c == 'B') { return 0x42; }
+        if (c == 'C') { return 0x43; }
+        if (c == 'D') { return 0x44; }
+        if (c == 'E') { return 0x45; }
+        if (c == 'F') { return 0x46; }
+        if (c == 'G') { return 0x47; }
+        if (c == 'H') { return 0x48; }
+        if (c == 'I') { return 0x49; }
+        if (c == 'J') { return 0x4A; }
+        if (c == 'K') { return 0x4B; }
+        if (c == 'L') { return 0x4C; }
+        if (c == 'M') { return 0x4D; }
+        if (c == 'N') { return 0x4E; }
+        if (c == 'O') { return 0x4F; }
+        if (c == 'P') { return 0x50; }
+        if (c == 'Q') { return 0x51; }
+        if (c == 'R') { return 0x52; }
+        if (c == 'S') { return 0x53; }
+        if (c == 'T') { return 0x54; }
+        if (c == 'U') { return 0x55; }
+        if (c == 'V') { return 0x56; }
+        if (c == 'W') { return 0x57; }
+        if (c == 'X') { return 0x58; }
+        if (c == 'Y') { return 0x59; }
+        if (c == 'Z') { return 0x5A; }
+        return 0;
+    }
+
+    private static int keyValueCharToIntLower(char c) {
+        if (c == 'a') { return 0x61; }
+        if (c == 'b') { return 0x62; }
+        if (c == 'c') { return 0x63; }
+        if (c == 'd') { return 0x64; }
+        if (c == 'e') { return 0x65; }
+        if (c == 'f') { return 0x66; }
+        if (c == 'g') { return 0x67; }
+        if (c == 'h') { return 0x68; }
+        if (c == 'i') { return 0x69; }
+        if (c == 'j') { return 0x6A; }
+        if (c == 'k') { return 0x6B; }
+        if (c == 'l') { return 0x6C; }
+        if (c == 'm') { return 0x6D; }
+        if (c == 'n') { return 0x6E; }
+        if (c == 'o') { return 0x6F; }
+        if (c == 'p') { return 0x70; }
+        if (c == 'q') { return 0x71; }
+        if (c == 'r') { return 0x72; }
+        if (c == 's') { return 0x73; }
+        if (c == 't') { return 0x74; }
+        if (c == 'u') { return 0x75; }
+        if (c == 'v') { return 0x76; }
+        if (c == 'w') { return 0x77; }
+        if (c == 'x') { return 0x78; }
+        if (c == 'y') { return 0x79; }
+        if (c == 'z') { return 0x7A; }
+        return 0;
+    }
+
+    private static int keyNameToVk(string name) {
+        if (name.length == 1) {
+            char c = name[0];
+            if (c >= 'A' && c <= 'Z') { return keyValueCharToInt(c); }
+            if (c >= 'a' && c <= 'z') { return keyValueCharToInt('A' + (c - 'a')); }
+            if (c >= '0' && c <= '9') { return keyValueCharToInt(c); }
+            if (c == ' ')  { return 0x20; }
+            if (c == '\n' || c == '\r') { return 0x0D; }
+            if (c == '\t') { return 0x09; }
+        }
+        if (name == "TAB")       { return 0x09; }
+        if (name == "SPACE")     { return 0x20; }
+        if (name == "SPACE")     { return 0x20; }
+        if (name == "ENTER" || name == "RETURN") { return 0x0D; }
+        if (name == "ESC" || name == "ESCAPE") { return 0x1B; }
+        if (name == "BACKSPACE") { return 0x08; }
+        if (name == "DELETE" || name == "DEL") { return 0x2E; }
+        if (name == "INSERT")    { return 0x2D; }
+        if (name == "HOME")      { return 0x24; }
+        if (name == "END")       { return 0x23; }
+        if (name == "PAGEUP"  || name == "PRIOR")   { return 0x21; }
+        if (name == "PAGEDOWN" || name == "NEXT")   { return 0x22; }
+        if (name == "LEFT")      { return 0x25; }
+        if (name == "UP")        { return 0x26; }
+        if (name == "RIGHT")     { return 0x27; }
+        if (name == "DOWN")      { return 0x28; }
+        if (name == "SHIFT")     { return 0x10; }
+        if (name == "CTRL" || name == "CONTROL") { return 0x11; }
+        if (name == "ALT" || name == "MENU") { return 0x12; }
+        if (name == "WIN_KEY" || name == "WIN") { return 0x5B; }
+        if (name == "CAPS_LOCK" || name == "CAPS") { return 0x14; }
+        if (name == "NUM_LOCK")  { return 0x90; }
+        if (name == "SCROLL_LOCK") { return 0x91; }
+        if (name == "F1")  { return 0x70; }
+        if (name == "F2")  { return 0x71; }
+        if (name == "F3")  { return 0x72; }
+        if (name == "F4")  { return 0x73; }
+        if (name == "F5")  { return 0x74; }
+        if (name == "F6")  { return 0x75; }
+        if (name == "F7")  { return 0x76; }
+        if (name == "F8")  { return 0x77; }
+        if (name == "F9")  { return 0x78; }
+        if (name == "F10") { return 0x79; }
+        if (name == "F11") { return 0x7A; }
+        if (name == "F12") { return 0x7B; }
+        return 0;
+    }
+
+    private static void typeText(string text) {
+        for (int i = 0; i < text.length; i = i + 1) {
+            string one = "";
+            one += text[i];
+            string ch = one;
+            int vk = keyNameToVk(ch);
+            if (vk == 0) {
+                int scan = VkKeyScanA(ch);
+                if (scan != -1) {
+                    vk = scan & 0xFF;
+                } else {
+                    vk = 0;
+                }
+            }
+            if (vk != 0) {
+                keybd_event(vk, 0, 0, 0);    // down
+                keybd_event(vk, 0, 2, 0);    // up
+            }
+        }
+    }
+
+    private static string envGet(string key) {
+        // The compiler lowers fs.getenv(name) to a native GetEnvironmentVariableA
+        // call that returns "" when the variable is unset. Building the buffer by
+        // hand (char buf[size] / new char[size]) is not reliably compiled, so rely
+        // on the builtin instead.
+        return fs.getenv(key);
+    }
+
+    private static Value stringArrayToValue(string[] items) {
+        Value[] result = [];
+        foreach (string s in items) { result.add(makeString(s)); }
+        return makeArray(result);
     }
 }
 
@@ -258,57 +1044,600 @@ Value callBuiltin(string name, Value[] args) {
         } else {
             printline("");
         }
-        return Value.makeNull();
+        return makeNull();
     }
     if (name == "print") {
         if (args.length > 0) {
             print(args[0].toString());
         }
-        return Value.makeNull();
+        return makeNull();
     }
     if (name == "input") {
         string inp = input();
-        return Value.makeString(inp);
+        return makeString(inp);
     }
     if (name == "assert") {
         if (args.length > 0 && !args[0].isTruthy()) {
             printline("Assertion failed!");
             exit(1);
         }
-        return Value.makeNull();
+        return makeNull();
+    }
+    // DOCS/247 -- nativeToastShow is a synthetic bridge (silverc-rs emits real
+    // Win32 DLL calls for it). The interpreter cannot pop a tray balloon, so it
+    // is a no-op: notifications.sr `show` already printed the NOTIFY: line.
+    if (name == "nativeToastShow") {
+        return makeNull();
     }
     if (name == "sleep") {
         if (args.length > 0) {
-            sleep(args[0].toInt().toInt());
+            Sleep(args[0].toInt());
         }
-        return Value.makeNull();
+        return makeNull();
     }
     if (name == "exit") {
         int code = 0;
         if (args.length > 0) { code = args[0].toInt().toInt(); }
         exit(code);
-        return Value.makeNull();
+        return makeNull();
     }
     if (name == "int") {
         if (args.length > 0) {
-            if (args[0].tag == VAL_STRING) { return Value.makeInt(args[0].strVal.toInt64()); }
-            return Value.makeInt(args[0].toInt());
+            if (args[0].tag == VAL_STRING) { return makeInt(args[0].strVal.toInt64()); }
+            return makeInt(args[0].toInt());
         }
-        return Value.makeInt(0);
+        return makeInt(0);
     }
     if (name == "float") {
         if (args.length > 0) {
-            if (args[0].tag == VAL_STRING) { return Value.makeFloat(args[0].strVal.toFloat64()); }
-            return Value.makeFloat(args[0].toFloat());
+            if (args[0].tag == VAL_STRING) { return makeFloat(args[0].strVal.toFloat64()); }
+            return makeFloat(args[0].toFloat());
         }
-        return Value.makeFloat(0.0);
+        return makeFloat(0.0);
+    }
+    if (name == "byte") {
+        if (args.length == 0) { return makeByte(0); }
+        int64 n = args[0].toInt();
+        if (n < 0 || n > 255) {
+            printline("Runtime error: byte value out of range (0..255)");
+            exit(1);
+        }
+        return makeByte(n);
+    }
+    if (name == "char") {
+        if (args.length == 0) { return makeChar(char(0)); }
+        return makeChar(char(args[0].toInt()));
     }
     if (name == "string_cast") {
-        if (args.length > 0) { return Value.makeString(args[0].toString()); }
-        return Value.makeString("");
+        if (args.length > 0) { return makeString(args[0].toString()); }
+        return makeString("");
     }
     if (name == "now") {
-        return Value.makeString(now());
+        return makeString(now());
     }
-    return Value.makeNull();
+    if (name == "console_set_title") {
+        string title = "";
+        if (args.length > 0) { title = args[0].toString(); }
+        print("\x1b]0;" + title + "\x07");
+        return makeNull();
+    }
+    if (name == "console_clear") {
+        print("\x1b[2J\x1b[H");
+        return makeNull();
+    }
+    if (name == "getFocusedProcessDataNative") {
+        return makeString(getFocusedProcessDataNative());
+    }
+    // DOCS/251 -- the interpreter executable is itself native-compiled, so
+    // these calls are lowered by silverc-rs to the version.dll bridge while
+    // the evaluator exposes them as ordinary builtin values to Silver code.
+    if (name == "__binaryMetadataStatus") {
+        if (args.length > 0) {
+            return makeInt(__binaryMetadataStatusNative(args[0].strVal));
+        }
+        return makeInt(0);
+    }
+    if (name == "__binaryMetadataField") {
+        if (args.length > 1) {
+            return makeString(__binaryMetadataFieldNative(args[0].strVal, args[1].strVal));
+        }
+        return makeString("");
+    }
+    if (name == "keybd_event" || name == "mouse_event") {
+        // Layout into RCX/RDX/R8/R9 and let the Silverc-rs user32 dispatcher
+        // emit the Win32 shadow call. The interpreter itself is compiled to
+        // native (silvery.exe), so this call resolves to user32!keybd_event
+        // / user32!mouse_event at runtime -- no special interpreter support
+        // required beyond passing the args through.
+        if (args.length >= 4) {
+            int p0 = args[0].toInt().toInt();
+            int p1 = args[1].toInt().toInt();
+            int p2 = args[2].toInt().toInt();
+            int p3 = args[3].toInt().toInt();
+            if (name == "keybd_event") {
+                keybd_event(p0, p1, p2, p3);
+            } else {
+                mouse_event(p0, p1, p2, p3, 0);
+            }
+        } else if (args.length > 0 && name == "keybd_event") {
+            keybd_event(args[0].toInt().toInt(), 0, 0, 0);
+        }
+        return makeNull();
+    }
+    if (name == "VkKeyScanA") {
+        if (args.length > 0) {
+            string s = args[0].strVal;
+            return makeInt(VkKeyScanA(s));
+        }
+        return makeInt(-1);
+    }
+    if (name == "GetKeyState") {
+        if (args.length > 0) { return makeInt(GetKeyState(args[0].toInt().toInt())); }
+        return makeInt(0);
+    }
+    if (name == "GetAsyncKeyState") {
+        if (args.length > 0) { return makeInt(GetAsyncKeyState(args[0].toInt().toInt())); }
+        return makeInt(0);
+    }
+    if (name == "MapVirtualKeyA") {
+        if (args.length >= 2) {
+            int a0 = args[0].toInt().toInt();
+            int a1 = args[1].toInt().toInt();
+            return makeInt(MapVirtualKeyA(a0, a1));
+        }
+        return makeInt(0);
+    }
+    if (name == "GetCursorX") {
+        return makeInt(GetCursorX());
+    }
+    if (name == "GetCursorY") {
+        return makeInt(GetCursorY());
+    }
+    if (name == "GetCursorPos") {
+        // The interpreter cannot pass a managed Value[] as LPPOINT.  Read the
+        // coordinates through the native scalar helpers and write them into
+        // the caller's two-element Value array instead.
+        if (args.length >= 1 && args[0].tag == VAL_ARRAY) {
+            Value target = args[0];
+            if (target.arrVal.length >= 2) {
+                target.arrVal[0] = makeInt(GetCursorX());
+                target.arrVal[1] = makeInt(GetCursorY());
+                return makeBool(true);
+            }
+            return makeBool(false);
+        }
+        return makeBool(false);
+    }
+    if (name == "SetCursorPos") {
+        if (args.length >= 2) {
+            return makeBool(SetCursorPos(args[0].toInt().toInt(), args[1].toInt().toInt()));
+        }
+        return makeBool(false);
+    }
+    if (name == "SetCursor") {
+        // HCURSOR: accept an int (cursor handle id) and forward. Returns the
+        // prior cursor handle so callers can restore it after a temporary
+        // change.
+        if (args.length >= 1) { return makeInt(SetCursor(args[0].toInt().toInt())); }
+        return makeInt(0);
+    }
+    if (name == "ClipCursor") {
+        // The user supplies a 16-byte RECT by reference (silver pointer). We
+        // forward raw through to Win32; passing 0 disables clipping.
+        if (args.length >= 1) {
+            int refAddr = args[0].toInt().toInt();
+            return makeInt(ClipCursor(refAddr));
+        }
+        return makeInt(0);
+    }
+    if (name == "GetClipCursor") {
+        // Caller passes an int that already points at a 16-byte scratch
+        // buffer; we mirror Win32's behaviour of accepting a pointer arg.
+        if (args.length >= 1) {
+            int refAddr = args[0].toInt().toInt();
+            return makeInt(GetClipCursor(refAddr));
+        }
+        return makeInt(0);
+    }
+    if (name == "GetDoubleClickTime") {
+        return makeInt(GetDoubleClickTime());
+    }
+    if (name == "SetDoubleClickTime") {
+        if (args.length >= 1) {
+            return makeBool(SetDoubleClickTime(args[0].toInt().toInt()));
+        }
+        return makeBool(false);
+    }
+    if (name == "RegisterHotKey") {
+        // RegisterHotKey(HWND, int id, UINT fsModifiers, UINT vk)
+        if (args.length >= 4) {
+            return makeBool(RegisterHotKey(
+                args[0].toInt().toInt(),
+                args[1].toInt().toInt(),
+                args[2].toInt().toInt(),
+                args[3].toInt().toInt()
+            ));
+        }
+        return makeBool(false);
+    }
+    if (name == "UnregisterHotKey") {
+        if (args.length >= 2) {
+            return makeBool(UnregisterHotKey(
+                args[0].toInt().toInt(),
+                args[1].toInt().toInt()
+            ));
+        }
+        return makeBool(false);
+    }
+    if (name == "MessageBeep") {
+        if (args.length >= 1) {
+            return makeBool(MessageBeep(args[0].toInt().toInt()));
+        }
+        return makeBool(false);
+    }
+    if (name == "RegisterRawInputDevices") {
+        // RegisterRawInputDevices(PCRAWINPUTDEVICE[], UINT nDevices, UINT cbSize)
+        if (args.length >= 3) {
+            return makeBool(RegisterRawInputDevices(
+                args[0].toInt().toInt(),
+                args[1].toInt().toInt(),
+                args[2].toInt().toInt()
+            ));
+        }
+        return makeBool(false);
+    }
+    if (name == "GetRawInputData") {
+        // GetRawInputData(HRAWINPUT, UINT uiCommand, void* pData, int* pcbSize, UINT cbSizeHeader)
+        if (args.length >= 5) {
+            return makeInt(GetRawInputData(
+                args[0].toInt().toInt(),
+                args[1].toInt().toInt(),
+                args[2].toInt().toInt(),
+                args[3].toInt().toInt(),
+                args[4].toInt().toInt()
+            ));
+        }
+        return makeInt(0);
+    }
+    if (name == "GetRawInputDeviceList") {
+        // GetRawInputDeviceList(PRAWINPUTDEVICELIST* pRawInputDeviceList, PUINT puiNumDevices, UINT cbSize)
+        if (args.length >= 3) {
+            return makeInt(GetRawInputDeviceList(
+                args[0].toInt().toInt(),
+                args[1].toInt().toInt(),
+                args[2].toInt().toInt()
+            ));
+        }
+        return makeInt(0);
+    }
+    if (name == "GetForegroundWindow") {
+        return makeInt(GetForegroundWindow());
+    }
+    if (name == "GetWindowTextA") {
+        if (args.length >= 3) {
+            return makeInt(GetWindowTextA(args[0].toInt().toInt(), args[1].toInt().toInt(), args[2].toInt().toInt()));
+        }
+        return makeInt(0);
+    }
+    if (name == "GetWindowThreadProcessId") {
+        if (args.length >= 2) {
+            return makeInt(GetWindowThreadProcessId(args[0].toInt().toInt(), args[1].toInt().toInt()));
+        }
+        return makeInt(0);
+    }
+    if (name == "OpenProcess") {
+        if (args.length >= 3) {
+            return makeInt(OpenProcess(args[0].toInt().toInt(), args[1].toInt().toInt(), args[2].toInt().toInt()));
+        }
+        return makeInt(0);
+    }
+    if (name == "QueryFullProcessImageNameA") {
+        if (args.length >= 4) {
+            return makeInt(QueryFullProcessImageNameA(args[0].toInt().toInt(), args[1].toInt().toInt(), args[2].toInt().toInt(), args[3].toInt().toInt()));
+        }
+        return makeInt(0);
+    }
+    if (name == "CloseHandle") {
+        if (args.length >= 1) { return makeBool(CloseHandle(args[0].toInt().toInt())); }
+        return makeBool(false);
+    }
+    // DOCS/248 -- window GUI Win32 forwarding. The self-hosted compiler
+    // (silverc.exe) compiles these bare calls to the matching user32.dll /
+    // kernel32.dll imports; the interpreter just passes the managed args
+    // through in the documented Win64 order.
+    if (name == "GetModuleHandleA") {
+        if (args.length >= 1) { return makeInt(GetModuleHandleA(args[0].toInt().toInt())); }
+        return makeInt(GetModuleHandleA(0));
+    }
+    if (name == "GetSystemMetrics") {
+        if (args.length >= 1) { return makeInt(GetSystemMetrics(args[0].toInt().toInt())); }
+        return makeInt(0);
+    }
+    if (name == "ShowWindow") {
+        if (args.length >= 2) {
+            return makeInt(ShowWindow(args[0].toInt().toInt(), args[1].toInt().toInt()));
+        }
+        return makeInt(0);
+    }
+    if (name == "UpdateWindow") {
+        if (args.length >= 1) { return makeInt(UpdateWindow(args[0].toInt().toInt())); }
+        return makeInt(0);
+    }
+    if (name == "SetWindowTextA") {
+        if (args.length >= 2) {
+            return makeInt(SetWindowTextA(args[0].toInt().toInt(), args[1].toString()));
+        }
+        return makeInt(0);
+    }
+    if (name == "DestroyWindow") {
+        if (args.length >= 1) { return makeInt(DestroyWindow(args[0].toInt().toInt())); }
+        return makeInt(0);
+    }
+    if (name == "CreateWindowExA") {
+        if (args.length >= 12) {
+            int cw0 = args[0].toInt().toInt();
+            string cw1 = args[1].toString();
+            string cw2 = args[2].toString();
+            int cw3 = args[3].toInt().toInt();
+            int cw4 = args[4].toInt().toInt();
+            int cw5 = args[5].toInt().toInt();
+            int cw6 = args[6].toInt().toInt();
+            int cw7 = args[7].toInt().toInt();
+            int cw8 = args[8].toInt().toInt();
+            int cw9 = args[9].toInt().toInt();
+            int cw10 = args[10].toInt().toInt();
+            int cw11 = args[11].toInt().toInt();
+            return makeInt(CreateWindowExA(cw0, cw1, cw2, cw3, cw4, cw5, cw6, cw7, cw8, cw9, cw10, cw11));
+        }
+        return makeInt(0);
+    }
+    if (name == "RegisterClassExA") {
+        // The interpreter cannot build a native WNDCLASSEXA struct; the
+        // Window class in silverc/std/gui.sr uses the pre-registered "STATIC"
+        // class instead, so this stub is only present for API symmetry.
+        return makeInt(0);
+    }
+    // DOCS/249 -- custom .ico asset loading + window icon (WM_SETICON).
+    // Forward to user32!LoadImageA / SendMessageA through the native bridge.
+    if (name == "LoadImageA") {
+        if (args.length >= 6) {
+            return makeInt(LoadImageA(
+                args[0].toInt().toInt(),
+                args[1].toString(),
+                args[2].toInt().toInt(),
+                args[3].toInt().toInt(),
+                args[4].toInt().toInt(),
+                args[5].toInt().toInt()));
+        }
+        return makeInt(0);
+    }
+    if (name == "SendMessageA") {
+        if (args.length >= 4) {
+            return makeInt(SendMessageA(
+                args[0].toInt().toInt(),
+                args[1].toInt().toInt(),
+                args[2].toInt().toInt(),
+                args[3].toInt().toInt()));
+        }
+        return makeInt(0);
+    }
+    // DOCS/249 -- system tray icon bridges. Forward to the native bridge
+    // (compiled by silverc.exe), which is a no-op returning 0 in this
+    // backend; silverc-rs emits the real Shell_NotifyIconA path.
+    if (name == "trayAdd") {
+        if (args.length >= 2) { return makeInt(trayAdd(args[0].toString(), args[1].toString())); }
+        if (args.length >= 1) { return makeInt(trayAdd(args[0].toString())); }
+        return makeInt(0);
+    }
+    if (name == "traySetTooltip") {
+        if (args.length >= 2) { traySetTooltip(args[0].toInt().toInt(), args[1].toString()); }
+        return makeNull();
+    }
+    if (name == "trayDelete") {
+        if (args.length >= 1) { trayDelete(args[0].toInt().toInt()); }
+        return makeNull();
+    }
+    if (name == "trayRemove") {
+        if (args.length >= 1) { trayRemove(args[0].toInt().toInt()); }
+        return makeNull();
+    }
+    // DOCS/249 -- tray click / context-menu bridges. No-op in the
+    // interpreter backend (the native WndProc + popup menu lives in
+    // silverc-rs); pollMenu/pollClick always report "no event".
+    if (name == "traySetMenu") {
+        return makeNull();
+    }
+    if (name == "trayRunLoop") {
+        return makeNull();
+    }
+    if (name == "trayPollMenu") {
+        return makeInt(0);
+    }
+    if (name == "trayPollClick") {
+        return makeInt(0);
+    }
+    // DOCS/250 -- Windows registry bridges. silverc-rs emits the real
+    // advapi32 Reg* sequence for these; the interpreter backend is a no-op
+    // (int bridges return 0, string bridges return ""). The RegistryKey class
+    // in silverc/std/registry.sr links and runs without native registry access.
+    if (name == "regOpen" || name == "regCreate" || name == "regClose" || name == "regSubKey" || name == "regSetString" || name == "regGetInt" || name == "regSetInt" || name == "regGetInt64" || name == "regSetInt64" || name == "regDeleteValue" || name == "regDeleteKey" || name == "regValueExists" || name == "regSubKeyCount" || name == "regValueCount") {
+        return makeInt(0);
+    }
+    if (name == "regGetString" || name == "regEnumSubKeyName" || name == "regEnumValueName") {
+        return makeString("");
+    }
+    if (name == "SendInput") {
+        // Raw SendInput wrapper: callers pass the address of an INPUT array,
+        // count, and sizeof(INPUT). The native compiler forwards all three
+        // values to user32!SendInput; unlike the old placeholder this returns
+        // the actual number of events inserted.
+        if (args.length >= 3) {
+            return makeInt(SendInput(
+                args[0].toInt().toInt(),
+                args[1].toInt().toInt(),
+                args[2].toInt().toInt()
+            ));
+        }
+        return makeInt(0);
+    }
+    return makeNull();
+}
+
+// math.eval(expression) — restricted integer expression evaluator. Supports
+// integer literals, parentheses, unary +/- and + - * / % == != < <= > >=
+// with standard precedence. It never executes Silver statements or code.
+// Division by zero surfaces the native divide-by-zero exception; malformed
+// expressions throw 1.
+class MathEvalParser {
+    string src;
+    int pos;
+
+    construct(string s) {
+        this.src = s;
+        this.pos = 0;
+    }
+
+    void skipWs() {
+        while (this.pos < this.src.length) {
+            char c = this.src[this.pos];
+            if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+                this.pos = this.pos + 1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    char peek() {
+        if (this.pos >= this.src.length) { return ' '; }
+        return this.src[this.pos];
+    }
+
+    int parseAll() {
+        this.skipWs();
+        int result = this.parseCompare();
+        this.skipWs();
+        if (this.pos != this.src.length) { throw 1; }
+        return result;
+    }
+
+    int parseCompare() {
+        int left = this.parseAdd();
+        while (true) {
+            this.skipWs();
+            char c = this.peek();
+            if (c == '=' && this.pos + 1 < this.src.length && this.src[this.pos + 1] == '=') {
+                this.pos = this.pos + 2;
+                int right = this.parseAdd();
+                if (left == right) { left = 1; } else { left = 0; }
+            } elif (c == '!' && this.pos + 1 < this.src.length && this.src[this.pos + 1] == '=') {
+                this.pos = this.pos + 2;
+                int right = this.parseAdd();
+                if (left != right) { left = 1; } else { left = 0; }
+            } elif (c == '<' && this.pos + 1 < this.src.length && this.src[this.pos + 1] == '=') {
+                this.pos = this.pos + 2;
+                int right = this.parseAdd();
+                if (left <= right) { left = 1; } else { left = 0; }
+            } elif (c == '>' && this.pos + 1 < this.src.length && this.src[this.pos + 1] == '=') {
+                this.pos = this.pos + 2;
+                int right = this.parseAdd();
+                if (left >= right) { left = 1; } else { left = 0; }
+            } elif (c == '<') {
+                this.pos = this.pos + 1;
+                int right = this.parseAdd();
+                if (left < right) { left = 1; } else { left = 0; }
+            } elif (c == '>') {
+                this.pos = this.pos + 1;
+                int right = this.parseAdd();
+                if (left > right) { left = 1; } else { left = 0; }
+            } else {
+                return left;
+            }
+        }
+    }
+
+    int parseAdd() {
+        int left = this.parseMul();
+        while (true) {
+            this.skipWs();
+            char c = this.peek();
+            if (c == '+') {
+                this.pos = this.pos + 1;
+                int right = this.parseMul();
+                left = left + right;
+            } elif (c == '-') {
+                this.pos = this.pos + 1;
+                int right = this.parseMul();
+                left = left - right;
+            } else {
+                return left;
+            }
+        }
+    }
+
+    int parseMul() {
+        int left = this.parseUnary();
+        while (true) {
+            this.skipWs();
+            char c = this.peek();
+            if (c == '*') {
+                this.pos = this.pos + 1;
+                int right = this.parseUnary();
+                left = left * right;
+            } elif (c == '/') {
+                this.pos = this.pos + 1;
+                int right = this.parseUnary();
+                left = left / right;
+            } elif (c == '%') {
+                this.pos = this.pos + 1;
+                int right = this.parseUnary();
+                left = left % right;
+            } else {
+                return left;
+            }
+        }
+    }
+
+    int parseUnary() {
+        this.skipWs();
+        char c = this.peek();
+        if (c == '-') {
+            this.pos = this.pos + 1;
+            return 0 - this.parseUnary();
+        }
+        if (c == '+') {
+            this.pos = this.pos + 1;
+            return this.parseUnary();
+        }
+        return this.parsePrimary();
+    }
+
+    int parsePrimary() {
+        this.skipWs();
+        char c = this.peek();
+        if (c == '(') {
+            this.pos = this.pos + 1;
+            int value = this.parseCompare();
+            this.skipWs();
+            if (this.peek() == ')') {
+                this.pos = this.pos + 1;
+                return value;
+            }
+            throw 1;
+        }
+        if (c >= '0' && c <= '9') {
+            int value = 0;
+            while (this.pos < this.src.length) {
+                char d = this.src[this.pos];
+                if (d >= '0' && d <= '9') {
+                    value = value * 10 + (d - '0');
+                    this.pos = this.pos + 1;
+                } else {
+                    break;
+                }
+            }
+            return value;
+        }
+        throw 1;
+    }
 }

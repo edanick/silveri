@@ -1,15 +1,21 @@
 mod export parser;
 
 import token;
+import lexer;
+import node;
 import ast;
-
 class Parser {
     private prop Token[] tokens;
     private prop int pos;
+    // Inside a `[...]` index, a top-level `..` starts a slice rather than
+    // a binary range expression.
+    private bool rangeIsSliceBoundary;
 
     construct (Token[] toks) {
+        file.writeBytes("TP_c.txt", [49]);
         this.tokens = toks;
         this.pos = 0;
+        this.rangeIsSliceBoundary = false;
     }
 
     private Token peek() {
@@ -64,9 +70,15 @@ class Parser {
     private int col() { return this.peek().col; }
 
 public Node[] parseProgram() {
+    file.writeBytes("TP_p.txt", [49]);
     Node[] items = [];
     int safety = 0;
-    while (!this.check(TK_EOF) && safety < 100) {
+    // Bound by the token count rather than a fixed 100: large preludes (the
+    // embedded exception hierarchy has 100+ classes) must all be parsed. The
+    // advance-on-stuck guard below guarantees forward progress, so the token
+    // count is a safe upper bound.
+    int safetyLimit = this.tokens.length + 16;
+    while (!this.check(TK_EOF) && safety < safetyLimit) {
         safety += 1;
         int oldPos = this.pos;
         Node? item = this.parseItem();
@@ -81,13 +93,22 @@ public Node[] parseProgram() {
 }
 
 private Node? parseItem() {
+    file.writeBytes("TP_i.txt", [49]);
     if (this.check(TK_HASH)) {
             return this.parseAnnotation();
+        }
+        if (this.check(TK_PUBLIC) || this.check(TK_PRIVATE) || this.check(TK_STATIC)) {
+            // Skip top-level access/static modifiers (e.g. `public const`,
+            // `public void show(...)` in std module sources) before dispatching
+            // to the declaration parser below.
+            this.advance();
+            return this.parseItem();
         }
         if (this.check(TK_MOD)) { return this.parseModule(); }
         if (this.check(TK_IMPORT)) { return this.parseImport(); }
         if (this.check(TK_CONST)) { return this.parseConst(); }
         if (this.check(TK_DEF)) { return this.parseDef(); }
+        if (this.check(TK_FUN)) { return this.parseFun(); }
         if (this.check(TK_STRUCT)) { return this.parseStruct(); }
         if (this.check(TK_CLASS)) { return this.parseClass(); }
         if (this.check(TK_COLLECT)) { return this.parseCollect(); }
@@ -102,12 +123,15 @@ private Node? parseItem() {
             if (this.check(TK_IDENT) || this.check(TK_MUT)) {
                 this.pos = saved;
                 Node? result = this.parseNamedTypeDecl();
-                return result;
+                return result ?? null;
             }
             this.pos = saved;
         }
         if (this.check(TK_VAR)) {
             return this.parseVarDeclItem();
+        }
+        if (this.check(TK_LOCAL) || this.check(TK_ALIAS) || this.check(TK_FIXED) || this.check(TK_LIVE) || this.check(TK_ONCE) || this.check(TK_SHARED)) {
+            return this.parseStmt();
         }
         // Fall back to expression statement (for top-level printline, etc.)
         Node expr = this.parseExpr(0);
@@ -165,6 +189,15 @@ private Node? parseItem() {
         if (this.check(TK_STAR)) {
             this.advance();
             all = true;
+        } elif (this.check(TK_LBRACE)) {
+            // DOCS/213 -- import { a, b } from win32;
+            this.advance();
+            names.add(this.expectIdent());
+            while (this.check(TK_COMMA)) {
+                this.advance();
+                names.add(this.expectIdent());
+            }
+            this.expect(TK_RBRACE);
         } else {
             names.add(this.expectIdent());
             while (this.check(TK_COMMA)) {
@@ -201,13 +234,28 @@ private Node? parseItem() {
         this.advance();
         string typ = this.parseTypeStr();
         string name = this.expectIdent();
-        this.expect(TK_ASSIGN);
-        Node val = this.parseExpr(0);
-        this.expect(TK_SEMI);
         Node n = new Node(ND_CONST, ln, c);
         n.name = name;
         n.typeHint = typ;
-        n.addChild(val);
+        if (this.check(TK_ASSIGN)) {
+            this.advance();
+            n.addChild(this.parseExpr(0));
+        }
+        this.expect(TK_SEMI);
+        return n;
+    }
+
+    private Node parseFun() {
+        int ln = this.line(); int c = this.col();
+        this.advance();
+        string name = this.expectIdent();
+        this.expect(TK_LPAREN);
+        Node n = new Node(ND_FUNC, ln, c);
+        n.name = name;
+        n.typeHint = "void";
+        n.addChild(this.parseParamList());
+        this.expect(TK_RPAREN);
+        n.addChild(this.parseBlock());
         return n;
     }
 
@@ -270,7 +318,7 @@ private Node? parseItem() {
         this.advance();
         string name = this.expectIdent();
         string parent = "";
-        if (this.check(TK_COLON)) {
+        if (this.check(TK_COLON) || this.check(TK_EXTENDS)) {
             this.advance();
             parent = this.expectIdent();
         }
@@ -285,8 +333,16 @@ private Node? parseItem() {
             if (this.check(TK_PRIVATE) && this.pos + 1 < this.tokens.length && this.tokens[this.pos + 1].kind == TK_COLON) {
                 this.advance(); this.advance(); continue;
             }
+            bool isPub = true;
+            bool isStat = false;
+            if (this.check(TK_PUBLIC)) { this.advance(); isPub = true; }
+            elif (this.check(TK_PRIVATE)) { this.advance(); isPub = false; }
+            if (this.check(TK_STATIC)) { this.advance(); isStat = true; }
             if (this.check(TK_CONSTRUCT)) {
-                n.addChild(this.parseConstructor(name));
+                Node ctor = this.parseConstructor(name);
+                ctor.isPublic = isPub;
+                ctor.isStatic = isStat;
+                n.addChild(ctor);
                 continue;
             }
             if (this.check(TK_PROP)) {
@@ -297,7 +353,7 @@ private Node? parseItem() {
                 Node field = new Node(ND_VAR_DECL, ln, c);
                 field.name = fieldName;
                 field.typeHint = typ;
-                field.isPublic = true;
+                field.isPublic = isPub;
                 n.addChild(field);
                 continue;
             }
@@ -313,25 +369,23 @@ private Node? parseItem() {
                 n.addChild(field);
                 continue;
             }
-            bool isPub = false;
-            bool isStat = false;
-            if (this.check(TK_PUBLIC)) { this.advance(); isPub = true; }
-            if (this.check(TK_STATIC)) { this.advance(); isStat = true; }
-            if (this.checkType()) {
+            if (this.checkType() || this.check(TK_IDENT)) {
                 string retType = this.parseTypeStr();
-                string name = this.expectIdent();
-                Node fn = this.parseFunctionDef(isPub, isStat, retType, name);
-                n.addChild(fn);
-                continue;
-            }
-            if (this.checkType()) {
-                string typ = this.parseTypeStr();
-                string fieldName = this.expectIdent();
-                this.expect(TK_SEMI);
-                Node field = new Node(ND_VAR_DECL, ln, c);
-                field.name = fieldName;
-                field.typeHint = typ;
-                n.addChild(field);
+                string mname = this.expectIdent();
+                if (this.check(TK_LPAREN)) {
+                    Node fn = this.parseFunctionDef(isPub, isStat, retType, mname);
+                    if (!isStat) {
+                        this.prependThisParam(fn, name);
+                    }
+                    n.addChild(fn);
+                } else {
+                    this.expect(TK_SEMI);
+                    Node field = new Node(ND_VAR_DECL, ln, c);
+                    field.name = mname;
+                    field.typeHint = retType;
+                    field.isPublic = isPub;
+                    n.addChild(field);
+                }
                 continue;
             }
             break;
@@ -350,7 +404,20 @@ private Node? parseItem() {
         n.addChild(this.parseParamList());
         this.expect(TK_RPAREN);
         n.addChild(this.parseBlock());
+        this.prependThisParam(n, className);
         return n;
+    }
+
+    private void prependThisParam(Node fn, string className) {
+        Node params = fn.child(0);
+        Node thisParam = new Node(ND_VAR_DECL, 0, 0);
+        thisParam.name = "this";
+        thisParam.typeHint = className;
+        Node[] newChildren = [thisParam];
+        for (int i = 0; i < params.childCount(); i++) {
+            newChildren.add(params.child(i));
+        }
+        params.children = newChildren;
     }
 
     private Node parseCollect() {
@@ -480,6 +547,12 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
         bool isMut = false;
         if (this.check(TK_MUT)) { this.advance(); isMut = true; }
         string name = this.expectIdent();
+        // A named type followed by '(' is a function whose return type is a
+        // class/type name (e.g. `Spinner dots() { ... }`), not a variable
+        // declaration.
+        if (this.check(TK_LPAREN)) {
+            return this.parseFunctionDef(false, false, typeName, name);
+        }
         Node init = new Node(ND_NULL_LIT, ln, c);
         if (this.check(TK_ASSIGN)) {
             this.advance();
@@ -515,8 +588,12 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
         this.expect(TK_LBRACE);
         Node block = new Node(ND_BLOCK, ln, c);
         while (!this.check(TK_RBRACE) && !this.check(TK_EOF)) {
+            int oldPos = this.pos;
             Node? stmt = this.parseStmt();
             if (stmt != null) { block.addChild(stmt); }
+            if (this.pos == oldPos) {
+                this.advance();
+            }
         }
         this.expect(TK_RBRACE);
         return block;
@@ -529,20 +606,85 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
         if (this.check(TK_IF)) { return this.parseIf(); }
         if (this.check(TK_MATCH)) { return this.parseMatchStmt(); }
         if (this.check(TK_TRY)) { return this.parseTryCatch(); }
+        if (this.check(TK_THROW)) { return this.parseThrow(); }
         if (this.check(TK_RETURN)) { return this.parseReturn(); }
         if (this.check(TK_SHR)) { return this.parseReturnShortcut(); }
         if (this.check(TK_UNSET)) { return this.parseUnset(); }
+        if (this.check(TK_LOCAL)) {
+            this.advance();
+            return this.parseVarDecl();
+        }
+        if (this.check(TK_FIXED)) {
+            this.advance();
+            Node n = this.parseVarDecl();
+            n.isFixed = true;
+            return n;
+        }
+        if (this.check(TK_LIVE)) {
+            this.advance();
+            Node n = this.parseVarDecl();
+            n.isLive = true;
+            return n;
+        }
+        if (this.check(TK_ONCE)) {
+            this.advance();
+            Node n = this.parseVarDecl();
+            n.isOnce = true;
+            return n;
+        }
+        if (this.check(TK_SHARED)) {
+            this.advance();
+            Node n = this.parseVarDecl();
+            n.isShared = true;
+            return n;
+        }
+        if (this.check(TK_ALIAS)) {
+            int ln = this.line(); int c = this.col();
+            this.advance();
+            string typ = this.parseTypeStr();
+            string name = this.expectIdent();
+            Node n = new Node(ND_ALIAS_DECL, ln, c);
+            n.name = name;
+            n.typeHint = typ;
+            n.isAlias = true;
+            if (this.check(TK_ASSIGN)) {
+                this.advance();
+                n.addChild(this.parseExpr(0));
+            }
+            this.expect(TK_SEMI);
+            return n;
+        }
         if (this.check(TK_SWITCH)) { return this.parseSwitch(); }
+        if (this.check(TK_BREAK)) { this.advance(); this.expect(TK_SEMI); return new Node(ND_BREAK, this.line(), this.col()); }
+        if (this.check(TK_CONTINUE)) { this.advance(); this.expect(TK_SEMI); return new Node(ND_CONTINUE, this.line(), this.col()); }
         if (this.check(TK_VAR)) { return this.parseVarDecl(); }
         if (this.checkType()) { return this.parseTypedDecl(); }
         if (this.check(TK_IDENT)) {
             int saved = this.pos;
             string typeName = this.expectIdent();
-            if (this.check(TK_IDENT) || this.check(TK_MUT)) {
-                this.pos = saved;
-                return this.parseNamedTypeDeclStmt();
+            bool isTypeDecl = this.check(TK_IDENT) || this.check(TK_MUT);
+            if (!isTypeDecl && this.check(TK_LBRACKET) && this.pos + 1 < this.tokens.length && this.tokens[this.pos + 1].kind == TK_RBRACKET) {
+                this.advance(); this.advance();
+                isTypeDecl = this.check(TK_IDENT) || this.check(TK_MUT);
+            }
+            if (!isTypeDecl && this.check(TK_QUESTION)) {
+                this.advance();
+                isTypeDecl = this.check(TK_IDENT) || this.check(TK_MUT);
+            }
+            if (!isTypeDecl && this.check(TK_LESS)) {
+                int depth = 1;
+                this.advance();
+                while (depth > 0 && this.pos < this.tokens.length && !this.check(TK_EOF)) {
+                    if (this.check(TK_LESS)) { depth += 1; }
+                    elif (this.check(TK_GREATER)) { depth -= 1; }
+                    this.advance();
+                }
+                isTypeDecl = this.check(TK_IDENT) || this.check(TK_MUT);
             }
             this.pos = saved;
+            if (isTypeDecl) {
+                return this.parseNamedTypeDeclStmt();
+            }
         }
         Node expr = this.parseExpr(0);
         this.expect(TK_SEMI);
@@ -557,15 +699,15 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
         this.expect(TK_LPAREN);
         Node n = new Node(ND_FOR_C, ln, c);
         Node init = new Node(ND_EXPR_STMT, ln, c);
-        if (!this.check(TK_SEMI)) {
-            if (this.checkType() || this.check(TK_VAR)) {
-                init = this.parseVarDecl();
-            } else {
-                Node expr = this.parseExpr(0);
-                init.addChild(expr);
-            }
+        if (this.check(TK_SEMI)) {
+            this.advance();
+        } elif (this.checkType() || this.check(TK_VAR)) {
+            init = this.parseVarDecl();
+        } else {
+            Node expr = this.parseExpr(0);
+            init.addChild(expr);
+            this.expect(TK_SEMI);
         }
-        this.expect(TK_SEMI);
         Node cond = this.parseExpr(0);
         this.expect(TK_SEMI);
         Node update = this.parseExpr(0);
@@ -584,6 +726,14 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
         this.expect(TK_LPAREN);
         string typ = "";
         if (this.checkType()) { typ = this.parseTypeStr(); }
+        elif (this.check(TK_VAR)) { this.advance(); typ = "var"; }
+        elif (this.check(TK_IDENT)) {
+            int saved = this.pos;
+            string first = this.expectIdent();
+            bool isTyped = !this.check(TK_IN);
+            this.pos = saved;
+            if (isTyped) { typ = this.parseTypeStr(); }
+        }
         string var_ = this.expectIdent();
         this.expect(TK_IN);
         Node collection = this.parseExpr(0);
@@ -629,6 +779,10 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
                 n.addChild(this.parseBlock());
             }
         }
+        if (this.check(TK_ELIF)) {
+            Node? elseIf = this.parseIf();
+            if (elseIf != null) { n.addChild(elseIf); }
+        }
         return n;
     }
 
@@ -659,18 +813,35 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
     private Node parseTryCatch() {
         int ln = this.line(); int c = this.col();
         this.advance();
-        Node tryBlock = this.parseBlock();
-        this.expect(TK_CATCH);
-        this.expect(TK_LPAREN);
-        string catchType = this.parseTypeStr();
-        string catchVar = this.expectIdent();
-        this.expect(TK_RPAREN);
-        Node catchBlock = this.parseBlock();
         Node n = new Node(ND_TRY_CATCH, ln, c);
-        n.name = catchVar;
-        n.typeHint = catchType;
-        n.addChild(tryBlock);
-        n.addChild(catchBlock);
+        n.addChild(this.parseBlock());
+        if (this.check(TK_CATCH)) {
+            this.advance();
+            this.expect(TK_LPAREN);
+            string catchType = this.parseTypeStr();
+            string catchVar = this.expectIdent();
+            this.expect(TK_RPAREN);
+            n.name = catchVar;
+            n.typeHint = catchType;
+            n.addChild(this.parseBlock());
+        } else {
+            Node empty = new Node(ND_BLOCK, ln, c);
+            n.addChild(empty);
+        }
+        if (this.check(TK_FINALLY)) {
+            this.advance();
+            n.hasFinally = true;
+            n.addChild(this.parseBlock());
+        }
+        return n;
+    }
+
+    private Node parseThrow() {
+        int ln = this.line(); int c = this.col();
+        this.advance();
+        Node n = new Node(ND_THROW, ln, c);
+        n.addChild(this.parseExpr(0));
+        this.expect(TK_SEMI);
         return n;
     }
 
@@ -747,6 +918,19 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
             this.advance();
             n.addChild(this.parseExpr(0));
         }
+        if (this.check(TK_SHL)) {
+            this.advance();
+            Node rhs = this.parseExpr(0);
+            Node move = new Node(ND_BINARY, n.line, n.col);
+            move.op = OP_MOVE;
+            Node src = new Node(ND_IDENT, n.line, n.col);
+            src.name = n.name;
+            move.addChild(src);
+            move.addChild(rhs);
+            n.addChild(move);
+            this.expect(TK_SEMI);
+            return n;
+        }
         this.expect(TK_SEMI);
         return n;
     }
@@ -761,9 +945,43 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
         n.name = name;
         n.typeHint = typ;
         n.isMut = isMut;
+        bool isFixed = false;
+        int fixedSize = 0;
+        if (this.check(TK_LBRACKET) && !(this.pos + 1 < this.tokens.length && this.tokens[this.pos + 1].kind == TK_RBRACKET)) {
+            this.advance();
+            Node size = this.parseExpr(0);
+            this.expect(TK_RBRACKET);
+            isFixed = true;
+            if (size.kind == ND_INT_LIT) { fixedSize = size.intVal; }
+            n.typeHint = typ + "[]";
+        }
         if (this.check(TK_ASSIGN)) {
             this.advance();
             n.addChild(this.parseExpr(0));
+        } elif (isFixed) {
+            // Materialize zero elements so the interpreter's normal array
+            // representation has the requested length and can be indexed or
+            // passed to native out-parameter helpers.
+            Node arr = new Node(ND_ARRAY_LIT, ln, c);
+            for (int i = 0; i < fixedSize; i = i + 1) {
+                Node zero = new Node(ND_INT_LIT, ln, c);
+                zero.intVal = 0;
+                arr.addChild(zero);
+            }
+            n.addChild(arr);
+        }
+        if (this.check(TK_SHL)) {
+            this.advance();
+            Node rhs = this.parseExpr(0);
+            Node move = new Node(ND_BINARY, n.line, n.col);
+            move.op = OP_MOVE;
+            Node src = new Node(ND_IDENT, n.line, n.col);
+            src.name = n.name;
+            move.addChild(src);
+            move.addChild(rhs);
+            n.addChild(move);
+            this.expect(TK_SEMI);
+            return n;
         }
         this.expect(TK_SEMI);
         return n;
@@ -771,7 +989,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
 
     private Node parseNamedTypeDeclStmt() {
         int ln = this.line(); int c = this.col();
-        string typeName = this.expectIdent();
+        string typeName = this.parseTypeStr();
         bool isMut = false;
         if (this.check(TK_MUT)) { this.advance(); isMut = true; }
         string name = this.expectIdent();
@@ -779,9 +997,40 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
         n.name = name;
         n.typeHint = typeName;
         n.isMut = isMut;
+        bool isFixed = false;
+        int fixedSize = 0;
+        if (this.check(TK_LBRACKET) && !(this.pos + 1 < this.tokens.length && this.tokens[this.pos + 1].kind == TK_RBRACKET)) {
+            this.advance();
+            Node size = this.parseExpr(0);
+            this.expect(TK_RBRACKET);
+            isFixed = true;
+            if (size.kind == ND_INT_LIT) { fixedSize = size.intVal; }
+            n.typeHint = typeName + "[]";
+        }
         if (this.check(TK_ASSIGN)) {
             this.advance();
             n.addChild(this.parseExpr(0));
+        } elif (isFixed) {
+            Node arr = new Node(ND_ARRAY_LIT, ln, c);
+            for (int i = 0; i < fixedSize; i = i + 1) {
+                Node zero = new Node(ND_INT_LIT, ln, c);
+                zero.intVal = 0;
+                arr.addChild(zero);
+            }
+            n.addChild(arr);
+        }
+        if (this.check(TK_SHL)) {
+            this.advance();
+            Node rhs = this.parseExpr(0);
+            Node move = new Node(ND_BINARY, n.line, n.col);
+            move.op = OP_MOVE;
+            Node src = new Node(ND_IDENT, n.line, n.col);
+            src.name = n.name;
+            move.addChild(src);
+            move.addChild(rhs);
+            n.addChild(move);
+            this.expect(TK_SEMI);
+            return n;
         }
         this.expect(TK_SEMI);
         return n;
@@ -873,6 +1122,11 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
 
     private bool isInfix() {
         int k = this.peekKind();
+        if (k == TK_RANGE && this.rangeIsSliceBoundary) {
+            // `..` inside a `[...]` index starts a slice, so it is not an
+            // infix operator there.
+            return false;
+        }
         return k == TK_PLUS || k == TK_MINUS || k == TK_STAR || k == TK_SLASH || k == TK_PERCENT
             || k == TK_EQ || k == TK_NEQ || k == TK_LESS || k == TK_LEQ || k == TK_GREATER || k == TK_GEQ
             || k == TK_AND || k == TK_OR
@@ -970,9 +1224,27 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
             n.addChild(this.parseExpr(10));
             return n;
         }
+        if (this.check(TK_AT)) {
+            this.advance();
+            Node addr = new Node(ND_ADDRESS_OF, ln, c);
+            addr.addChild(this.parseExpr(10));
+            return addr;
+        }
         if (this.check(TK_NEW)) {
             this.advance();
             string typeName = this.expectIdent();
+            if (this.check(TK_LBRACKET)) {
+                // Primitive array construction, currently including the
+                // documented `new byte[count]` form. Keep ND_NEW so the
+                // evaluator can share the existing construction path.
+                this.advance();
+                Node size = this.parseExpr(0);
+                this.expect(TK_RBRACKET);
+                Node n = new Node(ND_NEW, ln, c);
+                n.name = typeName;
+                n.addChild(size);
+                return n;
+            }
             this.expect(TK_LPAREN);
             Node[] args = [];
             while (!this.check(TK_RPAREN) && !this.check(TK_EOF)) {
@@ -1089,6 +1361,18 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
             n.name = this.advance().text;
             return n;
         }
+        // Primitive type keywords are callable in expression position:
+        // `string(x)`, `int(x)`, `float(x)` etc. are casts, resolved here as
+        // ordinary calls so they dispatch to the matching builtin (e.g.
+        // `string` -> string_cast). Mirroring the compiler, keep the keyword's
+        // source text as the callee name.
+        if (this.check(TK_INT) || this.check(TK_INT32) || this.check(TK_INT64) || this.check(TK_UINT)
+            || this.check(TK_FLOAT) || this.check(TK_FLOAT64) || this.check(TK_DOUBLE)
+            || this.check(TK_BOOL) || this.check(TK_CHAR) || this.check(TK_STRING) || this.check(TK_VOID)) {
+            Node n = new Node(ND_IDENT, ln, c);
+            n.name = this.advance().text;
+            return n;
+        }
         this.advance();
         return new Node(ND_NULL_LIT, ln, c);
     }
@@ -1128,8 +1412,26 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
         if (k == TK_MINUS_EQ) { this.advance(); return this.makeAssignOp(lhs, OP_SUB_ASSIGN, ln, c); }
         if (k == TK_STAR_EQ) { this.advance(); return this.makeAssignOp(lhs, OP_MUL_ASSIGN, ln, c); }
         if (k == TK_SLASH_EQ) { this.advance(); return this.makeAssignOp(lhs, OP_DIV_ASSIGN, ln, c); }
-        if (k == TK_INC) { this.advance(); return this.makeAssignOp(lhs, OP_ADD_ASSIGN, ln, c); }
-        if (k == TK_DEC) { this.advance(); return this.makeAssignOp(lhs, OP_SUB_ASSIGN, ln, c); }
+        if (k == TK_INC) {
+            this.advance();
+            Node n = new Node(ND_BINARY, ln, c);
+            n.op = OP_ADD_ASSIGN;
+            n.addChild(lhs);
+            Node one = new Node(ND_INT_LIT, ln, c);
+            one.intVal = 1;
+            n.addChild(one);
+            return n;
+        }
+        if (k == TK_DEC) {
+            this.advance();
+            Node n = new Node(ND_BINARY, ln, c);
+            n.op = OP_SUB_ASSIGN;
+            n.addChild(lhs);
+            Node one = new Node(ND_INT_LIT, ln, c);
+            one.intVal = 1;
+            n.addChild(one);
+            return n;
+        }
         if (k == TK_RANGE) {
             this.advance();
             Node n = new Node(ND_BINARY, ln, c);
@@ -1166,21 +1468,28 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
         }
         if (k == TK_LBRACKET) {
             this.advance();
+            // Inside the brackets, `..` is a slice boundary rather than a
+            // binary range operator, so the index expression stops there.
+            bool oldBoundary = this.rangeIsSliceBoundary;
+            this.rangeIsSliceBoundary = true;
             Node idx = this.parseExpr(0);
-            if (this.check(TK_RANGE)) {
+            bool isSlice = this.check(TK_RANGE);
+            Node n;
+            if (isSlice) {
                 this.advance();
                 Node end = this.parseExpr(0);
                 this.expect(TK_RBRACKET);
-                Node n = new Node(ND_SLICE, ln, c);
+                n = new Node(ND_SLICE, ln, c);
                 n.addChild(lhs);
                 n.addChild(idx);
                 n.addChild(end);
-                return n;
+            } else {
+                this.expect(TK_RBRACKET);
+                n = new Node(ND_INDEX, ln, c);
+                n.addChild(lhs);
+                n.addChild(idx);
             }
-            this.expect(TK_RBRACKET);
-            Node n = new Node(ND_INDEX, ln, c);
-            n.addChild(lhs);
-            n.addChild(idx);
+            this.rangeIsSliceBoundary = oldBoundary;
             return n;
         }
         if (k == TK_DOT) {
@@ -1222,8 +1531,9 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
         if (this.check(TK_INT_LIT) && this.peek().intVal == 1) {
             if (op == OP_ADD_ASSIGN || op == OP_SUB_ASSIGN) {
                 this.advance();
-                n.addChild(new Node(ND_INT_LIT, ln, c));
-                n.child(1).intVal = 1;
+                Node one = new Node(ND_INT_LIT, ln, c);
+                one.intVal = 1;
+                n.addChild(one);
                 return n;
             }
         }
@@ -1318,13 +1628,26 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
         if (this.check(TK_CHAR)) { this.advance(); return this.applyTypeSuffix("char"); }
         if (this.check(TK_STRING)) { this.advance(); return this.applyTypeSuffix("string"); }
         if (this.check(TK_VOID)) { this.advance(); return "void"; }
-        if (this.check(TK_IDENT)) { string name = this.advance().text; return this.applyTypeSuffix(name); }
+        if (this.check(TK_IDENT)) {
+            string name = this.advance().text;
+            if (this.check(TK_LESS)) {
+                this.advance();
+                string inner = this.parseTypeStr();
+                while (this.check(TK_PIPE) || this.check(TK_COMMA)) {
+                    string sep = this.advance().text;
+                    inner += sep + this.parseTypeStr();
+                }
+                this.expect(TK_GREATER);
+                return name + "<" + inner + ">" + this.typeSuffix();
+            }
+            return this.applyTypeSuffix(name);
+        }
         if (this.check(TK_LESS)) {
             this.advance();
             string inner = this.parseTypeStr();
-            while (this.check(TK_PIPE)) {
-                this.advance();
-                inner += "|" + this.parseTypeStr();
+            while (this.check(TK_PIPE) || this.check(TK_COMMA)) {
+                string sep = this.advance().text;
+                inner += sep + this.parseTypeStr();
             }
             this.expect(TK_GREATER);
             return "<" + inner + ">" + this.typeSuffix();
