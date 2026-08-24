@@ -10,12 +10,18 @@ class Parser {
     // Inside a `[...]` index, a top-level `..` starts a slice rather than
     // a binary range expression.
     private bool rangeIsSliceBoundary;
+    private prop int parseErrors;
 
     construct (Token[] toks) {
         file.writeBytes("build/diag/TP_c.txt", [49]);
         this.tokens = toks;
         this.pos = 0;
         this.rangeIsSliceBoundary = false;
+        this.parseErrors = 0;
+    }
+
+    public int errorCount() {
+        return this.parseErrors;
     }
 
     private Token peek() {
@@ -52,6 +58,7 @@ class Parser {
             return this.advance();
         }
         Token t = this.peek();
+        this.parseErrors += 1;
         printline("Parse error at " + t.line.toString() + ":" + t.col.toString() + ": expected " + kindToString(kind) + " but got " + kindToString(t.kind) + " '" + t.text + "'");
         return t;
     }
@@ -62,6 +69,7 @@ class Parser {
             this.advance();
             return t.text;
         }
+        this.parseErrors += 1;
         printline("Parse error: expected identifier at " + t.line.toString() + ":" + t.col.toString());
         return "_err";
     }

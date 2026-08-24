@@ -204,6 +204,9 @@ void main() {
 
     Parser p = new Parser(tokens);
     Node[] program = p.parseProgram();
+    if (p.errorCount() > 0) {
+        exit(1);
+    }
 
     Evaluator evaluator = new Evaluator();
     string preludeSrc = source();
@@ -211,6 +214,9 @@ void main() {
     Token[] preludeTokens = preludeLexer.tokenize();
     Parser preludeParser = new Parser(preludeTokens);
     Node[] llmaiPrelude = preludeParser.parseProgram();
+    if (preludeParser.errorCount() > 0) {
+        exit(1);
+    }
     evaluator.register(llmaiPrelude);
 
     string excSrc = exceptionSource();
@@ -218,6 +224,9 @@ void main() {
     Token[] excTokens = excLexer.tokenize();
     Parser excParser = new Parser(excTokens);
     Node[] excPrelude = excParser.parseProgram();
+    if (excParser.errorCount() > 0) {
+        exit(1);
+    }
     evaluator.register(excPrelude);
 
     MemoryGuard guard = new MemoryGuard();
