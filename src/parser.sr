@@ -69,6 +69,12 @@ class Parser {
             this.advance();
             return t.text;
         }
+        // Keywords may serve as identifiers when no specific keyword match
+        // (e.g. `int match = true;` or `string mod = ...;`).
+        if (t.kind != TK_EOF && t.text.length > 0) {
+            this.advance();
+            return t.text;
+        }
         this.parseErrors += 1;
         printline("Parse error: expected identifier at " + t.line.toString() + ":" + t.col.toString());
         return "_err";
