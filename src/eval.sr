@@ -1685,12 +1685,22 @@ class Evaluator {
                 Node arm = stmt.child(i);
                 Node caseExpr = arm.child(0);
                 Node caseBody = arm.child(1);
-                if (caseExpr.kind == ND_NULL_LIT || this.evalExpr(caseExpr, env).equals(target)) {
+                bool matched = arm.name == "else";
+                if (!matched) {
+                    Value cv = this.evalExpr(caseExpr, env);
+                    GC.pushRoot(cv);
+                    matched = cv.equals(target);
+                    GC.popRoot();
+                }
+                if (matched) {
                     this.execBlock(caseBody, env);
                     break;
                 }
             }
             GC.popRoot();
+            // A `break` inside a matched case exits the switch (DOCS/108); it
+            // must not propagate to an enclosing loop, so consume the flag.
+            this.hasBroken = false;
             return;
         }
 

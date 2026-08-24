@@ -967,6 +967,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
                 this.advance();
                 Node elseBody = this.parseBlock();
                 Node arm = new Node(ND_TUPLE_LIT, ln, c);
+                arm.name = "else";
                 arm.addChild(new Node(ND_NULL_LIT, ln, c));
                 arm.addChild(elseBody);
                 n.addChild(arm);

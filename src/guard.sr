@@ -604,7 +604,7 @@ class MemoryGuard {
         for (int i = 1; i < n.childCount(); i++) {
             Node arm = n.child(i);
             if (arm.childCount() < 2) { continue; }
-            if (arm.child(0).kind == ND_NULL_LIT) { hasDefault = true; }
+            if (arm.name == "else") { hasDefault = true; }
             this.pushScope();
             this.checkMatchBody(arm.child(1));
             this.popScope();
