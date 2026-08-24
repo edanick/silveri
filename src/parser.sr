@@ -704,7 +704,10 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
                     elif (this.check(TK_GREATER)) { depth -= 1; }
                     this.advance();
                 }
-                isTypeDecl = this.check(TK_IDENT) || this.check(TK_MUT);
+                // `tuple<...> (x, y) = t;` is the tuple destructuring form
+                // (DOCS/18), so a paren after a tuple generic is a type decl.
+                isTypeDecl = this.check(TK_IDENT) || this.check(TK_MUT)
+                    || (typeName == "tuple" && this.check(TK_LPAREN));
             }
             this.pos = saved;
             if (isTypeDecl) {
@@ -1012,6 +1015,27 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
         bool isMut = false;
         if (this.check(TK_MUT)) { this.advance(); isMut = true; }
         string name = this.expectIdent();
+        if (this.check(TK_COMMA)) {
+            int saved = this.pos;
+            Node d = new Node(ND_DESTRUCT, ln, c);
+            d.typeHint = typ;
+            Node firstN = new Node(ND_IDENT, ln, c);
+            firstN.name = name;
+            d.addChild(firstN);
+            while (this.check(TK_COMMA)) {
+                this.advance();
+                Node nn = new Node(ND_IDENT, ln, c);
+                nn.name = this.expectIdent();
+                d.addChild(nn);
+            }
+            if (this.check(TK_ASSIGN)) {
+                this.advance();
+                d.addChild(this.parseExpr(0));
+                this.expect(TK_SEMI);
+                return d;
+            }
+            this.pos = saved;
+        }
         Node n = new Node(ND_VAR_DECL, ln, c);
         n.name = name;
         n.typeHint = typ;
@@ -1061,9 +1085,48 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
     private Node parseNamedTypeDeclStmt() {
         int ln = this.line(); int c = this.col();
         string typeName = this.parseTypeStr();
+        // Tuple destructuring: `tuple<T...> (x, y, z) = expr;` (DOCS/18)
+        if (this.check(TK_LPAREN)) {
+            this.advance();
+            Node d = new Node(ND_DESTRUCT, ln, c);
+            d.typeHint = typeName;
+            while (!this.check(TK_RPAREN) && !this.check(TK_EOF)) {
+                Node nn = new Node(ND_IDENT, ln, c);
+                nn.name = this.expectIdent();
+                d.addChild(nn);
+                if (this.check(TK_COMMA)) { this.advance(); }
+            }
+            this.expect(TK_RPAREN);
+            this.expect(TK_ASSIGN);
+            d.addChild(this.parseExpr(0));
+            this.expect(TK_SEMI);
+            return d;
+        }
         bool isMut = false;
         if (this.check(TK_MUT)) { this.advance(); isMut = true; }
         string name = this.expectIdent();
+        // Comma-separated destructure: `tuple<int,string> a, b = t;` (DOCS/18)
+        if (this.check(TK_COMMA)) {
+            int saved = this.pos;
+            Node d = new Node(ND_DESTRUCT, ln, c);
+            d.typeHint = typeName;
+            Node firstN = new Node(ND_IDENT, ln, c);
+            firstN.name = name;
+            d.addChild(firstN);
+            while (this.check(TK_COMMA)) {
+                this.advance();
+                Node nn = new Node(ND_IDENT, ln, c);
+                nn.name = this.expectIdent();
+                d.addChild(nn);
+            }
+            if (this.check(TK_ASSIGN)) {
+                this.advance();
+                d.addChild(this.parseExpr(0));
+                this.expect(TK_SEMI);
+                return d;
+            }
+            this.pos = saved;
+        }
         Node n = new Node(ND_VAR_DECL, ln, c);
         n.name = name;
         n.typeHint = typeName;
@@ -1585,6 +1648,18 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
                 member = this.expectIdent();
             } elif (this.check(TK_INT_LIT)) {
                 member = this.advance().text;
+            } elif (this.check(TK_FLOAT_LIT)) {
+                // `t.0.toString()` lexes the index as the float "0."; a float
+                // made of digits and a bare trailing dot is the tuple-index
+                // member form, so strip the trailing dot.
+                string ftext = this.advance().text;
+                if (ftext.length > 1 && ftext[ftext.length - 1] == '.') {
+                    member = ftext.substr(0, ftext.length - 1);
+                } else {
+                    this.parseErrors += 1;
+                    printline("Parse error: expected identifier or integer literal after '.' at " + this.peek().line.toString() + ":" + this.peek().col.toString());
+                    member = "_err";
+                }
             } else {
                 this.parseErrors += 1;
                 printline("Parse error: expected identifier or integer literal after '.' at " + this.peek().line.toString() + ":" + this.peek().col.toString());

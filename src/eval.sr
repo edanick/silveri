@@ -1148,6 +1148,18 @@ class Evaluator {
             if (member == obj.strVal) { return obj; }
             return makeEnumVal(obj.typeName, member);
         }
+        if (obj.tag == VAL_TUPLE) {
+            if (member.length > 0 && member[0].isDigit()) {
+                int64 idx = member.toInt64();
+                if (idx < 0 || idx >= obj.arrVal.length.toInt64()) {
+                    printline("Runtime error: tuple index out of range " + idx.toString());
+                    exit(1);
+                }
+                return obj.arrVal[idx.toInt()];
+            }
+            printline("Runtime error: tuple members are numeric only, got '" + member + "'");
+            exit(1);
+        }
         if (obj.tag == VAL_BUILTIN) {
             if (obj.funcName == "console_module") {
                 if (member == "Black") { return makeInt(0); }
@@ -1528,6 +1540,27 @@ class Evaluator {
                 if (stmt.typeHint == "byte") { env.define(stmt.name, makeByte(0)); }
                 else { env.define(stmt.name, makeNull()); }
             }
+            return;
+        }
+
+        if (stmt.kind == ND_DESTRUCT) {
+            Node rhs = stmt.child(stmt.childCount() - 1);
+            Value val = this.evalExpr(rhs, env);
+            GC.pushRoot(val);
+            if (val.tag == VAL_TUPLE || val.tag == VAL_ARRAY) {
+                for (int i = 0; i + 1 < stmt.childCount(); i++) {
+                    string nme = stmt.child(i).name;
+                    if (i < val.arrVal.length) {
+                        env.define(nme, val.arrVal[i]);
+                    } else {
+                        env.define(nme, makeNull());
+                    }
+                }
+            } else {
+                printline("Runtime error: cannot destructure a non-tuple/non-array value");
+                exit(1);
+            }
+            GC.popRoot();
             return;
         }
 

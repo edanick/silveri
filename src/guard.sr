@@ -396,6 +396,15 @@ class MemoryGuard {
         this.declareVar(name, n.typeHint, true, true, onceFlag, fixedFlag, nullable, false, n.line, n.col);
     }
 
+    private void checkDestruct(Node n) {
+        Node rhs = n.child(n.childCount() - 1);
+        this.checkExpr(rhs);
+        bool nullable = this.endsWithQ(n.typeHint);
+        for (int i = 0; i + 1 < n.childCount(); i++) {
+            this.declareVar(n.child(i).name, n.typeHint, true, true, false, false, nullable, false, n.line, n.col);
+        }
+    }
+
     private void checkAlias(Node n) {
         string aname = n.name;
         bool nullable = this.endsWithQ(n.typeHint);
@@ -740,6 +749,7 @@ class MemoryGuard {
         int k = n.kind;
         if (k == ND_BLOCK) { this.checkBlock(n); return; }
         if (k == ND_VAR_DECL) { this.checkVarDecl(n); return; }
+        if (k == ND_DESTRUCT) { this.checkDestruct(n); return; }
         if (k == ND_ALIAS_DECL) { this.checkAlias(n); return; }
         if (k == ND_LIVE_DECL) { this.checkVarDecl(n); return; }
         if (k == ND_ONCE_DECL) { this.checkVarDecl(n); return; }
