@@ -386,6 +386,30 @@ class BuiltinMethods {
             }
             return makeArray(result);
         }
+        if (method == "count") {
+            return makeInt(objKeysLen(d).toInt64());
+        }
+        if (method == "remove") {
+            if (args.length < 1) { return makeNull(); }
+            string key = args[0].strVal;
+            dict<string, Value> newDict = {};
+            Value[] newVals = [];
+            string[] newKeys = [];
+            for (int i = 0; i < objKeysLen(d); i++) {
+                string k = objKeysGet(d, i);
+                if (k != key) {
+                    dictSet(newDict, newVals, newKeys, k, d.objVal[k]);
+                }
+            }
+            d.objVal = newDict;
+            setObjVals(d, newVals, newKeys);
+            return makeNull();
+        }
+        if (method == "clear") {
+            d.objVal = {};
+            setObjVals(d, [], []);
+            return makeNull();
+        }
         return makeNull();
     }
 
