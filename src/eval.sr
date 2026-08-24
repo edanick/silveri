@@ -1523,7 +1523,7 @@ class Evaluator {
                 if (!cond.isTruthy()) { break; }
                 this.execBlockInto(stmt.child(3), loopEnv);
                 if (this.hasBroken) { this.hasBroken = false; break; }
-                if (this.hasContinued) { this.hasContinued = false; continue; }
+                if (this.hasContinued) { this.hasContinued = false; }
                 this.maybeGC(loopEnv);
                 this.evalExpr(stmt.child(2), env);
             }
