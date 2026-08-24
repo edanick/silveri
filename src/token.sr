@@ -75,6 +75,7 @@ const int TK_LIVE = 71;
 const int TK_ONCE = 72;
 const int TK_SHARED = 73;
 const int TK_LOOP = 74;
+const int TK_TYPEALIAS = 75;
 
 const int TK_LPAREN = 100;
 const int TK_RPAREN = 101;
@@ -244,5 +245,6 @@ string kindToString(int kind) {
     if (kind == TK_CONTINUE) { return "continue"; }
     if (kind == TK_EXTENDS) { return "extends"; }
     if (kind == TK_LOOP) { return "loop"; }
+    if (kind == TK_TYPEALIAS) { return "typealias"; }
     return "UNKNOWN(" + kind.toString() + ")";
 }

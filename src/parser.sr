@@ -138,7 +138,7 @@ private Node? parseItem() {
         if (this.check(TK_VAR)) {
             return this.parseVarDeclItem();
         }
-        if (this.check(TK_LOCAL) || this.check(TK_ALIAS) || this.check(TK_FIXED) || this.check(TK_LIVE) || this.check(TK_ONCE) || this.check(TK_SHARED)) {
+        if (this.check(TK_LOCAL) || this.check(TK_ALIAS) || this.check(TK_TYPEALIAS) || this.check(TK_FIXED) || this.check(TK_LIVE) || this.check(TK_ONCE) || this.check(TK_SHARED)) {
             return this.parseStmt();
         }
         // Fall back to expression statement (for top-level printline, etc.)
@@ -659,6 +659,22 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
                 this.advance();
                 n.addChild(this.parseExpr(0));
             }
+            this.expect(TK_SEMI);
+            return n;
+        }
+        if (this.check(TK_TYPEALIAS)) {
+            // `typealias Name = T;` (DOCS/48) -- the keyword spelling of the
+            // type alias declaration. Produces the same ND_ALIAS_DECL node as
+            // the `T as Name;` form.
+            int ln = this.line(); int c = this.col();
+            this.advance();
+            string name = this.expectIdent();
+            this.expect(TK_ASSIGN);
+            string typ = this.parseTypeStr();
+            Node n = new Node(ND_ALIAS_DECL, ln, c);
+            n.name = name;
+            n.typeHint = typ;
+            n.isAlias = true;
             this.expect(TK_SEMI);
             return n;
         }
