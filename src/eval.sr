@@ -595,6 +595,15 @@ class Evaluator {
         if (node.kind == ND_BOOL_LIT) { return makeBool(node.boolVal); }
         if (node.kind == ND_NULL_LIT) { return makeNull(); }
 
+        if (node.kind == ND_CAST) {
+            Value operand = this.evalExpr(node.child(0), env);
+            if (node.typeHint == "int" || node.typeHint == "int32" || node.typeHint == "int64"
+                || node.typeHint == "byte") {
+                return makeInt(operand.toInt());
+            }
+            return operand;
+        }
+
         if (node.kind == ND_IDENT) {
             Value val = env.get(node.name);
             if (val != null) { return val; }

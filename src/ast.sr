@@ -27,6 +27,7 @@ const int ND_NEW = 21;
 const int ND_INTERP = 22;
 const int ND_PAREN = 23;
 const int ND_DICT_LIT = 24;
+const int ND_CAST = 29;
 
 const int ND_VAR_DECL = 50;
 const int ND_RETURN = 51;

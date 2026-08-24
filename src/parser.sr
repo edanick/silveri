@@ -1491,6 +1491,22 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
             return n;
         }
         if (this.check(TK_LPAREN)) {
+            // C-style cast `(type) expr` (DOCS/113) when a type keyword follows
+            // the opening paren.
+            if (this.pos + 1 < this.tokens.length) {
+                TokenKind k2 = this.tokens[this.pos + 1].kind;
+                if (k2 == TK_INT || k2 == TK_INT32 || k2 == TK_INT64 || k2 == TK_UINT
+                    || k2 == TK_FLOAT || k2 == TK_FLOAT64 || k2 == TK_DOUBLE
+                    || k2 == TK_BOOL || k2 == TK_CHAR || k2 == TK_BYTE || k2 == TK_STRING) {
+                    this.advance();
+                    string castType = this.parseTypeStr();
+                    this.expect(TK_RPAREN);
+                    Node cast = new Node(ND_CAST, ln, c);
+                    cast.typeHint = castType;
+                    cast.addChild(this.parseExpr(12));
+                    return cast;
+                }
+            }
             this.advance();
             Node first = this.parseExpr(0);
             if (this.check(TK_COMMA)) {
