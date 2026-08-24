@@ -85,7 +85,9 @@ class BuiltinMethods {
         }
         if (method == "replace") {
             if (args.length < 2) { return s; }
-            return makeString(s.strVal.replace(args[0].strVal, args[1].strVal));
+            string a0 = args[0].strVal;
+            string a1 = args[1].strVal;
+            return makeString(s.strVal.replace(a0, a1));
         }
         if (method == "upper" || method == "toUpper") { return makeString(s.strVal.upper()); }
         if (method == "lower" || method == "toLower") { return makeString(s.strVal.lower()); }
@@ -606,7 +608,10 @@ class BuiltinMethods {
     }
 
     private static Value charMethod(Value c, string method, Value[] args) {
-        if (method == "toString") { return makeString(c.charVal.toString()); }
+        if (method == "toString") {
+            char ch = c.charVal;
+            return makeString("" + ch);
+        }
         if (method == "isDigit") { return makeBool(c.charVal.isDigit()); }
         if (method == "isAlpha") { return makeBool(c.charVal.isAlpha()); }
         if (method == "isAlphaNum") { return makeBool(c.charVal.isAlphaNum()); }

@@ -942,13 +942,14 @@ class Evaluator {
     private Value evalSuper(Value[] args, Env env) {
         if (this.currentClassName == "") { return makeNull(); }
         if (!this.classes.contains(this.currentClassName)) { return makeNull(); }
-        string parent = this.classes[this.currentClassName].parentClass;
+        Node curDef = this.classes[this.currentClassName];
+        string parent = curDef.parentClass;
         if (parent == "") { return makeNull(); }
         if (!this.classes.contains(parent)) { return makeNull(); }
         Node parentDef = this.classes[parent];
         for (int i = 0; i < parentDef.childCount(); i++) {
             Node child = parentDef.child(i);
-            if (child.kind == ND_FUNC && child.name == "construct") {
+            if (child.name == "construct") {
                 Value thisVal = env.get("this");
                 if (thisVal != null) {
                     Value[] methodArgs = [thisVal];

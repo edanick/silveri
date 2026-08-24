@@ -121,7 +121,10 @@ class Value {
         if (this.tag == VAL_FLOAT) { return this.strVal; }
         if (this.tag == VAL_BOOL) { return this.boolVal.toString(); }
         if (this.tag == VAL_STRING) { return this.strVal; }
-        if (this.tag == VAL_CHAR) { return this.charVal.toString(); }
+        if (this.tag == VAL_CHAR) {
+            char ch = this.charVal;
+            return "" + ch;
+        }
         if (this.tag == VAL_NULL) { return "null"; }
         if (this.tag == VAL_ARRAY) { return arrayToString(this.arrVal); }
         if (this.tag == VAL_TUPLE) { return "(" + arrayToString(this.arrVal) + ")"; }
