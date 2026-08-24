@@ -124,6 +124,52 @@ class BuiltinMethods {
             for (int i = 0; i < n; i++) { result += s.strVal; }
             return makeString(result);
         }
+        if (method == "slice") {
+            int start = 0;
+            if (args.length > 0) { start = args[0].toInt().toInt(); if (start < 0) { start = 0; } }
+            int end = s.strVal.length;
+            if (args.length > 1) { end = args[1].toInt().toInt(); if (end > s.strVal.length) { end = s.strVal.length; } }
+            if (end <= start) { return makeString(""); }
+            return makeString(s.strVal.substr(start, end));
+        }
+        if (method == "charAt") {
+            if (args.length < 1) { return makeChar(' '); }
+            int i = args[0].toInt().toInt();
+            if (i >= 0 && i < s.strVal.length) { return makeChar(s.strVal[i]); }
+            return makeChar(' ');
+        }
+        if (method == "isEmpty") {
+            return makeBool(s.strVal.length == 0);
+        }
+        if (method == "toChars") {
+            Value[] result = [];
+            for (int i = 0; i < s.strVal.length; i++) {
+                result.add(makeChar(s.strVal[i]));
+            }
+            return makeArray(result);
+        }
+        if (method == "stripPrefix") {
+            if (args.length < 1) { return s; }
+            string p = args[0].strVal;
+            if (s.strVal.startsWith(p)) { return makeString(s.strVal.substr(p.length)); }
+            return s;
+        }
+        if (method == "stripSuffix") {
+            if (args.length < 1) { return s; }
+            string p = args[0].strVal;
+            if (s.strVal.endsWith(p)) { return makeString(s.strVal.substr(0, s.strVal.length - p.length)); }
+            return s;
+        }
+        if (method == "charCode") {
+            if (args.length < 1) { return makeInt(0); }
+            int i = args[0].toInt().toInt();
+            if (i >= 0 && i < s.strVal.length) { return makeInt(s.strVal[i].toInt64()); }
+            return makeInt(0);
+        }
+        if (method == "fromCode") {
+            if (args.length < 1) { return makeChar(' '); }
+            return makeChar(char(args[0].toInt()));
+        }
         if (method == "pad" || method == "padLeft" || method == "padRight") {
             if (args.length < 2) { return s; }
             int count = args[0].toInt().toInt();
@@ -232,7 +278,7 @@ class BuiltinMethods {
             }
             return makeArray(result);
         }
-        if (method == "unique") {
+        if (method == "unique" || method == "distinct") {
             Value[] result = [];
             for (int i = 0; i < arr.arrVal.length; i += 1) {
                 bool seen = false;
@@ -358,6 +404,105 @@ class BuiltinMethods {
             }
             return makeArray(result);
         }
+        if (method == "join") {
+            string sep = "";
+            if (args.length > 0) { sep = args[0].strVal; }
+            string[] parts = [];
+            for (int i = 0; i < arr.arrVal.length; i++) {
+                parts.add(arr.arrVal[i].toString());
+            }
+            string joined = parts.join(sep);
+            return makeString(joined);
+        }
+        if (method == "slice") {
+            int start = 0;
+            if (args.length > 0) { start = args[0].toInt().toInt(); if (start < 0) { start = 0; } }
+            int end = arr.arrVal.length;
+            if (args.length > 1) { end = args[1].toInt().toInt(); if (end > arr.arrVal.length) { end = arr.arrVal.length; } }
+            Value[] result = [];
+            for (int i = start; i < end; i++) { result.add(arr.arrVal[i]); }
+            return makeArray(result);
+        }
+        if (method == "take") {
+            int n = 0; if (args.length > 0) { n = args[0].toInt().toInt(); }
+            if (n > arr.arrVal.length) { n = arr.arrVal.length; }
+            Value[] result = [];
+            for (int i = 0; i < n; i++) { result.add(arr.arrVal[i]); }
+            return makeArray(result);
+        }
+        if (method == "skip") {
+            int n = 0; if (args.length > 0) { n = args[0].toInt().toInt(); }
+            if (n > arr.arrVal.length) { n = arr.arrVal.length; }
+            Value[] result = [];
+            for (int i = n; i < arr.arrVal.length; i++) { result.add(arr.arrVal[i]); }
+            return makeArray(result);
+        }
+        if (method == "first") {
+            if (arr.arrVal.length > 0) { return arr.arrVal[0]; }
+            return makeNull();
+        }
+        if (method == "min") {
+            if (arr.arrVal.length == 0) { return makeNull(); }
+            Value m = arr.arrVal[0];
+            for (int i = 1; i < arr.arrVal.length; i++) {
+                if (arr.arrVal[i].toInt() < m.toInt()) { m = arr.arrVal[i]; }
+            }
+            return m;
+        }
+        if (method == "max") {
+            if (arr.arrVal.length == 0) { return makeNull(); }
+            Value m = arr.arrVal[0];
+            for (int i = 1; i < arr.arrVal.length; i++) {
+                if (arr.arrVal[i].toInt() > m.toInt()) { m = arr.arrVal[i]; }
+            }
+            return m;
+        }
+        if (method == "fill") {
+            if (args.length > 0) {
+                for (int i = 0; i < arr.arrVal.length; i++) { arr.arrVal[i] = args[0]; }
+            }
+            return arr;
+        }
+        if (method == "count") {
+            if (args.length < 1) { return makeInt(arr.arrVal.length.toInt64()); }
+            int c = 0;
+            for (int i = 0; i < arr.arrVal.length; i++) {
+                if (arr.arrVal[i].equals(args[0])) { c += 1; }
+            }
+            return makeInt(c.toInt64());
+        }
+        if (method == "chunk") {
+            int n = 1; if (args.length > 0) { n = args[0].toInt().toInt(); if (n < 1) { n = 1; } }
+            Value[] result = [];
+            for (int i = 0; i < arr.arrVal.length; i += n) {
+                Value[] chunk = [];
+                int end = i + n;
+                if (end > arr.arrVal.length) { end = arr.arrVal.length; }
+                for (int j = i; j < end; j++) { chunk.add(arr.arrVal[j]); }
+                result.add(makeArray(chunk));
+            }
+            return makeArray(result);
+        }
+        if (method == "zip") {
+            if (args.length < 1) { return makeArray([]); }
+            Value[] other = args[0].arrVal;
+            int len = arr.arrVal.length;
+            if (other.length < len) { len = other.length; }
+            Value[] result = [];
+            for (int i = 0; i < len; i++) {
+                Value[] pair = [arr.arrVal[i], other[i]];
+                result.add(makeArray(pair));
+            }
+            return makeArray(result);
+        }
+        if (method == "enumerate") {
+            Value[] result = [];
+            for (int i = 0; i < arr.arrVal.length; i++) {
+                Value[] pair = [makeInt(i.toInt64()), arr.arrVal[i]];
+                result.add(makeArray(pair));
+            }
+            return makeArray(result);
+        }
         printline("Runtime error: unknown array method '" + method + "'");
         return makeNull();
     }
@@ -463,6 +608,23 @@ class BuiltinMethods {
 
     private static Value moduleMethod(Evaluator ev, Value receiver, string method, Value[] args) {
         string mod = receiver.funcName;
+        if (mod == "string_cast") {
+            if (method == "join") {
+                if (args.length < 2) { return makeString(""); }
+                string sep = args[0].strVal;
+                Value[] items = args[1].arrVal;
+                string[] parts = [];
+                for (int i = 0; i < items.length; i++) {
+                    parts.add(items[i].toString());
+                }
+                return makeString(parts.join(sep));
+            }
+            if (method == "fromCode") {
+                if (args.length < 1) { return makeChar(' '); }
+                return makeChar(char(args[0].toInt()));
+            }
+            return makeNull();
+        }
         if (mod == "notifications_module") {
             // DOCS/247 -- The interpreter cannot pop a real Win32 tray
             // balloon, so we simulate the side effect by emitting a labelled
