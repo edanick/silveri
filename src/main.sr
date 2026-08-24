@@ -163,6 +163,7 @@ void main() {
     }
 
     string filename = "";
+    string[] scriptArgs = [];
 
     for (int i = 1; i < args.length; i += 1) {
         string arg = args[i];
@@ -204,9 +205,9 @@ void main() {
         } elif (filename == "") {
             filename = arg;
         } else {
-            printline("Error: Unknown option '" + arg + "'");
-            printHelp();
-            exit(1);
+            // DOCS/124 -- trailing positional arguments after the script name
+            // are the script's own command-line arguments (cargs).
+            scriptArgs.add(arg);
         }
     }
 
@@ -242,6 +243,12 @@ void main() {
     }
 
     Evaluator evaluator = new Evaluator();
+    string[] userCargs = [];
+    userCargs.add(filename);
+    for (int i = 0; i < scriptArgs.length; i++) {
+        userCargs.add(scriptArgs[i]);
+    }
+    evaluator.setScriptArgs(userCargs);
     string preludeSrc = source();
     Lexer preludeLexer = new Lexer(preludeSrc);
     Token[] preludeTokens = preludeLexer.tokenize();

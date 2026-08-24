@@ -31,6 +31,10 @@ class Evaluator {
     // DOCS/213 -- win32 module grants collected from import statements.
     public prop string[] win32Dlls;
     public prop string[] win32Grants;
+    // DOCS/124 -- the script's command-line arguments, exposed to user code as
+    // both the `cargs` array variable and the `cargs()` function.
+    public prop string[] scriptArgs;
+    public prop Value scriptCargs;
 
     construct () {
         file.writeBytes("build/diag/TE0_ctor.txt", [49]);
@@ -52,8 +56,24 @@ class Evaluator {
         this.currentModule = "";
         this.win32Dlls = [];
         this.win32Grants = [];
+        this.scriptArgs = [];
+        this.scriptCargs = null;
         this.registerBuiltins();
         file.writeBytes("build/diag/TE1_ctor_end.txt", [49]);
+    }
+
+    // DOCS/124 -- install the script's command-line arguments. The first entry
+    // is the script name (matching the compiled `cargs` convention where
+    // cargs[0] is the program name). Exposed both as the `cargs` array global
+    // and via the `cargs()` builtin function.
+    public void setScriptArgs(string[] args) {
+        this.scriptArgs = args;
+        Value[] items = [];
+        for (int i = 0; i < args.length; i++) {
+            items.add(makeString(args[i]));
+        }
+        this.scriptCargs = makeArray(items);
+        this.globals.define("cargs", this.scriptCargs);
     }
 
     private void maybeGC(Env env) {
@@ -78,9 +98,9 @@ class Evaluator {
     }
 
     private void registerBuiltins() {
-    Value v = makeBuiltin("printline");
-    this.globals.define("printline", v);
-    this.globals.define("print", makeBuiltin("print"));
+        Value v = makeBuiltin("printline");
+        this.globals.define("printline", v);
+        this.globals.define("print", makeBuiltin("print"));
         this.globals.define("input", makeBuiltin("input"));
         this.globals.define("assert", makeBuiltin("assert"));
         this.globals.define("sleep", makeBuiltin("sleep"));
@@ -870,6 +890,9 @@ class Evaluator {
         Value result = makeNull();
         if (node.name == "super") {
             result = this.evalSuper(args, env);
+        } else if (node.name == "cargs") {
+            if (this.scriptCargs != null) { result = this.scriptCargs; }
+            else { result = makeArray([]); }
         } else if (this.functions.contains(node.name)) {
             result = this.callNodeWithRefs(this.functions[node.name], args, env, refNames);
         } else {
