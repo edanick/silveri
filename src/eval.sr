@@ -549,7 +549,7 @@ class Evaluator {
 
     public Value evalExpr(Node node, Env env) {
         if (node.kind == ND_INT_LIT) { return makeInt(node.intVal); }
-        if (node.kind == ND_FLOAT_LIT) { return makeFloat(node.floatVal); }
+        if (node.kind == ND_FLOAT_LIT) { return makeFloat(floatStrToF64(node.strVal)); }
         if (node.kind == ND_STRING_LIT) { return makeString(node.strVal); }
         if (node.kind == ND_CHAR_LIT) { return makeChar(node.charVal); }
         if (node.kind == ND_BOOL_LIT) { return makeBool(node.boolVal); }
@@ -723,20 +723,25 @@ class Evaluator {
                 return makeArray(combined);
             }
             if (lhs.tag == VAL_FLOAT || rhs.tag == VAL_FLOAT) {
-                return makeFloat(lhs.toFloat() + rhs.toFloat());
+                return makeFloat(valueToFloat(lhs) + valueToFloat(rhs));
             }
             return makeInt(lhs.toInt() + rhs.toInt());
         }
-        if (op == OP_SUB) { return makeInt(lhs.toInt() - rhs.toInt()); }
+        if (op == OP_SUB) {
+            if (lhs.tag == VAL_FLOAT || rhs.tag == VAL_FLOAT) {
+                return makeFloat(valueToFloat(lhs) - valueToFloat(rhs));
+            }
+            return makeInt(lhs.toInt() - rhs.toInt());
+        }
         if (op == OP_MUL) {
             if (lhs.tag == VAL_FLOAT || rhs.tag == VAL_FLOAT) {
-                return makeFloat(lhs.toFloat() * rhs.toFloat());
+                return makeFloat(valueToFloat(lhs) * valueToFloat(rhs));
             }
             return makeInt(lhs.toInt() * rhs.toInt());
         }
         if (op == OP_DIV) {
             if (lhs.tag == VAL_FLOAT || rhs.tag == VAL_FLOAT) {
-                return makeFloat(lhs.toFloat() / rhs.toFloat());
+                return makeFloat(valueToFloat(lhs) / valueToFloat(rhs));
             }
             int64 divisor = rhs.toInt();
             if (divisor == 0) {
@@ -755,10 +760,22 @@ class Evaluator {
         }
         if (op == OP_EQ) { return makeBool(lhs.equals(rhs)); }
         if (op == OP_NEQ) { return makeBool(!lhs.equals(rhs)); }
-        if (op == OP_LT) { return makeBool(lhs.toInt() < rhs.toInt()); }
-        if (op == OP_LEQ) { return makeBool(lhs.toInt() <= rhs.toInt()); }
-        if (op == OP_GT) { return makeBool(lhs.toInt() > rhs.toInt()); }
-        if (op == OP_GEQ) { return makeBool(lhs.toInt() >= rhs.toInt()); }
+        if (op == OP_LT) {
+            if (lhs.tag == VAL_FLOAT || rhs.tag == VAL_FLOAT) { return makeBool(valueToFloat(lhs) < valueToFloat(rhs)); }
+            return makeBool(lhs.toInt() < rhs.toInt());
+        }
+        if (op == OP_LEQ) {
+            if (lhs.tag == VAL_FLOAT || rhs.tag == VAL_FLOAT) { return makeBool(valueToFloat(lhs) <= valueToFloat(rhs)); }
+            return makeBool(lhs.toInt() <= rhs.toInt());
+        }
+        if (op == OP_GT) {
+            if (lhs.tag == VAL_FLOAT || rhs.tag == VAL_FLOAT) { return makeBool(valueToFloat(lhs) > valueToFloat(rhs)); }
+            return makeBool(lhs.toInt() > rhs.toInt());
+        }
+        if (op == OP_GEQ) {
+            if (lhs.tag == VAL_FLOAT || rhs.tag == VAL_FLOAT) { return makeBool(valueToFloat(lhs) >= valueToFloat(rhs)); }
+            return makeBool(lhs.toInt() >= rhs.toInt());
+        }
         if (op == OP_SHL) { return makeInt(lhs.toInt() << rhs.toInt()); }
         if (op == OP_SHR) { return makeInt(lhs.toInt() >> rhs.toInt()); }
         if (op == OP_BIT_AND) { return makeInt(lhs.toInt() & rhs.toInt()); }
@@ -815,7 +832,7 @@ class Evaluator {
     private Value evalUnary(Node node, Env env) {
         Value operand = this.evalExpr(node.child(0), env);
         if (node.op == UOP_NEG) {
-            if (operand.tag == VAL_FLOAT) { return makeFloat(-operand.floatVal); }
+            if (operand.tag == VAL_FLOAT) { return makeFloat(-valueToFloat(operand)); }
             return makeInt(-operand.toInt());
         }
         if (node.op == UOP_NOT) { return makeBool(!operand.isTruthy()); }
@@ -958,7 +975,7 @@ class Evaluator {
         }
         elif (m == "makeFloat") {
             dictSet(fields, fvals, "tag", makeInt(2));
-            if (args.length > 0) { dictSet(fields, fvals, "floatVal", makeFloat(args[0].toFloat())); }
+            if (args.length > 0) { dictSet(fields, fvals, "floatVal", makeFloat(valueToFloat(args[0]))); }
         }
         elif (m == "makeBool") {
             dictSet(fields, fvals, "tag", makeInt(3));
@@ -997,7 +1014,7 @@ class Evaluator {
         elif (m == "makeRange") {
             dictSet(fields, fvals, "tag", makeInt(14));
             if (args.length > 0) { dictSet(fields, fvals, "intVal", makeInt(args[0].toInt())); }
-            if (args.length > 1) { dictSet(fields, fvals, "floatVal", makeFloat(args[1].toFloat())); }
+            if (args.length > 1) { dictSet(fields, fvals, "floatVal", makeFloat(valueToFloat(args[1]))); }
         }
         elif (m == "makeNull") {
             dictSet(fields, fvals, "tag", makeInt(0));
@@ -1376,7 +1393,7 @@ class Evaluator {
         if (pattern.name == "_") { return true; }
         if (pattern.name == "null" && target.tag == VAL_NULL) { return true; }
         if (pattern.kind == ND_INT_LIT && target.tag == VAL_INT) { return target.intVal == pattern.intVal; }
-        if (pattern.kind == ND_FLOAT_LIT && target.tag == VAL_FLOAT) { return target.floatVal == pattern.floatVal; }
+        if (pattern.kind == ND_FLOAT_LIT && target.tag == VAL_FLOAT) { return valueToFloat(target) == floatStrToF64(pattern.strVal); }
         if (pattern.kind == ND_STRING_LIT && target.tag == VAL_STRING) { return target.strVal == pattern.strVal; }
         if (pattern.kind == ND_CHAR_LIT && target.tag == VAL_CHAR) { return target.charVal == pattern.charVal; }
         if (pattern.kind == ND_BOOL_LIT && target.tag == VAL_BOOL) { return target.boolVal == pattern.boolVal; }

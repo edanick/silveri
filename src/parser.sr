@@ -1070,7 +1070,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
         }
         if (this.check(TK_FLOAT_LIT)) {
             Node n = new Node(ND_FLOAT_LIT, ln, c);
-            n.floatVal = this.advance().floatVal;
+            n.strVal = this.advance().strVal;
             return n;
         }
         if (this.check(TK_STRING_LIT)) {
@@ -1178,7 +1178,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
         }
         if (this.check(TK_FLOAT_LIT)) {
             Node n = new Node(ND_FLOAT_LIT, ln, c);
-            n.floatVal = this.advance().floatVal;
+            n.strVal = this.advance().strVal;
             return n;
         }
         if (this.check(TK_STRING_LIT)) {

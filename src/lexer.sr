@@ -252,7 +252,7 @@ class Lexer {
         string clean = removeUnderscores(s);
         if (isFloat) {
             Token tok = new Token(TK_FLOAT_LIT, clean, ln, c);
-            tok.floatVal = clean.toFloat64();
+            tok.strVal = clean;
             return tok;
         }
         Token tok = new Token(TK_INT_LIT, clean, ln, c);

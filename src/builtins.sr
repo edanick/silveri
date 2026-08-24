@@ -164,7 +164,7 @@ class BuiltinMethods {
             }
             return makeInt(s.strVal.toInt64());
         }
-        if (method == "toFloat") { return makeFloat(s.strVal.toFloat64()); }
+        if (method == "toFloat") { return makeFloat(floatStrToF64(s.strVal)); }
         printline("Runtime error: unknown string method '" + method + "'");
         return makeNull();
     }
@@ -399,11 +399,15 @@ class BuiltinMethods {
             return makeString(n.toString());
         }
         if (method == "abs") {
-            if (n.tag == VAL_FLOAT) { return makeFloat(n.floatVal.abs()); }
+            if (n.tag == VAL_FLOAT) {
+                string s = n.strVal;
+                if (s.length > 0 && s[0] == '-') { s = s.substr(1); }
+                return makeFloat(floatStrToF64(s));
+            }
             if (n.intVal < 0) { return makeInt(-n.intVal); }
             return n;
         }
-        if (method == "toFloat") { return makeFloat(n.toFloat()); }
+        if (method == "toFloat") { return makeFloat(valueToFloat(n)); }
         if (method == "toInt") { return makeInt(n.toInt()); }
         printline("Runtime error: unknown number method '" + method + "'");
         return makeNull();
@@ -1090,8 +1094,8 @@ Value callBuiltin(string name, Value[] args) {
     }
     if (name == "float") {
         if (args.length > 0) {
-            if (args[0].tag == VAL_STRING) { return makeFloat(args[0].strVal.toFloat64()); }
-            return makeFloat(args[0].toFloat());
+            if (args[0].tag == VAL_STRING) { return makeFloat(floatStrToF64(args[0].strVal)); }
+            return makeFloat(valueToFloat(args[0]));
         }
         return makeFloat(0.0);
     }

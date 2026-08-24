@@ -66,7 +66,7 @@ class Value {
     public bool isTruthy() {
         if (this.tag == VAL_BOOL) { return this.boolVal; }
         if (this.tag == VAL_INT || this.tag == VAL_BYTE) { return this.intVal != 0; }
-        if (this.tag == VAL_FLOAT) { return this.floatVal != 0.0; }
+        if (this.tag == VAL_FLOAT) { return valueToFloat(this) != 0.0; }
         if (this.tag == VAL_STRING) { return this.strVal.length > 0; }
         if (this.tag == VAL_NULL) { return false; }
         return true;
@@ -76,10 +76,10 @@ class Value {
         if (this.tag != other.tag) {
             if (this.tag == VAL_NULL && other.tag == VAL_NULL) { return true; }
             if (this.tag == VAL_INT && other.tag == VAL_FLOAT) {
-                return this.intVal.toFloat64() == other.floatVal;
+                return this.intVal.toFloat64() == valueToFloat(other);
             }
             if (this.tag == VAL_FLOAT && other.tag == VAL_INT) {
-                return this.floatVal == other.intVal.toFloat64();
+                return valueToFloat(this) == other.intVal.toFloat64();
             }
             if (this.tag == VAL_BYTE && other.tag == VAL_INT) {
                 return this.intVal == other.intVal;
@@ -97,15 +97,15 @@ class Value {
                 return this.intVal == other.charVal.toInt64();
             }
             if (this.tag == VAL_CHAR && other.tag == VAL_FLOAT) {
-                return this.charVal.toInt64().toFloat64() == other.floatVal;
+                return this.charVal.toInt64().toFloat64() == valueToFloat(other);
             }
             if (this.tag == VAL_FLOAT && other.tag == VAL_CHAR) {
-                return this.floatVal == other.charVal.toInt64().toFloat64();
+                return valueToFloat(this) == other.charVal.toInt64().toFloat64();
             }
             return false;
         }
         if (this.tag == VAL_INT || this.tag == VAL_BYTE) { return this.intVal == other.intVal; }
-        if (this.tag == VAL_FLOAT) { return this.floatVal == other.floatVal; }
+        if (this.tag == VAL_FLOAT) { return valueToFloat(this) == valueToFloat(other); }
         if (this.tag == VAL_BOOL) { return this.boolVal == other.boolVal; }
         if (this.tag == VAL_STRING) { return this.strVal == other.strVal; }
         if (this.tag == VAL_CHAR) { return this.charVal == other.charVal; }
@@ -115,7 +115,7 @@ class Value {
 
     public string toString() {
         if (this.tag == VAL_INT || this.tag == VAL_BYTE) { return this.intVal.toString(); }
-        if (this.tag == VAL_FLOAT) { return this.floatVal.toString(); }
+        if (this.tag == VAL_FLOAT) { return this.strVal; }
         if (this.tag == VAL_BOOL) { return this.boolVal.toString(); }
         if (this.tag == VAL_STRING) { return this.strVal; }
         if (this.tag == VAL_CHAR) { return this.charVal.toString(); }
@@ -162,7 +162,7 @@ class Value {
 
     public int64 toInt() {
         if (this.tag == VAL_INT || this.tag == VAL_BYTE) { return this.intVal; }
-        if (this.tag == VAL_FLOAT) { return this.floatVal.toInt64(); }
+        if (this.tag == VAL_FLOAT) { return floatStrToInt(this.strVal); }
         if (this.tag == VAL_BOOL) { return this.boolVal ? 1 : 0; }
         if (this.tag == VAL_STRING) { return this.strVal.toInt64(); }
         if (this.tag == VAL_CHAR) { return this.charVal.toInt64(); }
@@ -170,9 +170,9 @@ class Value {
     }
 
     public float64 toFloat() {
-        if (this.tag == VAL_FLOAT) { return this.floatVal; }
+        if (this.tag == VAL_FLOAT) { return floatStrToF64(this.strVal); }
         if (this.tag == VAL_INT || this.tag == VAL_BYTE) { return this.intVal.toFloat64(); }
-        if (this.tag == VAL_STRING) { return this.strVal.toFloat64(); }
+        if (this.tag == VAL_STRING) { return floatStrToF64(this.strVal); }
         return 0.0;
     }
 }
@@ -286,7 +286,7 @@ Value makeByte(int64 v) {
 Value makeFloat(float64 v) {
     Value val = GC.acquireValue();
     val.tag = VAL_FLOAT;
-    val.floatVal = v;
+    val.strVal = v.toString();
     return val;
 }
 
@@ -382,4 +382,106 @@ Value makeDict(dict<string, Value> v) {
     val.tag = VAL_DICT;
     val.adoptDict(v, []);
     return val;
+}
+
+// ---------------------------------------------------------------------------
+// Float storage.  silverc-rs compiles `float64` class fields so that reading
+// the field back yields the IEEE-754 bit pattern reinterpreted as an int64,
+// and it does not recognise float-returning *methods* or `.abs()` on floats
+// as float expressions.  To keep floats correct across the interpreter, the
+// float VALUE is carried as its decimal string in Value.strVal and converted
+// with the free functions below (free functions returning float64 are tracked
+// by the compiler, so their results flow through as proper bit patterns).
+// ---------------------------------------------------------------------------
+
+// Parse the integer part of a decimal float string ("3.14" -> 3, "-2.5" -> -2).
+int64 floatStrToInt(string s) {
+    string t = s;
+    bool neg = false;
+    if (t.length > 0 && t[0] == '-') {
+        neg = true;
+        t = t.substr(1);
+    }
+    int dot = t.indexOf(".");
+    string ip = t;
+    if (dot >= 0) { ip = t.substr(0, dot); }
+    int64 result = ip.toInt64();
+    if (neg) { result = -result; }
+    return result;
+}
+
+// Parse a decimal float string ("3.14", "-2.5", "1e-5") into a float64.
+float64 floatStrToF64(string s) {
+    string t = s;
+    bool neg = false;
+    if (t.length > 0 && t[0] == '-') {
+        neg = true;
+        t = t.substr(1);
+    }
+    int eAt = t.indexOf("e");
+    int eAt2 = t.indexOf("E");
+    if (eAt < 0 || (eAt2 >= 0 && eAt2 < eAt)) { eAt = eAt2; }
+    string mant = t;
+    int64 exp = 0;
+    if (eAt >= 0) {
+        mant = t.substr(0, eAt);
+        string expPart = t.substr(eAt + 1);
+        bool expNeg = false;
+        if (expPart.length > 0 && expPart[0] == '-') {
+            expNeg = true;
+            expPart = expPart.substr(1);
+        }
+        if (expPart.length > 0 && expPart[0] == '+') { expPart = expPart.substr(1); }
+        exp = expPart.toInt64();
+        if (expNeg) { exp = -exp; }
+    }
+    int dot = mant.indexOf(".");
+    string ip = mant;
+    string fp = "";
+    if (dot >= 0) {
+        ip = mant.substr(0, dot);
+        fp = mant.substr(dot + 1);
+    }
+    int64 intPart = ip.toInt64();
+    float64 result = intPart.toFloat64();
+    if (fp.length > 0) {
+        int64 fracPart = fp.toInt64();
+        int64 flen = fp.length;
+        float64 divisor = 10.0;
+        for (int64 i = 1; i < flen; i += 1) {
+            divisor = divisor * 10.0;
+        }
+        result = result + fracPart.toFloat64() / divisor;
+    }
+    if (exp != 0) {
+        float64 p10 = 1.0;
+        int64 e = exp;
+        if (e < 0) { e = -e; }
+        for (int64 i = 0; i < e; i += 1) {
+            p10 = p10 * 10.0;
+        }
+        if (exp < 0) { result = result / p10; }
+        else { result = result * p10; }
+    }
+    if (neg) { result = -result; }
+    return result;
+}
+
+// Convert a Value to a float64: float Values parse their decimal string,
+// int/byte Values convert numerically, string Values parse as a number.
+float64 valueToFloat(Value v) {
+    if (v.tag == VAL_FLOAT) {
+        float64 r = floatStrToF64(v.strVal);
+        return r;
+    }
+    if (v.tag == VAL_INT || v.tag == VAL_BYTE) {
+        int64 iv = v.intVal;
+        float64 r = iv.toFloat64();
+        return r;
+    }
+    if (v.tag == VAL_STRING) {
+        float64 r = floatStrToF64(v.strVal);
+        return r;
+    }
+    return 0.0;
 }
