@@ -572,6 +572,32 @@ class BuiltinMethods {
                 MathEvalParser parser = new MathEvalParser(expr);
                 return makeInt(parser.parseAll());
             }
+            if (method == "sqrt") { return makeFloat(mathSqrtF(mathArg(args, 0))); }
+            if (method == "pow") { return makeFloat(mathPowF(mathArg(args, 0), mathArg(args, 1))); }
+            if (method == "abs") { return mathAbsV(args); }
+            if (method == "max") { return mathMaxV(args); }
+            if (method == "min") { return mathMinV(args); }
+            if (method == "sin") { return makeFloat(mathSinF(mathArg(args, 0))); }
+            if (method == "cos") { return makeFloat(mathCosF(mathArg(args, 0))); }
+            if (method == "tan") { return makeFloat(mathTanF(mathArg(args, 0))); }
+            if (method == "floor") { return makeFloat(mathFloorF(mathArg(args, 0))); }
+            if (method == "ceil") { return makeFloat(mathCeilF(mathArg(args, 0))); }
+            if (method == "round") { return makeFloat(mathRoundF(mathArg(args, 0))); }
+            if (method == "random") { return makeFloat(mathRandomF()); }
+            if (method == "randomInt") {
+                int64 lo = int(mathArg(args, 0));
+                int64 hi = int(mathArg(args, 1));
+                if (hi < lo) { int64 t = lo; lo = hi; hi = t; }
+                if (hi == lo) { return makeInt(lo); }
+                int64 range = hi - lo + 1;
+                int64 r = int(mathRandomF() * float64(range));
+                if (r >= range) { r = range - 1; }
+                return makeInt(lo + r);
+            }
+            if (method == "log" || method == "ln") { return makeFloat(mathLnF(mathArg(args, 0))); }
+            if (method == "log10") { return makeFloat(mathLog10F(mathArg(args, 0))); }
+            if (method == "exp") { return makeFloat(mathExpF(mathArg(args, 0))); }
+            if (method == "hypot") { return makeFloat(mathHypotF(mathArg(args, 0), mathArg(args, 1))); }
             return makeNull();
         }
         if (mod == "fs_module") {
@@ -1538,6 +1564,200 @@ Value callBuiltin(string name, Value[] args) {
         return makeInt(0);
     }
     return makeNull();
+}
+
+// ---------------------------------------------------------------------------
+// math module helpers (DOCS/53-62).  Free functions returning float64 keep
+// their results as proper IEEE-754 bit patterns in the compiled interpreter;
+// the algorithms mirror silverc/std/math.sr and silverc-rs/stdlib/math.rs.
+// Float-to-int conversions use `int(...)` (cvttsd2si) and int-to-float use
+// `float64(...)` (cvtsi2sd), both recognized by the native compiler.
+// ---------------------------------------------------------------------------
+
+// The module-level LCG state keeps successive math.random() calls different.
+// A mutable field on a global object (rather than a bare global scalar) is
+// used because the native compiler rejects assignment to global scalars.
+class MathRandState {
+    public prop int64 seed;
+    construct () { this.seed = 42; }
+}
+
+MathRandState mathRandState = new MathRandState();
+
+float64 mathArg(Value[] args, int i) {
+    if (i < args.length) { return valueToFloat(args[i]); }
+    return 0.0;
+}
+
+float64 mathAbsF(float64 x) {
+    if (x < 0.0) { return -x; }
+    return x;
+}
+
+Value mathAbsV(Value[] args) {
+    Value a = args.length > 0 ? args[0] : makeInt(0);
+    if (a.tag == VAL_FLOAT) {
+        float64 x = valueToFloat(a);
+        if (x < 0.0) { return makeFloat(-x); }
+        return makeFloat(x);
+    }
+    int64 x = a.toInt();
+    if (x < 0) { return makeInt(-x); }
+    return a;
+}
+
+Value mathMaxV(Value[] args) {
+    Value a = args.length > 0 ? args[0] : makeInt(0);
+    Value b = args.length > 1 ? args[1] : makeInt(0);
+    if (a.tag == VAL_FLOAT || b.tag == VAL_FLOAT) {
+        float64 av = valueToFloat(a);
+        float64 bv = valueToFloat(b);
+        if (av > bv) { return makeFloat(av); }
+        return makeFloat(bv);
+    }
+    if (a.toInt() > b.toInt()) { return a; }
+    return b;
+}
+
+Value mathMinV(Value[] args) {
+    Value a = args.length > 0 ? args[0] : makeInt(0);
+    Value b = args.length > 1 ? args[1] : makeInt(0);
+    if (a.tag == VAL_FLOAT || b.tag == VAL_FLOAT) {
+        float64 av = valueToFloat(a);
+        float64 bv = valueToFloat(b);
+        if (av < bv) { return makeFloat(av); }
+        return makeFloat(bv);
+    }
+    if (a.toInt() < b.toInt()) { return a; }
+    return b;
+}
+
+float64 mathSqrtF(float64 x) {
+    if (x <= 0.0) { return 0.0; }
+    float64 guess = x / 2.0;
+    for (int i = 0; i < 50; i++) {
+        float64 next = (guess + x / guess) / 2.0;
+        if (mathAbsF(next - guess) < 1e-15) { break; }
+        guess = next;
+    }
+    return guess;
+}
+
+float64 mathFactF(int n) {
+    float64 r = 1.0;
+    for (int i = 2; i <= n; i++) { r = r * float64(i); }
+    return r;
+}
+
+float64 mathLnF(float64 x) {
+    if (x <= 0.0) { return -1e308; }
+    float64 y = (x - 1.0) / (x + 1.0);
+    float64 r = 0.0;
+    float64 term = y;
+    for (int i = 1; i < 100; i = i + 2) {
+        r = r + term / float64(i);
+        if (mathAbsF(term / float64(i)) < 1e-15) { break; }
+        term = term * (y * y);
+    }
+    return 2.0 * r;
+}
+
+float64 mathExpF(float64 x) {
+    float64 r = 1.0;
+    float64 term = 1.0;
+    for (int i = 1; i <= 30; i++) {
+        term = term * (x / float64(i));
+        r = r + term;
+    }
+    return r;
+}
+
+float64 mathExpHelperF(float64 base, float64 exp, int terms) {
+    float64 lnBase = mathLnF(base);
+    float64 x = lnBase * exp;
+    float64 r = 1.0;
+    float64 term = 1.0;
+    for (int i = 1; i <= terms; i++) {
+        term = term * (x / float64(i));
+        r = r + term;
+    }
+    return r;
+}
+
+float64 mathPowF(float64 base, float64 exp) {
+    if (exp == 0.0) { return 1.0; }
+    if (exp == 1.0) { return base; }
+    if (exp == 2.0) { return base * base; }
+    bool negExp = exp < 0.0;
+    if (negExp) { exp = -exp; }
+    int e = int(exp);
+    float64 frac = exp - float64(e);
+    float64 r = 1.0;
+    for (int i = 0; i < e; i++) { r = r * base; }
+    if (frac > 0.0) {
+        r = r * mathExpHelperF(base, frac, 20);
+    }
+    if (negExp) { r = 1.0 / r; }
+    return r;
+}
+
+float64 mathSinF(float64 x) {
+    float64 r = 0.0;
+    int sign = 1;
+    for (int i = 0; i < 15; i++) {
+        int n = 2 * i + 1;
+        float64 term = mathPowF(x, float64(n)) / mathFactF(n);
+        if (sign > 0) { r = r + term; } else { r = r - term; }
+        sign = -sign;
+    }
+    return r;
+}
+
+float64 mathCosF(float64 x) {
+    float64 r = 0.0;
+    int sign = 1;
+    for (int i = 0; i < 15; i++) {
+        int n = 2 * i;
+        float64 term = mathPowF(x, float64(n)) / mathFactF(n);
+        if (sign > 0) { r = r + term; } else { r = r - term; }
+        sign = -sign;
+    }
+    return r;
+}
+
+float64 mathTanF(float64 x) {
+    return mathSinF(x) / mathCosF(x);
+}
+
+float64 mathFloorF(float64 x) {
+    int n = int(x);
+    if (float64(n) > x) { return float64(n - 1); }
+    return float64(n);
+}
+
+float64 mathCeilF(float64 x) {
+    int n = int(x);
+    if (float64(n) < x) { return float64(n + 1); }
+    return float64(n);
+}
+
+float64 mathRoundF(float64 x) {
+    float64 f = x - mathFloorF(x);
+    if (f < 0.5) { return mathFloorF(x); }
+    return mathCeilF(x);
+}
+
+float64 mathLog10F(float64 x) {
+    return mathLnF(x) / 2.302585092994046;
+}
+
+float64 mathHypotF(float64 a, float64 b) {
+    return mathSqrtF(a * a + b * b);
+}
+
+float64 mathRandomF() {
+    mathRandState.seed = (mathRandState.seed * 1103515245 + 12345) & 0x7FFFFFFF;
+    return float64(mathRandState.seed) / 2147483648.0;
 }
 
 // math.eval(expression) — restricted integer expression evaluator. Supports

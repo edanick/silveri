@@ -1148,6 +1148,11 @@ class Evaluator {
             if (obj.funcName == "time_module") {
                 if (member == "now") { return makeBuiltin("now"); }
             }
+            if (obj.funcName == "math_module") {
+                if (member == "pi") { return makeFloat(3.141592653589793); }
+                if (member == "PI") { return makeFloat(3.141592653589793); }
+                if (member == "E") { return makeFloat(2.718281828459045); }
+            }
             if (obj.funcName.startsWith("module_")) {
                 string moduleName = "";
                 for (int mi = 7; mi < obj.funcName.length; mi++) { moduleName += obj.funcName[mi]; }
