@@ -49,6 +49,7 @@ const int ND_LIVE_DECL = 67;
 const int ND_ONCE_DECL = 68;
 const int ND_ADDRESS_OF = 69;
 const int ND_LOOP = 70;
+const int ND_DESTRUCT = 71;
 
 const int ND_FUNC = 100;
 const int ND_STRUCT_DEF = 101;
@@ -239,6 +240,7 @@ string kindName(int k) {
     if (k == ND_ONCE_DECL) { return "OnceDecl"; }
     if (k == ND_ADDRESS_OF) { return "AddressOf"; }
     if (k == ND_LOOP) { return "Loop"; }
+    if (k == ND_DESTRUCT) { return "Destruct"; }
     if (k == ND_FUNC) { return "Func"; }
     if (k == ND_STRUCT_DEF) { return "StructDef"; }
     if (k == ND_CLASS_DEF) { return "ClassDef"; }

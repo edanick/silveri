@@ -1579,7 +1579,16 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
         }
         if (k == TK_DOT) {
             this.advance();
-            string member = this.expectIdent();
+            string member = "";
+            if (this.check(TK_IDENT)) {
+                member = this.expectIdent();
+            } elif (this.check(TK_INT_LIT)) {
+                member = this.advance().text;
+            } else {
+                this.parseErrors += 1;
+                printline("Parse error: expected identifier or integer literal after '.' at " + this.peek().line.toString() + ":" + this.peek().col.toString());
+                member = "_err";
+            }
             Node n = new Node(ND_MEMBER, ln, c);
             n.addChild(lhs);
             n.name = member;
