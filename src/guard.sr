@@ -511,6 +511,16 @@ class MemoryGuard {
         this.popScope();
     }
 
+    private void checkForRange(Node n) {
+        this.checkExpr(n.child(0));
+        this.checkExpr(n.child(1));
+        this.pushScope();
+        string vn = n.name;
+        this.declareVar(vn, n.typeHint, true, true, false, false, this.endsWithQ(n.typeHint), false, n.line, n.col);
+        this.checkStmt(n.child(2));
+        this.popScope();
+    }
+
     private void checkForeach(Node n) {
         this.checkExpr(n.child(0));
         this.pushScope();
@@ -741,6 +751,7 @@ class MemoryGuard {
         if (k == ND_WHILE) { this.checkWhile(n); return; }
         if (k == ND_LOOP) { this.checkLoop(n); return; }
         if (k == ND_FOR_C) { this.checkFor(n); return; }
+        if (k == ND_FOR_RANGE) { this.checkForRange(n); return; }
         if (k == ND_FOREACH) { this.checkForeach(n); return; }
         if (k == ND_MATCH_STMT) { this.checkMatchStmt(n); return; }
         if (k == ND_TRY_CATCH) { this.checkTryCatch(n); return; }
@@ -803,7 +814,7 @@ class MemoryGuard {
         } elif (n.kind == ND_EXPR_STMT) {
             if (n.childCount() > 0) { this.checkExpr(n.child(0)); }
         } elif (n.kind == ND_RETURN || n.kind == ND_RETURN_SHORT || n.kind == ND_IF_STMT || n.kind == ND_WHILE
-            || n.kind == ND_LOOP || n.kind == ND_FOR_C || n.kind == ND_FOREACH || n.kind == ND_MATCH_STMT || n.kind == ND_TRY_CATCH
+            || n.kind == ND_LOOP || n.kind == ND_FOR_C || n.kind == ND_FOR_RANGE || n.kind == ND_FOREACH || n.kind == ND_MATCH_STMT || n.kind == ND_TRY_CATCH
             || n.kind == ND_UNSET || n.kind == ND_SWITCH || n.kind == ND_THROW) {
             this.checkStmt(n);
         }

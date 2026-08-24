@@ -706,6 +706,40 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
         int ln = this.line(); int c = this.col();
         this.advance();
         this.expect(TK_LPAREN);
+        // Range-style for loop: `for (type name as start to end) { body }`
+        // (DOCS/14). Look ahead for the `type name as` pattern and produce an
+        // ND_FOR_RANGE node when present.
+        int saved = this.pos;
+        bool isRange = false;
+        string rangeType = "";
+        string rangeVar = "";
+        if (this.checkType() || this.check(TK_VAR) || this.check(TK_IDENT)) {
+            rangeType = this.advance().text;
+            if (this.check(TK_IDENT)) {
+                rangeVar = this.advance().text;
+                if (this.check(TK_AS)) {
+                    isRange = true;
+                }
+            }
+        }
+        this.pos = saved;
+        if (isRange) {
+            this.advance();
+            this.advance();
+            this.advance();
+            Node start = this.parseExpr(0);
+            this.expect(TK_TO);
+            Node end = this.parseExpr(0);
+            this.expect(TK_RPAREN);
+            Node body = this.parseBlock();
+            Node rn = new Node(ND_FOR_RANGE, ln, c);
+            rn.name = rangeVar;
+            rn.typeHint = rangeType;
+            rn.addChild(start);
+            rn.addChild(end);
+            rn.addChild(body);
+            return rn;
+        }
         Node n = new Node(ND_FOR_C, ln, c);
         Node init = new Node(ND_EXPR_STMT, ln, c);
         if (this.check(TK_SEMI)) {
