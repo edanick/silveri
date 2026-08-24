@@ -629,7 +629,9 @@ class Evaluator {
         if (op == OP_MOVE) {
             return this.evalExpr(node.child(1), env);
         }
-        if (op == OP_ADD_ASSIGN || op == OP_SUB_ASSIGN || op == OP_MUL_ASSIGN || op == OP_DIV_ASSIGN) {
+        if (op == OP_ADD_ASSIGN || op == OP_SUB_ASSIGN || op == OP_MUL_ASSIGN || op == OP_DIV_ASSIGN
+            || op == OP_MOD_ASSIGN || op == OP_BIT_AND_ASSIGN || op == OP_BIT_OR_ASSIGN || op == OP_BIT_XOR_ASSIGN
+            || op == OP_SHL_ASSIGN || op == OP_SHR_ASSIGN) {
             Value current = this.evalExpr(node.child(0), env);
             GC.pushRoot(current);
             Value rhs = this.evalExpr(node.child(1), env);
@@ -638,6 +640,12 @@ class Evaluator {
             elif (op == OP_SUB_ASSIGN) { baseOp = OP_SUB; }
             elif (op == OP_MUL_ASSIGN) { baseOp = OP_MUL; }
             elif (op == OP_DIV_ASSIGN) { baseOp = OP_DIV; }
+            elif (op == OP_MOD_ASSIGN) { baseOp = OP_MOD; }
+            elif (op == OP_BIT_AND_ASSIGN) { baseOp = OP_BIT_AND; }
+            elif (op == OP_BIT_OR_ASSIGN) { baseOp = OP_BIT_OR; }
+            elif (op == OP_BIT_XOR_ASSIGN) { baseOp = OP_BIT_XOR; }
+            elif (op == OP_SHL_ASSIGN) { baseOp = OP_SHL; }
+            elif (op == OP_SHR_ASSIGN) { baseOp = OP_SHR; }
             Value result = this.computeOp(current, baseOp, rhs);
             GC.pushRoot(result);
             this.assignTo(node.child(0), result, env);

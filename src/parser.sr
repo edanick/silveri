@@ -1132,6 +1132,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
             || k == TK_AND || k == TK_OR
             || k == TK_SHL || k == TK_SHR
             || k == TK_ASSIGN || k == TK_PLUS_EQ || k == TK_MINUS_EQ || k == TK_STAR_EQ || k == TK_SLASH_EQ
+            || k == TK_PERCENT_EQ || k == TK_AMP_EQ || k == TK_PIPE_EQ || k == TK_CARET_EQ || k == TK_SHL_EQ || k == TK_SHR_EQ
             || k == TK_RANGE
             || k == TK_LPAREN || k == TK_LBRACKET || k == TK_DOT
             || k == TK_AMP || k == TK_PIPE || k == TK_CARET
@@ -1141,7 +1142,8 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
 
     private int getInfixPrec() {
         int k = this.peekKind();
-        if (k == TK_ASSIGN || k == TK_PLUS_EQ || k == TK_MINUS_EQ || k == TK_STAR_EQ || k == TK_SLASH_EQ) { return 1; }
+        if (k == TK_ASSIGN || k == TK_PLUS_EQ || k == TK_MINUS_EQ || k == TK_STAR_EQ || k == TK_SLASH_EQ
+            || k == TK_PERCENT_EQ || k == TK_AMP_EQ || k == TK_PIPE_EQ || k == TK_CARET_EQ || k == TK_SHL_EQ || k == TK_SHR_EQ) { return 1; }
         if (k == TK_QUESTION || k == TK_QUESTIONQUESTION) { return 1; }
         if (k == TK_OR) { return 2; }
         if (k == TK_AND) { return 3; }
@@ -1412,6 +1414,12 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
         if (k == TK_MINUS_EQ) { this.advance(); return this.makeAssignOp(lhs, OP_SUB_ASSIGN, ln, c); }
         if (k == TK_STAR_EQ) { this.advance(); return this.makeAssignOp(lhs, OP_MUL_ASSIGN, ln, c); }
         if (k == TK_SLASH_EQ) { this.advance(); return this.makeAssignOp(lhs, OP_DIV_ASSIGN, ln, c); }
+        if (k == TK_PERCENT_EQ) { this.advance(); return this.makeAssignOp(lhs, OP_MOD_ASSIGN, ln, c); }
+        if (k == TK_AMP_EQ) { this.advance(); return this.makeAssignOp(lhs, OP_BIT_AND_ASSIGN, ln, c); }
+        if (k == TK_PIPE_EQ) { this.advance(); return this.makeAssignOp(lhs, OP_BIT_OR_ASSIGN, ln, c); }
+        if (k == TK_CARET_EQ) { this.advance(); return this.makeAssignOp(lhs, OP_BIT_XOR_ASSIGN, ln, c); }
+        if (k == TK_SHL_EQ) { this.advance(); return this.makeAssignOp(lhs, OP_SHL_ASSIGN, ln, c); }
+        if (k == TK_SHR_EQ) { this.advance(); return this.makeAssignOp(lhs, OP_SHR_ASSIGN, ln, c); }
         if (k == TK_INC) {
             this.advance();
             Node n = new Node(ND_BINARY, ln, c);

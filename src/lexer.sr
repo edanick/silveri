@@ -379,7 +379,10 @@ class Lexer {
         if (c == ';') { return new Token(TK_SEMI, ";", ln, cl); }
         if (c == ',') { return new Token(TK_COMMA, ",", ln, cl); }
         if (c == '~') { return new Token(TK_TILDE, "~", ln, cl); }
-        if (c == '^') { return new Token(TK_CARET, "^", ln, cl); }
+        if (c == '^') {
+            if (this.peek() == '=') { this.advance(); return new Token(TK_CARET_EQ, "^=", ln, cl); }
+            return new Token(TK_CARET, "^", ln, cl);
+        }
         if (c == '?') {
             if (this.peek() == '?') {
                 this.advance();
@@ -423,22 +426,35 @@ class Lexer {
             if (this.peek() == '=') { this.advance(); return new Token(TK_SLASH_EQ, "/=", ln, cl); }
             return new Token(TK_SLASH, "/", ln, cl);
         }
-        if (c == '%') { return new Token(TK_PERCENT, "%", ln, cl); }
+        if (c == '%') {
+            if (this.peek() == '=') { this.advance(); return new Token(TK_PERCENT_EQ, "%=", ln, cl); }
+            return new Token(TK_PERCENT, "%", ln, cl);
+        }
         if (c == '&') {
             if (this.peek() == '&') { this.advance(); return new Token(TK_AND, "&&", ln, cl); }
+            if (this.peek() == '=') { this.advance(); return new Token(TK_AMP_EQ, "&=", ln, cl); }
             return new Token(TK_AMP, "&", ln, cl);
         }
         if (c == '|') {
             if (this.peek() == '|') { this.advance(); return new Token(TK_OR, "||", ln, cl); }
+            if (this.peek() == '=') { this.advance(); return new Token(TK_PIPE_EQ, "|=", ln, cl); }
             return new Token(TK_PIPE, "|", ln, cl);
         }
         if (c == '<') {
-            if (this.peek() == '<') { this.advance(); return new Token(TK_SHL, "<<", ln, cl); }
+            if (this.peek() == '<') {
+                this.advance();
+                if (this.peek() == '=') { this.advance(); return new Token(TK_SHL_EQ, "<<=", ln, cl); }
+                return new Token(TK_SHL, "<<", ln, cl);
+            }
             if (this.peek() == '=') { this.advance(); return new Token(TK_LEQ, "<=", ln, cl); }
             return new Token(TK_LESS, "<", ln, cl);
         }
         if (c == '>') {
-            if (this.peek() == '>') { this.advance(); return new Token(TK_SHR, ">>", ln, cl); }
+            if (this.peek() == '>') {
+                this.advance();
+                if (this.peek() == '=') { this.advance(); return new Token(TK_SHR_EQ, ">>=", ln, cl); }
+                return new Token(TK_SHR, ">>", ln, cl);
+            }
             if (this.peek() == '=') { this.advance(); return new Token(TK_GEQ, ">=", ln, cl); }
             return new Token(TK_GREATER, ">", ln, cl);
         }

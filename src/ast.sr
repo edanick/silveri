@@ -89,6 +89,12 @@ const int OP_BIT_OR = 23;
 const int OP_BIT_XOR = 24;
 const int OP_COALESCE = 25;
 const int OP_JOIN = 26;
+const int OP_MOD_ASSIGN = 27;
+const int OP_BIT_AND_ASSIGN = 28;
+const int OP_BIT_OR_ASSIGN = 29;
+const int OP_BIT_XOR_ASSIGN = 30;
+const int OP_SHL_ASSIGN = 31;
+const int OP_SHR_ASSIGN = 32;
 
 const int UOP_NEG = 0;
 const int UOP_NOT = 1;

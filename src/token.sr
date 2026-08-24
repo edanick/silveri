@@ -123,6 +123,12 @@ const int TK_FAT_ARROW = 146;
 const int TK_SPREAD = 147;
 const int TK_QUESTIONQUESTION = 148;
 const int TK_AT = 150;
+const int TK_PERCENT_EQ = 151;
+const int TK_AMP_EQ = 152;
+const int TK_PIPE_EQ = 153;
+const int TK_CARET_EQ = 154;
+const int TK_SHL_EQ = 155;
+const int TK_SHR_EQ = 156;
 
 class Token {
     public prop int kind;
@@ -221,6 +227,12 @@ string kindToString(int kind) {
     if (kind == TK_MINUS_EQ) { return "-="; }
     if (kind == TK_STAR_EQ) { return "*="; }
     if (kind == TK_SLASH_EQ) { return "/="; }
+    if (kind == TK_PERCENT_EQ) { return "%="; }
+    if (kind == TK_AMP_EQ) { return "&="; }
+    if (kind == TK_PIPE_EQ) { return "|="; }
+    if (kind == TK_CARET_EQ) { return "^="; }
+    if (kind == TK_SHL_EQ) { return "<<="; }
+    if (kind == TK_SHR_EQ) { return ">>="; }
     if (kind == TK_SHL) { return "<<"; }
     if (kind == TK_SHR) { return ">>"; }
     if (kind == TK_AMP) { return "&"; }
