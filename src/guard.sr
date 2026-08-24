@@ -578,12 +578,13 @@ class MemoryGuard {
         this.checkExpr(n.child(0));
         GuardVar[] before = this.snapshot();
         GuardVar[] merged = this.snapshot();
+        for (int j = 0; j < merged.length; j++) { merged[j].isInit = true; }
         bool hasDefault = false;
         for (int i = 1; i < n.childCount(); i++) {
             Node arm = n.child(i);
             if (arm.childCount() < 2) { continue; }
             Node pat = arm.child(0);
-            if (pat.kind == ND_NULL_LIT) { hasDefault = true; }
+            if (pat.name == "_") { hasDefault = true; }
             this.pushScope();
             this.checkMatchBody(arm.child(1));
             this.popScope();
@@ -604,11 +605,24 @@ class MemoryGuard {
         }
         this.vars = merged;
     }
-
+            this.vars = merged;
+        }
+        if (!hasDefault) {
+            printline("GUARDDBG checkMatchStmt no default");
+            for (int i = 0; i < this.vars.length; i++) {
+                merged[i].isInit = merged[i].isInit && before[i].isInit;
+                merged[i].isAlive = merged[i].isAlive || before[i].isAlive;
+                merged[i].holdsAddress = merged[i].holdsAddress || before[i].holdsAddress;
+            }
+        }
+        this.vars = merged;
+    }
+    
     private void checkSwitch(Node n) {
         this.checkExpr(n.child(0));
         GuardVar[] before = this.snapshot();
         GuardVar[] merged = this.snapshot();
+        for (int j = 0; j < merged.length; j++) { merged[j].isInit = true; }
         bool hasDefault = false;
         for (int i = 1; i < n.childCount(); i++) {
             Node arm = n.child(i);

@@ -476,6 +476,11 @@ class Evaluator {
             Node fn = this.functions[name];
             return this.callNode(fn, args, callerEnv);
         }
+        // Calling a class name directly (`Token t = Token();`) constructs an
+        // instance, matching `new Token()`.
+        if (this.classes.contains(name)) {
+            return this.constructClass(name, args);
+        }
         // Split the null check from the field access: the self-hosted backend
         // does not always short-circuit `x != null && x.tag == ...`, and the
         // compiled interpreter would dereference a null value and crash.
@@ -717,6 +722,14 @@ class Evaluator {
                 items.add(makeInt(i));
             }
             return makeArray(items);
+        }
+
+        if (op == OP_REPEAT) {
+            string s = lhs.toString();
+            int64 n = rhs.toInt();
+            string result = "";
+            for (int64 i = 0; i < n; i += 1) { result += s; }
+            return makeString(result);
         }
 
         if (op == OP_JOIN) {

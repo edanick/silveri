@@ -352,6 +352,47 @@ private Node? parseItem() {
             if (this.check(TK_PUBLIC)) { this.advance(); isPub = true; }
             elif (this.check(TK_PRIVATE)) { this.advance(); isPub = false; }
             if (this.check(TK_STATIC)) { this.advance(); isStat = true; }
+            if (this.check(TK_DEF)) {
+                this.advance();
+                int dln = this.line(); int dc = this.col();
+                if (this.check(TK_CONSTRUCT)) {
+                    Node ctor = this.parseConstructor(name);
+                    ctor.isPublic = isPub;
+                    ctor.isStatic = isStat;
+                    n.addChild(ctor);
+                    continue;
+                }
+                string mname = this.expectIdent();
+                this.expect(TK_LPAREN);
+                Node params = this.parseParamList();
+                this.expect(TK_RPAREN);
+                string retType = "";
+                if (this.check(TK_ARROW)) {
+                    this.advance();
+                    retType = this.parseTypeStr();
+                }
+                Node fn = new Node(ND_FUNC, dln, dc);
+                fn.name = mname;
+                fn.typeHint = retType;
+                fn.isPublic = isPub;
+                fn.isStatic = isStat;
+                fn.addChild(params);
+                if (this.check(TK_SHL)) {
+                    this.advance();
+                    Node bodyExpr = this.parseExpr(0);
+                    Node body = new Node(ND_BLOCK, dln, dc);
+                    Node ret = new Node(ND_RETURN, dln, dc);
+                    ret.addChild(bodyExpr);
+                    body.addChild(ret);
+                    fn.addChild(body);
+                    this.expect(TK_SEMI);
+                } else if (this.check(TK_LBRACE)) {
+                    fn.addChild(this.parseBlock());
+                }
+                if (!isStat) { this.prependThisParam(fn, name); }
+                n.addChild(fn);
+                continue;
+            }
             if (this.check(TK_CONSTRUCT)) {
                 Node ctor = this.parseConstructor(name);
                 ctor.isPublic = isPub;
@@ -393,7 +434,7 @@ private Node? parseItem() {
                     }
                     n.addChild(fn);
                 } else {
-                    this.expect(TK_SEMI);
+                    if (this.check(TK_SEMI)) { this.advance(); }
                     Node field = new Node(ND_VAR_DECL, ln, c);
                     field.name = mname;
                     field.typeHint = retType;
@@ -486,6 +527,17 @@ private Node parseFunctionOrVarDecl() {
     if (this.check(TK_PUBLIC)) { this.advance(); isPub = true; }
     if (this.check(TK_STATIC)) { this.advance(); isStat = true; }
     string retType = this.parseTypeStr();
+    // `int32 as KM;` (DOCS/48) -- the `T as Name;` spelling of a type alias.
+    if (this.check(TK_AS)) {
+        this.advance();
+        string aliasName = this.expectIdent();
+        Node al = new Node(ND_ALIAS_DECL, ln, c);
+        al.name = aliasName;
+        al.typeHint = retType;
+        al.isAlias = true;
+        this.expect(TK_SEMI);
+        return al;
+    }
     string name = this.expectIdent();
     if (this.check(TK_LPAREN)) {
         Node fn = this.parseFunctionDef(isPub, isStat, retType, name);
@@ -614,6 +666,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
         if (this.check(TK_FOREACH)) { return this.parseForeach(); }
         if (this.check(TK_WHILE)) { return this.parseWhile(); }
         if (this.check(TK_IF)) { return this.parseIf(); }
+        if (this.check(TK_ELIF)) { return this.parseIf(); }
         if (this.check(TK_MATCH)) { return this.parseMatchStmt(); }
         if (this.check(TK_TRY)) { return this.parseTryCatch(); }
         if (this.check(TK_THROW)) { return this.parseThrow(); }
@@ -1014,6 +1067,18 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
     private Node parseTypedDecl() {
         int ln = this.line(); int c = this.col();
         string typ = this.parseTypeStr();
+        // `int32 as KM;` (DOCS/48) -- the `T as Name;` spelling of a type
+        // alias declaration.
+        if (this.check(TK_AS)) {
+            this.advance();
+            string aliasName = this.expectIdent();
+            Node al = new Node(ND_ALIAS_DECL, ln, c);
+            al.name = aliasName;
+            al.typeHint = typ;
+            al.isAlias = true;
+            this.expect(TK_SEMI);
+            return al;
+        }
         bool isMut = false;
         if (this.check(TK_MUT)) { this.advance(); isMut = true; }
         string name = this.expectIdent();
@@ -1270,6 +1335,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
             || k == TK_ASSIGN || k == TK_PLUS_EQ || k == TK_MINUS_EQ || k == TK_STAR_EQ || k == TK_SLASH_EQ
             || k == TK_PERCENT_EQ || k == TK_AMP_EQ || k == TK_PIPE_EQ || k == TK_CARET_EQ || k == TK_SHL_EQ || k == TK_SHR_EQ
             || k == TK_RANGE
+            || k == TK_SPREAD
             || k == TK_LPAREN || k == TK_LBRACKET || k == TK_DOT
             || k == TK_AMP || k == TK_PIPE || k == TK_CARET
             || k == TK_INC || k == TK_DEC || k == TK_QUESTION || k == TK_QUESTIONQUESTION
@@ -1290,7 +1356,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
         if (k == TK_SHL || k == TK_SHR) { return 8; }
         if (k == TK_PLUS || k == TK_MINUS) { return 9; }
         if (k == TK_STAR || k == TK_SLASH || k == TK_PERCENT) { return 10; }
-        if (k == TK_RANGE) { return 11; }
+        if (k == TK_RANGE || k == TK_SPREAD) { return 11; }
         if (k == TK_LPAREN || k == TK_LBRACKET || k == TK_DOT) { return 12; }
         if (k == TK_INC || k == TK_DEC) { return 12; }
         if (k == TK_FAT_ARROW) { return 13; }
@@ -1591,6 +1657,14 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
             n.addChild(this.parseExpr(11));
             return n;
         }
+        if (k == TK_SPREAD) {
+            this.advance();
+            Node n = new Node(ND_BINARY, ln, c);
+            n.op = OP_REPEAT;
+            n.addChild(lhs);
+            n.addChild(this.parseExpr(11));
+            return n;
+        }
         if (k == TK_LPAREN) {
             this.advance();
             Node[] args = [];
@@ -1828,13 +1902,14 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
     }
 
     private string applyTypeSuffix(string base) {
-        if (this.check(TK_LBRACKET) && this.pos + 1 < this.tokens.length && this.tokens[this.pos + 1].kind == TK_RBRACKET) {
+        string result = base;
+        while (this.check(TK_LBRACKET) && this.pos + 1 < this.tokens.length && this.tokens[this.pos + 1].kind == TK_RBRACKET) {
             this.advance(); this.advance();
-            return base + "[]";
+            result += "[]";
         }
-        if (this.check(TK_QUESTION)) { this.advance(); return base + "?"; }
-        if (this.check(TK_STAR)) { this.advance(); return base + "*"; }
-        return base;
+        if (this.check(TK_QUESTION)) { this.advance(); result += "?"; }
+        if (this.check(TK_STAR)) { this.advance(); result += "*"; }
+        return result;
     }
 
     private string typeSuffix() {
