@@ -513,6 +513,16 @@ class BuiltinMethods {
     }
 
     private static Value dictMethod(Value d, string method, Value[] args) {
+        if (method == "getProp" || method == "get") {
+            if (args.length < 1) { return makeNull(); }
+            if (d.objVal.contains(args[0].strVal)) { return d.objVal[args[0].strVal]; }
+            return makeNull();
+        }
+        if (method == "setProp" || method == "set") {
+            if (args.length < 2) { return makeNull(); }
+            mirrorPut(d, args[0].strVal, args[1]);
+            return args[1];
+        }
         if (method == "contains" || method == "hasKey") {
             if (args.length < 1) { return makeBool(false); }
             return makeBool(d.objVal.contains(args[0].strVal));

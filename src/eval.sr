@@ -454,6 +454,12 @@ class Evaluator {
                 } else {
                     className = thrown.objVal.className;
                 }
+            } else if (thrown != null && thrown.tag == VAL_CLASS_INST) {
+                Value msgField = this.callMethod(thrown, "getProp", [makeString("message")]);
+                if (msgField != null && msgField.tag == VAL_STRING) {
+                    message = msgField.strVal;
+                }
+                className = valueTypeName(thrown);
             } else if (thrown != null && thrown.tag == VAL_STRING) {
                 message = thrown.strVal;
             }

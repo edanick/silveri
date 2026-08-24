@@ -235,6 +235,10 @@ public int objKeysLen(Value v) {
     return v.objKeys.length;
 }
 
+public string valueTypeName(Value v) {
+    return v.typeName;
+}
+
 public string objKeysGet(Value v, int i) {
     return v.objKeys[i];
 }
