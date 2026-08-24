@@ -540,6 +540,7 @@ int keywordKind(string s) {
     if (s == "live") { return TK_LIVE; }
     if (s == "once") { return TK_ONCE; }
     if (s == "shared") { return TK_SHARED; }
+    if (s == "loop") { return TK_LOOP; }
     return TK_IDENT;
 }
 

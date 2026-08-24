@@ -1572,6 +1572,18 @@ class Evaluator {
             return;
         }
 
+        if (stmt.kind == ND_LOOP) {
+            Env loopEnv = env.push();
+            while (true) {
+                if (this.hasReturned || this.hasThrown) { break; }
+                this.execBlockInto(stmt.child(0), loopEnv);
+                if (this.hasBroken) { this.hasBroken = false; break; }
+                if (this.hasContinued) { this.hasContinued = false; }
+                this.maybeGC(loopEnv);
+            }
+            return;
+        }
+
         if (stmt.kind == ND_FOR_C) {
             this.execStmt(stmt.child(0), env);
             Env loopEnv = env.push();

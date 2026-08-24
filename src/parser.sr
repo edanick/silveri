@@ -663,6 +663,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
             return n;
         }
         if (this.check(TK_SWITCH)) { return this.parseSwitch(); }
+        if (this.check(TK_LOOP)) { return this.parseLoop(); }
         if (this.check(TK_BREAK)) { this.advance(); this.expect(TK_SEMI); return new Node(ND_BREAK, this.line(), this.col()); }
         if (this.check(TK_CONTINUE)) { this.advance(); this.expect(TK_SEMI); return new Node(ND_CONTINUE, this.line(), this.col()); }
         if (this.check(TK_VAR)) { return this.parseVarDecl(); }
@@ -764,6 +765,17 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
         Node body = this.parseBlock();
         Node n = new Node(ND_WHILE, ln, c);
         n.addChild(cond);
+        n.addChild(body);
+        return n;
+    }
+
+    // `loop { body }` (DOCS/12): an infinite loop exited only by `break`.
+    // `continue` restarts the body.
+    private Node parseLoop() {
+        int ln = this.line(); int c = this.col();
+        this.advance();
+        Node body = this.parseBlock();
+        Node n = new Node(ND_LOOP, ln, c);
         n.addChild(body);
         return n;
     }
