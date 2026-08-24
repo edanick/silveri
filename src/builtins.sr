@@ -368,6 +368,9 @@ class BuiltinMethods {
         }
         if (method == "keys") {
             Value[] result = [];
+            for (int i = 0; i < objKeysLen(d); i++) {
+                result.add(makeString(objKeysGet(d, i)));
+            }
             return makeArray(result);
         }
         if (method == "values") {
@@ -530,16 +533,18 @@ class BuiltinMethods {
                 string title = "";
                 dict<string, Value> windowFields = {};
                 Value[] windowValues = [];
-                dictSet(windowFields, windowValues, "handle", makeInt(hwnd));
-                dictSet(windowFields, windowValues, "title", makeString(title));
+                string[] windowKeys = [];
+                dictSet(windowFields, windowValues, windowKeys, "handle", makeInt(hwnd));
+                dictSet(windowFields, windowValues, windowKeys, "title", makeString(title));
                 Value window = makeObject(windowFields, "ProcessWindow");
-                setObjVals(window, windowValues);
+                setObjVals(window, windowValues, windowKeys);
                 dict<string, Value> fields = {};
                 Value[] values = [];
-                dictSet(fields, values, "path", makeString(fullPath));
-                dictSet(fields, values, "filename", makeString(filename));
-                dictSet(fields, values, "id", makeInt(pid));
-                dictSet(fields, values, "window", window);
+                string[] fieldKeys = [];
+                dictSet(fields, values, fieldKeys, "path", makeString(fullPath));
+                dictSet(fields, values, fieldKeys, "filename", makeString(filename));
+                dictSet(fields, values, fieldKeys, "id", makeInt(pid));
+                dictSet(fields, values, fieldKeys, "window", window);
                 Value result = makeObject(fields, "Process");
                 setObjVals(result, values);
                 return result;

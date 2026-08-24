@@ -38,6 +38,7 @@ class Value {
     public prop bool gcMark;
     public prop int64 gcEpoch;
     public prop Value[] objVals;
+    public prop string[] objKeys;
 
     construct () {
         this.tag = VAL_NULL;
@@ -56,11 +57,13 @@ class Value {
         this.gcMark = false;
         this.gcEpoch = 0;
         this.objVals = [];
+        this.objKeys = [];
     }
 
     private void adoptDict(dict<string, Value> d, Value[] vals) {
         this.objVal = d;
         this.objVals = vals;
+        this.objKeys = [];
     }
 
     public bool isTruthy() {
@@ -187,9 +190,10 @@ string arrayToString(Value[] arr) {
     return result;
 }
 
-void dictSet(dict<string, Value> d, Value[] vals, string k, Value v) {
+void dictSet(dict<string, Value> d, Value[] vals, string[] keys, string k, Value v) {
     if (!d.contains(k)) {
         vals.add(v);
+        keys.add(k);
     }
     d[k] = v;
 }
@@ -207,12 +211,16 @@ public void mirrorPut(Value v, string k, Value val) {
     // mirror (harmless -- it is kept alive one extra cycle) while the new
     // value is recorded so marking never misses it.
     v.objVals.add(val);
+    if (!v.objVal.contains(k)) {
+        v.objKeys.add(k);
+    }
     v.objVal[k] = val;
     GC.writeBarrier(v, val);
 }
 
-public void setObjVals(Value v, Value[] vals) {
+public void setObjVals(Value v, Value[] vals, string[] keys) {
     v.objVals = vals;
+    v.objKeys = keys;
 }
 
 public int objValsLen(Value v) {
@@ -221,6 +229,14 @@ public int objValsLen(Value v) {
 
 public Value objValsGet(Value v, int i) {
     return v.objVals[i];
+}
+
+public int objKeysLen(Value v) {
+    return v.objKeys.length;
+}
+
+public string objKeysGet(Value v, int i) {
+    return v.objKeys[i];
 }
 
 public int arrValLen(Value v) {

@@ -969,58 +969,59 @@ class Evaluator {
         }
         dict<string, Value> fields = {};
         Value[] fvals = [];
+        string[] fkeys = [];
         if (m == "makeInt") {
-            dictSet(fields, fvals, "tag", makeInt(1));
-            if (args.length > 0) { dictSet(fields, fvals, "intVal", makeInt(args[0].toInt())); }
+            dictSet(fields, fvals, fkeys, "tag", makeInt(1));
+            if (args.length > 0) { dictSet(fields, fvals, fkeys, "intVal", makeInt(args[0].toInt())); }
         }
         elif (m == "makeFloat") {
-            dictSet(fields, fvals, "tag", makeInt(2));
-            if (args.length > 0) { dictSet(fields, fvals, "floatVal", makeFloat(valueToFloat(args[0]))); }
+            dictSet(fields, fvals, fkeys, "tag", makeInt(2));
+            if (args.length > 0) { dictSet(fields, fvals, fkeys, "floatVal", makeFloat(valueToFloat(args[0]))); }
         }
         elif (m == "makeBool") {
-            dictSet(fields, fvals, "tag", makeInt(3));
-            if (args.length > 0) { dictSet(fields, fvals, "boolVal", makeBool(args[0].isTruthy())); }
+            dictSet(fields, fvals, fkeys, "tag", makeInt(3));
+            if (args.length > 0) { dictSet(fields, fvals, fkeys, "boolVal", makeBool(args[0].isTruthy())); }
         }
         elif (m == "makeString") {
-            dictSet(fields, fvals, "tag", makeInt(4));
-            if (args.length > 0) { dictSet(fields, fvals, "strVal", makeString(args[0].strVal)); }
+            dictSet(fields, fvals, fkeys, "tag", makeInt(4));
+            if (args.length > 0) { dictSet(fields, fvals, fkeys, "strVal", makeString(args[0].strVal)); }
         }
         elif (m == "makeChar") {
-            dictSet(fields, fvals, "tag", makeInt(5));
-            if (args.length > 0) { dictSet(fields, fvals, "charVal", makeChar(args[0].charVal)); }
+            dictSet(fields, fvals, fkeys, "tag", makeInt(5));
+            if (args.length > 0) { dictSet(fields, fvals, fkeys, "charVal", makeChar(args[0].charVal)); }
         }
         elif (m == "makeArray" || m == "makeTuple") {
-            dictSet(fields, fvals, "tag", makeInt(m == "makeArray" ? 6 : 7));
-            if (args.length > 0) { dictSet(fields, fvals, "arrVal", args[0]); }
+            dictSet(fields, fvals, fkeys, "tag", makeInt(m == "makeArray" ? 6 : 7));
+            if (args.length > 0) { dictSet(fields, fvals, fkeys, "arrVal", args[0]); }
         }
         elif (m == "makeObject" || m == "makeClassInst") {
-            dictSet(fields, fvals, "tag", makeInt(m == "makeObject" ? 8 : 12));
-            if (args.length > 0) { dictSet(fields, fvals, "objVal", args[0]); }
-            if (args.length > 1) { dictSet(fields, fvals, "typeName", makeString(args[1].strVal)); }
+            dictSet(fields, fvals, fkeys, "tag", makeInt(m == "makeObject" ? 8 : 12));
+            if (args.length > 0) { dictSet(fields, fvals, fkeys, "objVal", args[0]); }
+            if (args.length > 1) { dictSet(fields, fvals, fkeys, "typeName", makeString(args[1].strVal)); }
         }
         elif (m == "makeFunc" || m == "makeBuiltin") {
-            dictSet(fields, fvals, "tag", makeInt(m == "makeFunc" ? 9 : 10));
-            if (args.length > 0) { dictSet(fields, fvals, "funcName", makeString(args[0].strVal)); }
+            dictSet(fields, fvals, fkeys, "tag", makeInt(m == "makeFunc" ? 9 : 10));
+            if (args.length > 0) { dictSet(fields, fvals, fkeys, "funcName", makeString(args[0].strVal)); }
         }
         elif (m == "makeEnumVal") {
-            dictSet(fields, fvals, "tag", makeInt(13));
-            if (args.length > 0) { dictSet(fields, fvals, "typeName", makeString(args[0].strVal)); }
-            if (args.length > 1) { dictSet(fields, fvals, "strVal", makeString(args[1].strVal)); }
+            dictSet(fields, fvals, fkeys, "tag", makeInt(13));
+            if (args.length > 0) { dictSet(fields, fvals, fkeys, "typeName", makeString(args[0].strVal)); }
+            if (args.length > 1) { dictSet(fields, fvals, fkeys, "strVal", makeString(args[1].strVal)); }
         }
         elif (m == "makeDict") {
-            dictSet(fields, fvals, "tag", makeInt(15));
-            if (args.length > 0) { dictSet(fields, fvals, "objVal", args[0]); }
+            dictSet(fields, fvals, fkeys, "tag", makeInt(15));
+            if (args.length > 0) { dictSet(fields, fvals, fkeys, "objVal", args[0]); }
         }
         elif (m == "makeRange") {
-            dictSet(fields, fvals, "tag", makeInt(14));
-            if (args.length > 0) { dictSet(fields, fvals, "intVal", makeInt(args[0].toInt())); }
-            if (args.length > 1) { dictSet(fields, fvals, "floatVal", makeFloat(valueToFloat(args[1]))); }
+            dictSet(fields, fvals, fkeys, "tag", makeInt(14));
+            if (args.length > 0) { dictSet(fields, fvals, fkeys, "intVal", makeInt(args[0].toInt())); }
+            if (args.length > 1) { dictSet(fields, fvals, fkeys, "floatVal", makeFloat(valueToFloat(args[1]))); }
         }
         elif (m == "makeNull") {
-            dictSet(fields, fvals, "tag", makeInt(0));
+            dictSet(fields, fvals, fkeys, "tag", makeInt(0));
         }
         Value inst = makeClassInst(fields, "Value");
-        setObjVals(inst, fvals);
+        setObjVals(inst, fvals, fkeys);
         return inst;
     }
 
@@ -1247,14 +1248,15 @@ class Evaluator {
     private Value constructStruct(string name, Value[] args) {
         dict<string, Value> fields = {};
         Value[] fvals = [];
+        string[] fkeys = [];
         if (this.structs.contains(name)) {
             Node structDef = this.structs[name];
             for (int i = 0; i < structDef.childCount() && i < args.length; i++) {
-                dictSet(fields, fvals, structDef.child(i).name, args[i]);
+                dictSet(fields, fvals, fkeys, structDef.child(i).name, args[i]);
             }
         }
         Value inst = makeObject(fields, name);
-        setObjVals(inst, fvals);
+        setObjVals(inst, fvals, fkeys);
         return inst;
     }
 
@@ -1304,19 +1306,20 @@ class Evaluator {
     private Value evalDictLit(Node node, Env env) {
         dict<string, Value> entries = {};
         Value[] evals = [];
+        string[] ekeys = [];
         int rooted = 0;
         for (int i = 0; i < node.childCount(); i++) {
             Node pair = node.child(i);
             if (pair.childCount() >= 2) {
                 Value key = this.evalExpr(pair.child(0), env);
                 Value val = this.evalExpr(pair.child(1), env);
-                dictSet(entries, evals, key.toString(), val);
+                dictSet(entries, evals, ekeys, key.toString(), val);
                 GC.pushRoot(val);
                 rooted += 1;
             }
         }
         Value result = makeDict(entries);
-        setObjVals(result, evals);
+        setObjVals(result, evals, ekeys);
         for (int i = 0; i < rooted; i++) {
             GC.popRoot();
         }
@@ -1342,16 +1345,17 @@ class Evaluator {
     private Value evalStructLit(Node node, Env env) {
         dict<string, Value> fields = {};
         Value[] fvals = [];
+        string[] fkeys = [];
         int rooted = 0;
         for (int i = 0; i < node.childCount(); i++) {
             Node field = node.child(i);
             Value v = this.evalExpr(field.child(0), env);
-            dictSet(fields, fvals, field.name, v);
+            dictSet(fields, fvals, fkeys, field.name, v);
             GC.pushRoot(v);
             rooted += 1;
         }
         Value result = makeObject(fields, "");
-        setObjVals(result, fvals);
+        setObjVals(result, fvals, fkeys);
         for (int i = 0; i < rooted; i++) {
             GC.popRoot();
         }
