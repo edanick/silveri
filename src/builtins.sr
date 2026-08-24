@@ -589,6 +589,25 @@ class BuiltinMethods {
                 return makeString(readString(args[0].strVal));
             }
             if (method == "writeString" && args.length > 1) { writeString(args[0].strVal, args[1].strVal); return makeNull(); }
+            if (method == "readBytes") {
+                if (!file.exists(path)) { ev.throwException("FileNotFoundException", "file not found"); return makeNull(); }
+                string content = readString(args[0].strVal);
+                Value[] result = [];
+                for (int i = 0; i < content.length; i++) {
+                    char ch = content[i];
+                    result.add(makeInt(ch.toInt64()));
+                }
+                return makeArray(result);
+            }
+            if (method == "writeBytes" && args.length > 1 && args[1].tag == VAL_ARRAY) {
+                int count = arrValLen(args[1]);
+                byte[] data = [];
+                for (int i = 0; i < count; i++) {
+                    data.add(byte(arrValIntAt(args[1], i)));
+                }
+                file.writeBytes(args[0].strVal, data);
+                return makeNull();
+            }
             return makeNull();
         }
         if (mod == "file_module") {
@@ -603,6 +622,25 @@ class BuiltinMethods {
                 return makeString(readString(args[0].strVal));
             }
             if (method == "writeString" && args.length > 1) { writeString(args[0].strVal, args[1].strVal); return makeNull(); }
+            if (method == "readBytes") {
+                if (!file.exists(path)) { ev.throwException("FileNotFoundException", "file not found"); return makeNull(); }
+                string content = readString(args[0].strVal);
+                Value[] result = [];
+                for (int i = 0; i < content.length; i++) {
+                    char ch = content[i];
+                    result.add(makeInt(ch.toInt64()));
+                }
+                return makeArray(result);
+            }
+            if (method == "writeBytes" && args.length > 1 && args[1].tag == VAL_ARRAY) {
+                int count = arrValLen(args[1]);
+                byte[] data = [];
+                for (int i = 0; i < count; i++) {
+                    data.add(byte(arrValIntAt(args[1], i)));
+                }
+                file.writeBytes(args[0].strVal, data);
+                return makeNull();
+            }
             return makeNull();
         }
         if (mod == "folder_module") {

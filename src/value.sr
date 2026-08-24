@@ -247,6 +247,10 @@ public string arrValStrAt(Value v, int i) {
     return v.arrVal[i].strVal;
 }
 
+public int64 arrValIntAt(Value v, int i) {
+    return v.arrVal[i].toInt();
+}
+
 // High-offset fields of the 16-field Value struct are unreliable to touch
 // cross-module (miscompiled offsets), so marking/sweeping goes through these.
 
