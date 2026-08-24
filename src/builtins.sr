@@ -127,7 +127,13 @@ class BuiltinMethods {
         if (method == "pad" || method == "padLeft" || method == "padRight") {
             if (args.length < 2) { return s; }
             int count = args[0].toInt().toInt();
-            string fill = args[1].strVal;
+            string fill = "";
+            if (args[1].tag == VAL_CHAR) {
+                char ch = args[1].charVal;
+                fill = "" + ch;
+            } else {
+                fill = args[1].strVal;
+            }
             if (count <= 0 || fill.length == 0) { return s; }
             string unit = fill[0].toString();
             string left = "";
