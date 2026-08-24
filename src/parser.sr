@@ -1212,6 +1212,13 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
             n.addChild(this.parseExpr(10));
             return n;
         }
+        if (this.check(TK_TILDE)) {
+            this.advance();
+            Node n = new Node(ND_UNARY, ln, c);
+            n.op = UOP_BITNOT;
+            n.addChild(this.parseExpr(10));
+            return n;
+        }
         if (this.check(TK_STAR)) {
             this.advance();
             Node n = new Node(ND_UNARY, ln, c);

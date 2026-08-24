@@ -819,6 +819,7 @@ class Evaluator {
             return makeInt(-operand.toInt());
         }
         if (node.op == UOP_NOT) { return makeBool(!operand.isTruthy()); }
+        if (node.op == UOP_BITNOT) { return makeInt(-(operand.toInt() + 1)); }
         if (node.op == UOP_REF) { return operand; }
         if (node.op == UOP_DEREF) { return operand; }
         return operand;

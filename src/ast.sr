@@ -101,6 +101,7 @@ const int UOP_NOT = 1;
 const int UOP_DEREF = 2;
 const int UOP_REF = 3;
 const int UOP_ADDRESS = 4;
+const int UOP_BITNOT = 5;
 
 const int PAT_WILDCARD = 0;
 const int PAT_INT = 1;
