@@ -27,6 +27,7 @@ class Evaluator {
     public prop Value thrownValue;
     public prop int loopTicks;
     public prop string currentClassName;
+    public prop string currentModule;
     // DOCS/213 -- win32 module grants collected from import statements.
     public prop string[] win32Dlls;
     public prop string[] win32Grants;
@@ -48,6 +49,7 @@ class Evaluator {
         this.thrownValue = null;
         this.loopTicks = 0;
         this.currentClassName = "";
+        this.currentModule = "";
         this.win32Dlls = [];
         this.win32Grants = [];
         this.registerBuiltins();
@@ -359,6 +361,9 @@ class Evaluator {
             if (item.isPublic) {
                 this.globals.define(item.name, makeFunc(item.name));
             }
+            if (this.currentModule != "") {
+                this.functions[this.currentModule + "." + item.name] = item;
+            }
         }
         if (item.kind == ND_STRUCT_DEF) {
             this.structs[item.name] = item;
@@ -377,6 +382,10 @@ class Evaluator {
         }
         if (item.kind == ND_MODULE) {
             this.modules[item.name] = item;
+            if (item.strVal == "export") {
+                this.currentModule = item.name;
+                this.globals.define(item.name, makeBuiltin("module_" + item.name));
+            }
         }
         if (item.kind == ND_CONST && item.childCount() > 0) {
             Value val = this.evalExpr(item.child(0), this.globals);
@@ -938,7 +947,8 @@ class Evaluator {
         if (receiver.tag == VAL_BUILTIN) {
             string cn = receiver.funcName;
             if (cn.startsWith("class_")) {
-                string className = cn.substr(6);
+                string className = "";
+                for (int ci = 6; ci < cn.length; ci++) { className += cn[ci]; }
                 if (className == "Value") {
                     Value factory = this.makeValueFactory(node.name, args);
                     if (factory != null) {
@@ -950,6 +960,16 @@ class Evaluator {
                 string staticKey = className + "." + node.name;
                 if (this.functions.contains(staticKey)) {
                     result = this.callNode(this.functions[staticKey], args, env);
+                    for (int i = 0; i < rooted; i++) { GC.popRoot(); }
+                    return result;
+                }
+            }
+            if (cn.startsWith("module_")) {
+                string moduleName = "";
+                for (int mi = 7; mi < cn.length; mi++) { moduleName += cn[mi]; }
+                string modKey = moduleName + "." + node.name;
+                if (this.functions.contains(modKey)) {
+                    result = this.callNode(this.functions[modKey], args, env);
                     for (int i = 0; i < rooted; i++) { GC.popRoot(); }
                     return result;
                 }
@@ -1127,6 +1147,14 @@ class Evaluator {
             }
             if (obj.funcName == "time_module") {
                 if (member == "now") { return makeBuiltin("now"); }
+            }
+            if (obj.funcName.startsWith("module_")) {
+                string moduleName = "";
+                for (int mi = 7; mi < obj.funcName.length; mi++) { moduleName += obj.funcName[mi]; }
+                string modKey = moduleName + "." + member;
+                if (this.functions.contains(modKey)) {
+                    return makeFunc(modKey);
+                }
             }
             if (this.enums.contains(obj.funcName)) {
                 return makeEnumVal(obj.funcName, member);

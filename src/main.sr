@@ -28,7 +28,20 @@ bool nativeModule(string name) {
 int findCI(string text, string needle, int start) {
     string t = text.lower();
     string n = needle.lower();
-    return t.indexOf(n, start);
+    if (start < 0) { start = 0; }
+    if (n.length == 0) { return -1; }
+    int lastStart = t.length - n.length;
+    int result = -1;
+    for (int i = start; i <= lastStart; i++) {
+        bool ok = true;
+        int j = 0;
+        while (j < n.length) {
+            if (t[i + j] != n[j]) { ok = false; }
+            j += 1;
+        }
+        if (ok) { result = i; break; }
+    }
+    return result;
 }
 
 // Read std/<module>.sr from the standard checkout locations, returning empty
@@ -44,7 +57,11 @@ string readStdModule(string name, string inputFile) {
         if (inputFile[i] == '\\' || inputFile[i] == '/') { lastSep = i; }
     }
     if (lastSep >= 0) {
-        paths.add(inputFile.substr(0, lastSep + 1) + lower + ".sr");
+        string prefix = "";
+        for (int pi = 0; pi <= lastSep; pi++) {
+            prefix += inputFile[pi];
+        }
+        paths.add(prefix + lower + ".sr");
     }
     paths.add(lower + ".sr");
     paths.add("std\\" + lower + ".sr");
@@ -72,7 +89,20 @@ string resolveImports(string source, string inputFile) {
     while (cursor < source.length) {
         int importPos = findCI(source, "import * from ", cursor);
         if (importPos < 0) { break; }
-        int semi = source.indexOf(";", importPos);
+        // Only treat a match as an import statement when it starts at a
+        // statement boundary; otherwise it is `import * from ` text inside a
+        // string literal or comment and must be skipped.
+        if (importPos > 0) {
+            char prev = source[importPos - 1];
+            if (prev != '\n' && prev != '\r' && prev != ';') {
+                cursor = importPos + 1;
+                continue;
+            }
+        }
+        int semi = -1;
+        for (int si = importPos; si < source.length; si++) {
+            if (source[si] == ';') { semi = si; break; }
+        }
         if (semi < 0) { break; }
         int nameStart = importPos + 13;
         while (nameStart < semi && source[nameStart] == ' ') { nameStart = nameStart + 1; }
@@ -80,7 +110,10 @@ string resolveImports(string source, string inputFile) {
         while (nameEnd < semi && ((source[nameEnd] >= 'a' && source[nameEnd] <= 'z') || (source[nameEnd] >= 'A' && source[nameEnd] <= 'Z') || (source[nameEnd] >= '0' && source[nameEnd] <= '9') || source[nameEnd] == '_')) {
             nameEnd = nameEnd + 1;
         }
-        string module = source.substr(nameStart, nameEnd - nameStart);
+        string module = "";
+        for (int mi = nameStart; mi < nameEnd; mi++) {
+            module += source[mi];
+        }
         if (module.length > 0 && !nativeModule(module)) {
             string modSrc = readStdModule(module, inputFile);
             if (modSrc.length > 0) {
