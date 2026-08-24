@@ -612,7 +612,8 @@ class BuiltinMethods {
             char ch = c.charVal;
             return makeString("" + ch);
         }
-        if (method == "isDigit") { return makeBool(c.charVal.isDigit()); }
+        if (method == "toInt64") { return makeInt(c.charVal.toInt64()); }
+        if (method == "toInt") { return makeInt(c.charVal.toInt64()); }
         if (method == "isAlpha") { return makeBool(c.charVal.isAlpha()); }
         if (method == "isAlphaNum") { return makeBool(c.charVal.isAlphaNum()); }
         if (method == "isLower") { return makeBool(c.charVal.isLower()); }
@@ -709,18 +710,16 @@ class BuiltinMethods {
         if (mod == "bom_module") {
             string value = "";
             if (args.length > 0 && args[0].tag == VAL_STRING) { value = args[0].strVal; }
-            bool has = value.length >= 3
-                && value[0].toInt64() == 0xEF
-                && value[1].toInt64() == 0xBB
-                && value[2].toInt64() == 0xBF;
+            string bom = "\xEF\xBB\xBF";
+            bool has = value.startsWith(bom);
             if (method == "hasBom") { return makeBool(has); }
             if (method == "strip") {
-                if (has) { return makeString(value.substr(3)); }
+                if (has) { return makeString(value.substr(bom.length)); }
                 return makeString(value);
             }
             if (method == "prepend") {
                 if (has) { return makeString(value); }
-                return makeString("\xEF\xBB\xBF" + value);
+                return makeString(bom + value);
             }
             return makeNull();
         }
