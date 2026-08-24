@@ -172,6 +172,18 @@ class Node {
         this.children.add(n);
     }
 
+    public void prependChild(Node n) {
+        Node[] newChildren = [n];
+        for (int i = 0; i < this.children.length; i++) {
+            newChildren.add(this.children[i]);
+        }
+        this.children = newChildren;
+    }
+
+    public int kindOf() {
+        return this.kind;
+    }
+
     public Node child(int i) {
         if (i >= 0 && i < this.children.length) {
             return this.children[i];

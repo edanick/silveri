@@ -421,11 +421,7 @@ private Node? parseItem() {
         Node thisParam = new Node(ND_VAR_DECL, 0, 0);
         thisParam.name = "this";
         thisParam.typeHint = className;
-        Node[] newChildren = [thisParam];
-        for (int i = 0; i < params.childCount(); i++) {
-            newChildren.add(params.child(i));
-        }
-        params.children = newChildren;
+        params.prependChild(thisParam);
     }
 
     private Node parseCollect() {

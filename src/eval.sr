@@ -1254,7 +1254,8 @@ class Evaluator {
         int guard = 0;
         while (this.classes.contains(cur) && guard < 64) {
             chain.add(cur);
-            cur = this.classes[cur].parentClass;
+            Node pn = this.classes[cur];
+            cur = pn.parentClass;
             guard += 1;
         }
         // Initialize fields root -> leaf so inherited fields exist before the
@@ -1264,7 +1265,7 @@ class Evaluator {
             Node classDef = this.classes[chain[ci]];
             for (int i = 0; i < classDef.childCount(); i++) {
                 Node child = classDef.child(i);
-                if (child.kind == ND_VAR_DECL) {
+                if (child.kindOf() == ND_VAR_DECL) {
                     if (child.childCount() > 0) {
                         Value fv = this.evalExpr(child.child(0), this.globals);
                         mirrorPut(inst, child.name, fv);
@@ -1283,7 +1284,7 @@ class Evaluator {
             bool called = false;
             for (int i = 0; i < classDef.childCount(); i++) {
                 Node child = classDef.child(i);
-                if (child.kind == ND_FUNC && child.name == "construct") {
+                if (child.name == "construct") {
                     Value[] methodArgs = [inst];
                     foreach (Value a in args) { methodArgs.add(a); }
                     string savedClass = this.currentClassName;
@@ -1337,7 +1338,8 @@ class Evaluator {
         while (this.classes.contains(cur) && guard < 64) {
             string key = cur + "." + method;
             if (this.functions.contains(key)) { return key; }
-            cur = this.classes[cur].parentClass;
+            Node pc = this.classes[cur];
+            cur = pc.parentClass;
             guard += 1;
         }
         return "";
