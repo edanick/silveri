@@ -170,7 +170,11 @@ class BuiltinMethods {
     }
 
     private static Value stringProperty(Value s, string propertyName) {
-        if (propertyName == "length") { return makeInt(s.strVal.length.toInt64()); }
+        if (propertyName == "length") {
+            int64 l = s.strVal.length;
+            Value r = makeInt(l);
+            return r;
+        }
         return makeNull();
     }
 
@@ -266,7 +270,7 @@ class BuiltinMethods {
         }
         if (method == "add" || method == "push") {
             if (args.length > 0) { arr.arrVal.add(args[0]); }
-            return args.length > 0 ? args[0] : makeNull();
+            return arr;
         }
         if (method == "outlast") {
             if (arr.arrVal.length > 0) {
