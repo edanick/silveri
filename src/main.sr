@@ -46,15 +46,17 @@ int findCI(string text, string needle, int start) {
 }
 
 // Read std/<module>.sr from the standard checkout locations, returning empty
-// string when the file is not found at any candidate path.
-string readStdModule(string name, string inputFile) {
+// string when the file is not found at any candidate path. Candidates that
+// are the input file itself are skipped -- by path spelling and by content --
+// so `import * from <thisfile>` never resolves to the consuming script.
+string readStdModule(string name, string inputFile, string selfSource) {
     string lower = name.lower();
     string[] paths = [];
     // Resolve user modules beside the script before probing the standard
     // library.  `silveri tests/main.sr` must be able to load tests/helper.sr,
     // not just std/helper.sr.
     int lastSep = -1;
-    for (int i = 0; i < inputFile.length; i = i + 1) {
+    for (int i = 0; i < inputFile.length; i++) {
         if (inputFile[i] == '\\' || inputFile[i] == '/') { lastSep = i; }
     }
     if (lastSep >= 0) {
@@ -69,23 +71,71 @@ string readStdModule(string name, string inputFile) {
     paths.add("silverc\\std\\" + lower + ".sr");
     paths.add("..\\std\\" + lower + ".sr");
     paths.add("..\\silverc\\std\\" + lower + ".sr");
-    for (int i = 0; i < paths.length; i = i + 1) {
+    for (int i = 0; i < paths.length; i++) {
+        // Skip the input file itself (same path spelling).
+        if (paths[i].lower() == inputFile.lower()) { continue; }
         string src = "";
         try {
             src = fs.readFile(paths[i]);
         } catch (int e) {
             src = "";
         }
+        // Skip the input file itself (same content reached through a
+        // different path spelling, e.g. bare-name vs absolute).
+        if (src.length > 0 && src == selfSource) { continue; }
         if (src.length > 0) { return src; }
     }
     return "";
 }
 
+// Module names that always resolve without a source probe: the native
+// modules the interpreter implements plus the ones it embeds/prepends
+// itself (mirrors the compiler driver's always-resolvable list).
+bool moduleAlwaysResolvable(string name) {
+    string n = name.lower();
+    return nativeModule(name) || cli.eq(n, "exception") || cli.eq(n, "llmai")
+        || cli.eq(n, "win32") || cli.eq(n, "http") || cli.eq(n, "os")
+        || cli.eq(n, "project") || cli.eq(name, "LLMAI");
+}
+
+// Known built-in module names used for did-you-mean suggestions on imports
+// (SYNTAX_EXCEPTIONS.md).
+string[] knownModuleNames() {
+    string[] known = [];
+    known.add("fs"); known.add("json"); known.add("yaml"); known.add("env");
+    known.add("url"); known.add("hash"); known.add("path"); known.add("bom");
+    known.add("console"); known.add("math"); known.add("http");
+    known.add("llmai"); known.add("os"); known.add("keyboard");
+    known.add("mouse"); known.add("time"); known.add("exception");
+    known.add("process"); known.add("notifications"); known.add("registry");
+    known.add("system_tray"); known.add("gui"); known.add("string");
+    known.add("cli"); known.add("win32");
+    return known;
+}
+
+// Compute the 1-based line and column of a character offset in src.
+int[] diagSourceLoc(string src, int off) {
+    int total = src.length;
+    if (off > total) { off = total; }
+    if (off < 0) { off = 0; }
+    int line = 1;
+    int lineStart = 0;
+    for (int i = 0; i < off; i++) {
+        if (src[i] == '\n') { line += 1; lineStart = i + 1; }
+    }
+    int[] loc = [];
+    loc.add(line);
+    loc.add(off - lineStart + 1);
+    return loc;
+}
+
 // Resolve `import * from <module>` statements in `source` by prepending
 // std/<module>.sr content for non-native modules. Native modules are
 // handled directly by the interpreter and must not be loaded from disk.
+// Unknown modules are reported with SYNTAX_EXCEPTIONS.md diagnostics.
 string resolveImports(string source, string inputFile) {
     string prepend = "";
+    bool badModule = false;
     int cursor = 0;
     while (cursor < source.length) {
         int importPos = findCI(source, "import * from ", cursor);
@@ -116,15 +166,80 @@ string resolveImports(string source, string inputFile) {
             module += source[mi];
         }
         if (module.length > 0 && !nativeModule(module)) {
-            string modSrc = readStdModule(module, inputFile);
+            string modSrc = readStdModule(module, inputFile, source);
             if (modSrc.length > 0) {
                 prepend = prepend + modSrc + "\n";
+            } elif (!moduleAlwaysResolvable(module)) {
+                // SYNTAX_EXCEPTIONS.md ? unknown module, with a did-you-mean
+                // suggestion when it resembles a known one.
+                badModule = true;
+                int[] loc = diagSourceLoc(source, nameStart);
+                string sugg = diagClosestMatch(module, knownModuleNames());
+                if (sugg.length > 0) {
+                    printline("did you mean to import the module \"" + sugg + "\"?, unknown module \"" + module + "\" was found at line " + loc[0].toString() + " column " + loc[1].toString());
+                } else {
+                    printline("unknown module \"" + module + "\" was found at line " + loc[0].toString() + ", column " + loc[1].toString() + ". module either doesn't exist or not installed.");
+                }
             }
         }
         cursor = semi + 1;
     }
-    if (prepend.length > 0) {
-        return prepend + source;
+    if (badModule) {
+        exit(1);
+    }
+    // Plain source-module imports (`import helper_suite;`) load the module's
+    // source too when it can be found, mirroring the compiler driver. Star/
+    // list forms with a `from <target>` clause were handled above; bare-name
+    // imports name the source module directly. Resolution stays best-effort:
+    // an unfound plain module is skipped silently (historical behavior).
+    string plainPrepend = "";
+    int cursor2 = 0;
+    while (cursor2 < source.length) {
+        int importPos2 = findCI(source, "import ", cursor2);
+        if (importPos2 < 0) { break; }
+        if (importPos2 > 0) {
+            char prev2 = source[importPos2 - 1];
+            if (prev2 != '\n' && prev2 != '\r' && prev2 != ';') {
+                cursor2 = importPos2 + 1;
+                continue;
+            }
+        }
+        int semi2 = -1;
+        for (int si2 = importPos2; si2 < source.length; si2++) {
+            if (source[si2] == ';') { semi2 = si2; break; }
+        }
+        if (semi2 < 0) { break; }
+        int p = importPos2 + 7;
+        string stmtText = "";
+        for (int ci = p; ci < semi2; ci++) { stmtText += source[ci]; }
+        // Skip star forms (`import * from x;`) -- already handled above --
+        // and win32/native-list forms (`import { a } from win32;`,
+        // `import kernel32 from win32;`).
+        string trimmed = stmtText.trim();
+        if (trimmed.startsWith("*") || trimmed.contains("{")
+            || trimmed.startsWith("kernel32") || trimmed.contains(" from ")) {
+            cursor2 = semi2 + 1;
+            continue;
+        }
+        // Comma-separated bare module names.
+        string[] parts = trimmed.split(",");
+        for (int pi = 0; pi < parts.length; pi++) {
+            string modName = parts[pi].trim();
+            if (modName.length == 0) { continue; }
+            if (nativeModule(modName) || moduleAlwaysResolvable(modName)) { continue; }
+            string modSrc = readStdModule(modName, inputFile, source);
+            if (modSrc.length > 0) {
+                plainPrepend = plainPrepend + modSrc + "\n";
+            }
+        }
+        cursor2 = semi2 + 1;
+    }
+    string combined = prepend;
+    if (plainPrepend.length > 0) {
+        combined = combined + plainPrepend + "\n";
+    }
+    if (combined.length > 0) {
+        return combined + source;
     }
     return source;
 }
@@ -236,8 +351,12 @@ void main() {
 
     Lexer lexer = new Lexer(inputSource);
     Token[] tokens = lexer.tokenize();
+    if (lexer.errorCount() > 0) {
+        exit(1);
+    }
 
     Parser p = new Parser(tokens);
+    p.setLineLengths(lexer.lineLengths());
     Node[] program = p.parseProgram();
     if (p.errorCount() > 0) {
         exit(1);
@@ -254,6 +373,7 @@ void main() {
     Lexer preludeLexer = new Lexer(preludeSrc);
     Token[] preludeTokens = preludeLexer.tokenize();
     Parser preludeParser = new Parser(preludeTokens);
+    preludeParser.setLineLengths(preludeLexer.lineLengths());
     Node[] llmaiPrelude = preludeParser.parseProgram();
     if (preludeParser.errorCount() > 0) {
         exit(1);
@@ -264,11 +384,20 @@ void main() {
     Lexer excLexer = new Lexer(excSrc);
     Token[] excTokens = excLexer.tokenize();
     Parser excParser = new Parser(excTokens);
+    excParser.setLineLengths(excLexer.lineLengths());
     Node[] excPrelude = excParser.parseProgram();
     if (excParser.errorCount() > 0) {
         exit(1);
     }
     evaluator.register(excPrelude);
+
+    // Post-parse call diagnostics (SYNTAX_EXCEPTIONS.md unknown method,
+    // VALUE_EXCEPTION.md filesystem path literals) run on the user program
+    // once the whole symbol table is visible.
+    p.checkCallDiagnostics(program);
+    if (p.errorCount() > 0) {
+        exit(1);
+    }
 
     MemoryGuard guard = new MemoryGuard();
     guard.checkProgram(program);

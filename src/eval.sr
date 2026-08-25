@@ -35,6 +35,12 @@ class Evaluator {
     // both the `cargs` array variable and the `cargs()` function.
     public prop string[] scriptArgs;
     public prop Value scriptCargs;
+    // Source position of the current call's first argument, set by
+    // evalCall/evalMethodCall so runtime VALUE_EXCEPTION.md diagnostics can
+    // point at the offending value.
+    public prop int diagLine;
+    public prop int diagCol;
+    public prop bool diagHasPos;
 
     construct () {
         file.writeBytes("build/diag/TE0_ctor.txt", [49]);
@@ -58,6 +64,9 @@ class Evaluator {
         this.win32Grants = [];
         this.scriptArgs = [];
         this.scriptCargs = null;
+        this.diagLine = 0;
+        this.diagCol = 0;
+        this.diagHasPos = false;
         this.registerBuiltins();
         file.writeBytes("build/diag/TE1_ctor_end.txt", [49]);
     }
@@ -444,6 +453,7 @@ class Evaluator {
             if (item.kind == ND_EXPR_STMT && item.childCount() > 0) {
             this.evalExpr(item.child(0), this.globals);
             }
+            if (this.hasThrown) { break; }
         }
         if (this.functions.contains("main")) {
             file.writeBytes("build/diag/TR3.txt", [49]);
@@ -925,6 +935,14 @@ class Evaluator {
             GC.pushRoot(a);
             rooted += 1;
         }
+        // VALUE_EXCEPTION.md — remember the first argument's source position
+        // so runtime diagnostics can point at the offending value.
+        if (node.childCount() > 0) {
+            Node a0 = node.child(0);
+            this.diagLine = a0.line;
+            this.diagCol = a0.col;
+            this.diagHasPos = true;
+        }
         Value result = makeNull();
         if (node.name == "super") {
             result = this.evalSuper(args, env);
@@ -932,7 +950,11 @@ class Evaluator {
             if (this.scriptCargs != null) { result = this.scriptCargs; }
             else { result = makeArray([]); }
         } else if (this.functions.contains(node.name)) {
-            result = this.callNodeWithRefs(this.functions[node.name], args, env, refNames);
+            // TYPE_EXCEPTIONS.md — chained parameter type mismatches.
+            this.checkCallParamTypes(node, args);
+            if (!this.hasThrown) {
+                result = this.callNodeWithRefs(this.functions[node.name], args, env, refNames);
+            }
         } else {
         // Split the null check from the field access: the self-hosted backend
         // does not always short-circuit `x != null && x.tag == ...`, and the
@@ -950,6 +972,7 @@ class Evaluator {
             printline("Runtime error: undefined function '" + node.name + "'");
         }
         }
+        this.diagHasPos = false;
         for (int i = 0; i < rooted; i++) {
             GC.popRoot();
         }
@@ -995,6 +1018,14 @@ class Evaluator {
             GC.pushRoot(a);
             rooted += 1;
         }
+        // VALUE_EXCEPTION.md — remember the first argument's source position
+        // so runtime diagnostics can point at the offending value.
+        if (node.childCount() > 1) {
+            Node a0 = node.child(1);
+            this.diagLine = a0.line;
+            this.diagCol = a0.col;
+            this.diagHasPos = true;
+        }
         Value result = makeNull();
         if (receiver.tag == VAL_CLASS_INST) {
             string methodKey = this.resolveMethodKey(receiver.typeName, node.name);
@@ -1038,8 +1069,42 @@ class Evaluator {
             }
         }
         result = this.callMethod(receiver, node.name, args);
+        this.diagHasPos = false;
         for (int i = 0; i < rooted; i++) { GC.popRoot(); }
         return result;
+    }
+
+    // TYPE_EXCEPTIONS.md — chained parameter type mismatches for a call to a
+    // known user function. Mirrors the reference checker's static rule: only
+    // literal arguments whose value kind can never fit the parameter type are
+    // flagged, so dynamic values keep the interpreter's lenient behavior.
+    private void checkCallParamTypes(Node callNode, Value[] args) {
+        Node fn = this.functions[callNode.name];
+        if (fn.childCount() < 1) { return; }
+        Node params = fn.child(0);
+        string segs = "";
+        int count = 0;
+        int limit = params.childCount();
+        if (args.length < limit) { limit = args.length; }
+        for (int j = 0; j < limit; j++) {
+            Node param = params.child(j);
+            int pf = typeHintFamilyRT(param.typeHint);
+            if (pf < 0) { continue; }
+            Node argNode = callNode.child(j);
+            if (!isLiteralNodeRT(argNode)) { continue; }
+            Value arg = args[j];
+            if (arg == null) { continue; }
+            int af = valueTagFamilyRT(arg);
+            if (af < 0 || af == pf) { continue; }
+            if (count > 0) { segs = segs + ", and "; }
+            segs = segs + "line " + argNode.line.toString() + ", column " + argNode.col.toString()
+                + " for \"" + param.name + "\" parameter expected " + articleRT(param.typeHint)
+                + " got " + articleRT(valueTypeNameRT(arg));
+            count += 1;
+        }
+        if (count > 0) {
+            this.throwException("TypeException", "wrong value type at " + segs);
+        }
     }
 
     private Value makeValueFactory(string m, Value[] args) {
@@ -1859,4 +1924,53 @@ Value checkedByteArray(Value value) {
         return value;
     }
     throw new ValueException("byte[] conversion requires an array value");
+}
+
+// ---- TYPE_EXCEPTIONS.md runtime helpers -----------------------------------
+
+// Fundamental family of a declared type name: numbers/chars interoperate;
+// strings and booleans do not. Non-scalar types return -1 (never checked).
+int typeHintFamilyRT(string t) {
+    for (int i = 0; i < t.length; i++) {
+        char c = t[i];
+        if (c == '[' || c == ']' || c == '?' || c == '<' || c == '>' || c == '.' || c == ',') { return -1; }
+    }
+    if (t == "int" || t == "int32" || t == "int64" || t == "uint" || t == "byte"
+        || t == "float" || t == "float64" || t == "double" || t == "char") { return 0; }
+    if (t == "string") { return 1; }
+    if (t == "bool") { return 2; }
+    return -1;
+}
+
+// Fundamental family of a runtime value tag.
+int valueTagFamilyRT(Value v) {
+    if (v.tag == VAL_INT || v.tag == VAL_FLOAT || v.tag == VAL_BYTE || v.tag == VAL_CHAR) { return 0; }
+    if (v.tag == VAL_STRING) { return 1; }
+    if (v.tag == VAL_BOOL) { return 2; }
+    return -1;
+}
+
+string valueTypeNameRT(Value v) {
+    if (v.tag == VAL_INT) { return "int"; }
+    if (v.tag == VAL_FLOAT) { return "float"; }
+    if (v.tag == VAL_BYTE) { return "byte"; }
+    if (v.tag == VAL_CHAR) { return "char"; }
+    if (v.tag == VAL_BOOL) { return "bool"; }
+    if (v.tag == VAL_STRING) { return "string"; }
+    return "null";
+}
+
+// Literal nodes carry statically-known value kinds the reference checker
+// reasons about.
+bool isLiteralNodeRT(Node n) {
+    return n.kind == ND_INT_LIT || n.kind == ND_FLOAT_LIT || n.kind == ND_STRING_LIT
+        || n.kind == ND_CHAR_LIT || n.kind == ND_BOOL_LIT;
+}
+
+// `an int`, `a string`, ... for exception message phrasing.
+string articleRT(string typeName) {
+    if (typeName.length == 0) { return "a " + typeName; }
+    char fc = typeName[0];
+    if (fc == 'a' || fc == 'e' || fc == 'i' || fc == 'o') { return "an " + typeName; }
+    return "a " + typeName;
 }

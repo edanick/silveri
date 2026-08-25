@@ -11,6 +11,30 @@ class Parser {
     // a binary range expression.
     private bool rangeIsSliceBoundary;
     private prop int parseErrors;
+    // ---- EXCEPTIONS/*.md diagnostics --------------------------------------
+    // Missing-semicolon positions, flushed as ONE merged message at the end
+    // of parseProgram (SYNTAX_EXCEPTIONS.md).
+    private int[] missingSemiLines;
+    private int[] missingSemiCols;
+    // Lowercase user-declared type names (def/enum/struct/class/typealias):
+    // `direction dir = ...` is a declaration, not an unknown keyword.
+    private string[] declaredTypes;
+    // Identifiers with known meaning that may appear as bare statements.
+    private string[] knownIdents;
+    // Parsed function signatures for TYPE_EXCEPTIONS call-arg checks:
+    // parallel arrays; types/names joined with commas per signature.
+    private string[] sigNames;
+    private string[] sigTypes;
+    private string[] sigParams;
+    private int[] sigVariadic;
+    // Per-line character lengths (1-based indexing via line-1) used to point
+    // just past the end of a line for missing-bracket diagnostics.
+    private int[] lineLens;
+    // win32 grants recorded from import statements (DOCS/213) so the
+    // post-parse unknown-method walk never flags granted native calls.
+    private bool win32AllModules;
+    private string[] win32OpenModules;
+    private string[] win32GrantNames;
 
     construct (Token[] toks) {
         file.writeBytes("build/diag/TP_c.txt", [49]);
@@ -18,10 +42,194 @@ class Parser {
         this.pos = 0;
         this.rangeIsSliceBoundary = false;
         this.parseErrors = 0;
+        this.missingSemiLines = [];
+        this.missingSemiCols = [];
+        this.declaredTypes = [];
+        this.knownIdents = [];
+        this.sigNames = [];
+        this.sigTypes = [];
+        this.sigParams = [];
+        this.sigVariadic = [];
+        this.lineLens = [];
+        this.win32AllModules = false;
+        this.win32OpenModules = [];
+        this.win32GrantNames = [];
     }
 
     public int errorCount() {
         return this.parseErrors;
+    }
+
+    // Provide per-line character lengths so bracket diagnostics can point
+    // just past the end of a line (SYNTAX_EXCEPTIONS.md #3).
+    public void setLineLengths(int[] lens) {
+        this.lineLens = lens;
+    }
+
+    // Record a diagnostic and keep going (one message per line, source order).
+    private void recordError(string msg) {
+        this.parseErrors += 1;
+        printline(msg);
+    }
+
+    private bool strEq(string a, string b) {
+        if (a.length != b.length) { return false; }
+        for (int i = 0; i < a.length; i++) {
+            if (a[i] != b[i]) { return false; }
+        }
+        return true;
+    }
+
+    // Source width of a token (quotes included for literals), used for
+    // insertion-point columns of missing `;` / `,` / `)`.
+    private int tokenSrcLen(Token t) {
+        if (t.kind == TK_STRING_LIT || t.kind == TK_CHAR_LIT) { return t.text.length + 2; }
+        return t.text.length;
+    }
+
+    private int prevEndLine() {
+        if (this.pos == 0) { return this.peek().line; }
+        return this.tokens[this.pos - 1].line;
+    }
+
+    private int prevEndCol() {
+        if (this.pos == 0) { return this.peek().col; }
+        Token prev = this.tokens[this.pos - 1];
+        return prev.col + this.tokenSrcLen(prev);
+    }
+
+    // Column one past the last character of the given line (1-based), or -1
+    // when line lengths were not provided.
+    private int lineEndCol(int line) {
+        if (line >= 1 && line <= this.lineLens.length) { return this.lineLens[line - 1] + 1; }
+        return -1;
+    }
+
+    // Statement-final semicolon: consume it, or record the position and keep
+    // parsing (SYNTAX_EXCEPTIONS.md "Missing semicolons"). EOF tolerates
+    // the final statement of a file, and a preceding `}` already terminates
+    // braced statements (match/switch/block expressions).
+    private void expectSemi() {
+        if (this.check(TK_SEMI)) { this.advance(); return; }
+        if (this.check(TK_EOF)) { return; }
+        if (this.pos > 0 && this.tokens[this.pos - 1].kind == TK_RBRACE) { return; }
+        this.missingSemiLines.add(this.prevEndLine());
+        this.missingSemiCols.add(this.prevEndCol());
+    }
+
+    // All Silver keywords, used for did-you-mean suggestions.
+    public string[] keywordCandidates() {
+        string[] cands = [];
+        cands.add("if"); cands.add("else"); cands.add("elif"); cands.add("while");
+        cands.add("for"); cands.add("foreach"); cands.add("return"); cands.add("match");
+        cands.add("void"); cands.add("int"); cands.add("int32"); cands.add("int64");
+        cands.add("uint"); cands.add("float"); cands.add("float64"); cands.add("double");
+        cands.add("bool"); cands.add("byte"); cands.add("char"); cands.add("string");
+        cands.add("var"); cands.add("struct"); cands.add("class"); cands.add("enum");
+        cands.add("def"); cands.add("found"); cands.add("collect"); cands.add("mod");
+        cands.add("export"); cands.add("import"); cands.add("from"); cands.add("as");
+        cands.add("new"); cands.add("const"); cands.add("true"); cands.add("false");
+        cands.add("null"); cands.add("public"); cands.add("private"); cands.add("static");
+        cands.add("prop"); cands.add("construct"); cands.add("unset"); cands.add("local");
+        cands.add("alias"); cands.add("fixed"); cands.add("live"); cands.add("once");
+        cands.add("shared"); cands.add("mut"); cands.add("ref"); cands.add("try");
+        cands.add("catch"); cands.add("finally"); cands.add("throw"); cands.add("to");
+        cands.add("in"); cands.add("break"); cands.add("continue"); cands.add("switch");
+        cands.add("case"); cands.add("typealias"); cands.add("loop");
+        return cands;
+    }
+
+    private bool identStartsLower(string word) {
+        if (word.length == 0) { return false; }
+        char fc = word[0];
+        return fc >= 'a' && fc <= 'z';
+    }
+
+    private bool isDeclaredTypeName(string name) {
+        for (int i = 0; i < this.declaredTypes.length; i++) {
+            if (this.strEq(this.declaredTypes[i], name)) { return true; }
+        }
+        return false;
+    }
+
+    private void registerDeclaredType(string name) {
+        if (!this.isDeclaredTypeName(name)) { this.declaredTypes.add(name); }
+    }
+
+    private bool knownIdentName(string name) {
+        for (int i = 0; i < this.knownIdents.length; i++) {
+            if (this.strEq(this.knownIdents[i], name)) { return true; }
+        }
+        if (this.strEq(name, "cargs") || this.strEq(name, "getCommandLine")
+            || this.strEq(name, "print") || this.strEq(name, "printline")
+            || this.strEq(name, "exit") || this.strEq(name, "input")
+            || this.strEq(name, "sleep") || this.strEq(name, "assert")
+            || this.strEq(name, "strlen") || this.strEq(name, "now")) { return true; }
+        return false;
+    }
+
+    // True when a statement-leading lowercase identifier is an unknown
+    // keyword: not a declared type heading a declaration shape, and not an
+    // identifier with known meaning (SYNTAX_EXCEPTIONS.md).
+    private bool identShouldFlag(Token cur, int nk) {
+        if (!this.identStartsLower(cur.text)) { return false; }
+        // Primitive type words that lex as identifiers head declarations,
+        // never unknown keywords.
+        if (this.strEq(cur.text, "double") || this.strEq(cur.text, "long")
+            || this.strEq(cur.text, "uint") || this.strEq(cur.text, "byte")
+            || this.strEq(cur.text, "int32") || this.strEq(cur.text, "int64")
+            || this.strEq(cur.text, "float64") || this.strEq(cur.text, "boolean")) { return false; }
+        bool declShape = nk == TK_IDENT || nk == TK_LBRACKET || nk == TK_LESS || nk == TK_COLON;
+        if (declShape) {
+            // `T name (` is a function-signature shape — legacy sources use
+            // non-keyword return spellings there; leave it to the decl parser.
+            if (nk == TK_IDENT && this.pos + 2 < this.tokens.length && this.tokens[this.pos + 2].kind == TK_LPAREN) {
+                return false;
+            }
+            return !this.isDeclaredTypeName(cur.text);
+        }
+        return !this.knownIdentName(cur.text);
+    }
+
+    // Can the token kind continue an identifier as a real expression or
+    // declaration? If not, a lowercase statement-leading identifier is an
+    // unknown keyword (SYNTAX_EXCEPTIONS.md).
+    private bool tokenContinuesExpr(int nk) {
+        if (nk == TK_LPAREN || nk == TK_DOT || nk == TK_LBRACKET || nk == TK_ASSIGN) { return true; }
+        if (nk == TK_PLUS_EQ || nk == TK_MINUS_EQ || nk == TK_STAR_EQ || nk == TK_SLASH_EQ || nk == TK_PERCENT_EQ) { return true; }
+        if (nk == TK_AMP_EQ || nk == TK_PIPE_EQ || nk == TK_CARET_EQ || nk == TK_SHL_EQ || nk == TK_SHR_EQ) { return true; }
+        if (nk == TK_INC || nk == TK_DEC || nk == TK_QUESTION || nk == TK_QUESTIONQUESTION) { return true; }
+        if (nk == TK_COLON || nk == TK_RANGE || nk == TK_SPREAD || nk == TK_LESS) { return true; }
+        if (nk == TK_SHL) { return true; }
+        return false;
+    }
+
+    // Flag an unknown keyword / keyword typo at the token's position.
+    private void flagUnknownKeywordAt(Token t) {
+        string sugg = diagClosestMatch(t.text, this.keywordCandidates());
+        if (sugg.length > 0) {
+            this.recordError("did you mean \"" + sugg + "\"?, at line " + t.line.toString() + ", column " + t.col.toString());
+        } else {
+            this.recordError("unknown keyword \"" + t.text + "\" at line " + t.line.toString() + ", column " + t.col.toString());
+        }
+    }
+
+    // No-op expression-statement node used during error recovery.
+    private Node noopNode() {
+        Node n = new Node(ND_EXPR_STMT, 0, 0);
+        n.addChild(new Node(ND_INT_LIT, 0, 0));
+        return n;
+    }
+
+    // Skip ahead to the next top-level statement boundary: past a terminating
+    // semicolon, or to the first token on a later line — whichever first.
+    private void syncToStatementEnd() {
+        while (!this.check(TK_EOF) && !this.check(TK_RBRACE)) {
+            int line = this.peek().line;
+            if (this.check(TK_SEMI)) { this.advance(); return; }
+            this.advance();
+            if (this.pos < this.tokens.length && this.tokens[this.pos].line > line) { return; }
+        }
     }
 
     private Token peek() {
@@ -103,6 +311,18 @@ public Node[] parseProgram() {
             this.advance();
         }
     }
+    // Flush the merged missing-semicolon message (single line listing
+    // every position, joined with "and").
+    if (this.missingSemiLines.length > 0) {
+        string msg = "you forgot to put a semicolon \";\" in ";
+        for (int si = 0; si < this.missingSemiLines.length; si++) {
+            if (si > 0) { msg = msg + " and "; }
+            msg = msg + "line " + this.missingSemiLines[si].toString() + ", column " + this.missingSemiCols[si].toString();
+        }
+        this.recordError(msg);
+        this.missingSemiLines = [];
+        this.missingSemiCols = [];
+    }
     return items;
 }
 
@@ -128,9 +348,35 @@ private Node? parseItem() {
         if (this.check(TK_COLLECT)) { return this.parseCollect(); }
         if (this.check(TK_FOUND)) { return this.parseFound(); }
         if (this.checkType()) {
-            return this.parseFunctionOrVarDecl();
+            // `int.parseInt("42")` at top level is a static conversion call,
+            // not a declaration headed by a primitive type.
+            if (!(this.pos + 1 < this.tokens.length && this.tokens[this.pos + 1].kind == TK_DOT)) {
+                return this.parseFunctionOrVarDecl();
+            }
         }
         if (this.check(TK_IDENT)) {
+            // Unknown keyword at top level (e.g. a typo like `impor`), with a
+            // did-you-mean suggestion when it resembles a real keyword.
+            // Recovery resyncs to the next statement boundary so the damaged
+            // region does not cascade into unrelated follow-on errors.
+            Token curTok = this.peek();
+            bool isTupleWord = this.strEq(curTok.text, "tuple");
+            if (!isTupleWord) {
+                int nk = -1;
+                if (this.pos + 1 < this.tokens.length) { nk = this.tokens[this.pos + 1].kind; }
+                bool continuesExpr = this.tokenContinuesExpr(nk);
+                // `print"hello world");` — a call missing its open parenthesis.
+                if (!continuesExpr && nk == TK_STRING_LIT) {
+                    Node stmt = this.parseCallMissingOpenParen();
+                    return stmt;
+                }
+                if (!continuesExpr && this.identShouldFlag(curTok, nk)) {
+                    this.advance();
+                    this.flagUnknownKeywordAt(curTok);
+                    this.syncToStatementEnd();
+                    return null;
+                }
+            }
             // Look ahead to see if this is a named type decl or an expression statement
             int saved = this.pos;
             string first = this.expectIdent();
@@ -149,7 +395,7 @@ private Node? parseItem() {
         }
         // Fall back to expression statement (for top-level printline, etc.)
         Node expr = this.parseExpr(0);
-        this.expect(TK_SEMI);
+        this.expectSemi();
         Node n = new Node(ND_EXPR_STMT, this.line(), this.col());
         n.addChild(expr);
         return n;
@@ -175,21 +421,15 @@ private Node? parseItem() {
         if (this.check(TK_IDENT) && this.peek().text == "export") {
             this.advance();
             string name = this.expectIdent();
-            this.expect(TK_SEMI);
+            this.expectSemi();
             Node n = new Node(ND_MODULE, ln, c);
             n.name = name;
             n.strVal = "export";
             return n;
         }
-        string name = this.expectIdent();
-        this.expect(TK_LBRACE);
-        Node[] items = [];
-        while (!this.check(TK_RBRACE) && !this.check(TK_EOF)) {
-            Node? item = this.parseItem();
-            if (item != null) { items.add(item); }
-        }
-        this.expect(TK_RBRACE);
-        Node n = new Node(ND_MODULE, ln, c);
+            string name = this.expectIdent();
+            this.expectSemi();
+            Node n = new Node(ND_MODULE, ln, c);
         n.name = name;
         n.children = items;
         return n;
@@ -228,7 +468,10 @@ private Node? parseItem() {
                 source += "." + this.expectIdent();
             }
         }
-        this.expect(TK_SEMI);
+        // Remember win32 grants for the post-parse unknown-method walk
+        // (DOCS/213): free Win32 calls resolve only through these imports.
+        this.recordWin32ImportGrant(source, all, names);
+        this.expectSemi();
         Node n = new Node(ND_IMPORT, ln, c);
         n.strVal = source;
         if (all) {
@@ -248,6 +491,7 @@ private Node? parseItem() {
         this.advance();
         string typ = this.parseTypeStr();
         string name = this.expectIdent();
+        this.knownIdents.add(name);
         Node n = new Node(ND_CONST, ln, c);
         n.name = name;
         n.typeHint = typ;
@@ -255,7 +499,12 @@ private Node? parseItem() {
             this.advance();
             n.addChild(this.parseExpr(0));
         }
-        this.expect(TK_SEMI);
+        // TYPE_EXCEPTIONS.md — flag an initializer literal whose value kind
+        // can never fit the declared scalar type (`const int X = "hello"`).
+        if (n.childCount() > 0) {
+            this.checkDeclValueType(typ, n.child(0), name);
+        }
+        this.expectSemi();
         return n;
     }
 
@@ -288,9 +537,10 @@ private Node? parseItem() {
                     if (this.check(TK_COMMA)) { this.advance(); }
                 }
                 this.expect(TK_RBRACE);
-                this.expect(TK_SEMI);
+                this.expectSemi();
                 Node n = new Node(ND_ENUM_DEF, ln, c);
                 n.name = name;
+                this.registerDeclaredType(name);
                 string joined = "";
                 string prefix = "";
                 for (int i = 0; i < variants.length; i++) {
@@ -301,7 +551,7 @@ private Node? parseItem() {
                 return n;
             }
         }
-        this.expect(TK_SEMI);
+        this.expectSemi();
         Node n = new Node(ND_DEF_UNIT, ln, c);
         n.name = name;
         return n;
@@ -314,10 +564,11 @@ private Node? parseItem() {
         this.expect(TK_LBRACE);
         Node n = new Node(ND_STRUCT_DEF, ln, c);
         n.name = name;
+        this.registerDeclaredType(name);
         while (!this.check(TK_RBRACE) && !this.check(TK_EOF)) {
             string typ = this.parseTypeStr();
             string fieldName = this.expectIdent();
-            this.expect(TK_SEMI);
+            this.expectSemi();
             Node field = new Node(ND_VAR_DECL, ln, c);
             field.name = fieldName;
             field.typeHint = typ;
@@ -340,6 +591,7 @@ private Node? parseItem() {
         Node n = new Node(ND_CLASS_DEF, ln, c);
         n.name = name;
         n.parentClass = parent;
+        this.registerDeclaredType(name);
         while (!this.check(TK_RBRACE) && !this.check(TK_EOF)) {
             if (this.check(TK_PUBLIC) && this.pos + 1 < this.tokens.length && this.tokens[this.pos + 1].kind == TK_COLON) {
                 this.advance(); this.advance(); continue;
@@ -385,7 +637,7 @@ private Node? parseItem() {
                     ret.addChild(bodyExpr);
                     body.addChild(ret);
                     fn.addChild(body);
-                    this.expect(TK_SEMI);
+                    this.expectSemi();
                 } else if (this.check(TK_LBRACE)) {
                     fn.addChild(this.parseBlock());
                 }
@@ -404,7 +656,7 @@ private Node? parseItem() {
                 this.advance();
                 string typ = this.parseTypeStr();
                 string fieldName = this.expectIdent();
-                this.expect(TK_SEMI);
+                this.expectSemi();
                 Node field = new Node(ND_VAR_DECL, ln, c);
                 field.name = fieldName;
                 field.typeHint = typ;
@@ -416,7 +668,7 @@ private Node? parseItem() {
                 this.advance();
                 string typ = this.parseTypeStr();
                 string fieldName = this.expectIdent();
-                this.expect(TK_SEMI);
+                this.expectSemi();
                 Node field = new Node(ND_VAR_DECL, ln, c);
                 field.name = fieldName;
                 field.typeHint = typ;
@@ -483,9 +735,10 @@ private Node? parseItem() {
             if (this.check(TK_COMMA)) { this.advance(); }
         }
         this.expect(TK_RPAREN);
-        this.expect(TK_SEMI);
+        this.expectSemi();
         Node n = new Node(ND_COLLECT, ln, c);
         n.name = name;
+        this.registerDeclaredType(name);
         string joined = "";
         string prefix = "";
         for (int i = 0; i < types.length; i++) {
@@ -509,7 +762,7 @@ private Node? parseItem() {
             this.expect(TK_LPAREN);
             Node params = this.parseParamList();
             this.expect(TK_RPAREN);
-            this.expect(TK_SEMI);
+            this.expectSemi();
             Node sig = new Node(ND_FUNC, ln, c);
             sig.name = mname;
             sig.typeHint = retType;
@@ -535,10 +788,11 @@ private Node parseFunctionOrVarDecl() {
         al.name = aliasName;
         al.typeHint = retType;
         al.isAlias = true;
-        this.expect(TK_SEMI);
+        this.expectSemi();
         return al;
     }
     string name = this.expectIdent();
+    this.knownIdents.add(name);
     if (this.check(TK_LPAREN)) {
         Node fn = this.parseFunctionDef(isPub, isStat, retType, name);
         return fn;
@@ -548,7 +802,10 @@ private Node parseFunctionOrVarDecl() {
             this.advance();
             init = this.parseExpr(0);
         }
-        this.expect(TK_SEMI);
+        // TYPE_EXCEPTIONS.md — flag an initializer literal whose value kind
+        // can never fit the declared scalar type (`int x = "hello"`).
+        this.checkDeclValueType(retType, init, name);
+        this.expectSemi();
         Node n = new Node(ND_VAR_DECL, ln, c);
         n.name = name;
         n.typeHint = retType;
@@ -560,15 +817,24 @@ private Node parseFunctionOrVarDecl() {
 
 private Node parseFunctionDef(bool isPub, bool isStat, string retType, string name) {
     int ln = this.line(); int c = this.col();
+    Token openParen = this.peek();
     this.expect(TK_LPAREN);
         Node params = this.parseParamList();
-        this.expect(TK_RPAREN);
+        // `void main( {` — the closing parenthesis is missing; it is
+        // reported just past the opening one.
+        if (this.check(TK_RPAREN)) {
+            this.advance();
+        } else {
+            this.recordError("Missing close parenthesis at line " + openParen.line.toString() + ", column " + (openParen.col + 1).toString());
+        }
         Node n = new Node(ND_FUNC, ln, c);
         n.name = name;
         n.typeHint = retType;
         n.isPublic = isPub;
         n.isStatic = isStat;
         n.addChild(params);
+        // TYPE_EXCEPTIONS.md — remember this signature for call-arg checks.
+        this.recordSignature(n.name, params);
         if (this.check(TK_SHL)) {
             this.advance();
             Node bodyExpr = this.parseExpr(0);
@@ -577,17 +843,54 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
             ret.addChild(bodyExpr);
             body.addChild(ret);
             n.addChild(body);
-            this.expect(TK_SEMI);
+            this.expectSemi();
         } else if (this.check(TK_LBRACE)) {
             n.addChild(this.parseBlock());
+        } elif (this.check(TK_RBRACE) || this.check(TK_EOF)) {
+            // `void main()` followed by `}` on the next line: the opening
+            // curly bracket is missing; point just past the signature's
+            // end-of-line.
+            int sigLine = this.prevEndLine();
+            int sigEndCol = this.lineEndCol(sigLine);
+            if (sigEndCol < 0) { sigEndCol = this.prevEndCol(); }
+            this.recordError("Missing opening curly bracket at line " + sigLine.toString() + ", column " + sigEndCol.toString());
+            if (this.check(TK_RBRACE)) { this.advance(); }
+            n.addChild(new Node(ND_BLOCK, ln, c));
         }
         return n;
+    }
+
+    private void recordSignature(string fnName, Node params) {
+        string joinTypes = "";
+        string joinNames = "";
+        for (int spi = 0; spi < params.childCount(); spi++) {
+            Node sp = params.child(spi);
+            if (spi > 0) { joinTypes = joinTypes + ","; joinNames = joinNames + ","; }
+            joinTypes = joinTypes + sp.typeHint;
+            joinNames = joinNames + sp.name;
+        }
+        this.sigNames.add(fnName);
+        this.sigTypes.add(joinTypes);
+        this.sigParams.add(joinNames);
+        this.sigVariadic.add(0);
     }
 
     private Node parseParamList() {
         int ln = this.line(); int c = this.col();
         Node params = new Node(ND_BLOCK, ln, c);
+        bool sawParam = false;
         while (!this.check(TK_RPAREN) && !this.check(TK_EOF)) {
+            // Consume the separating comma, or report its absence
+            // (`int add(int x int y)`).
+            if (this.check(TK_COMMA)) {
+                this.advance();
+            } elif (sawParam) {
+                Token prevT = this.tokens[this.pos - 1];
+                this.recordError("you forgot a comma \",\" at line " + prevT.line.toString() + ", column " + (prevT.col + this.tokenSrcLen(prevT)).toString());
+            }
+            // A `{` (or any token that cannot start a type) before the
+            // closing parenthesis means the `)` itself is missing.
+            if (this.check(TK_LBRACE) || !this.tokenStartsParam(this.peek().kind)) { break; }
             string typ = this.parseTypeStr();
             string pname = this.expectIdent();
             Node param = new Node(ND_VAR_DECL, ln, c);
@@ -598,9 +901,17 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
                 param.addChild(this.parseExpr(0));
             }
             params.addChild(param);
-            if (this.check(TK_COMMA)) { this.advance(); }
+            sawParam = true;
         }
         return params;
+    }
+
+    // True when the token can begin a parameter type in a parameter list.
+    private bool tokenStartsParam(int k) {
+        return k == TK_INT || k == TK_INT32 || k == TK_INT64 || k == TK_UINT
+            || k == TK_FLOAT || k == TK_FLOAT64 || k == TK_DOUBLE
+            || k == TK_BOOL || k == TK_CHAR || k == TK_STRING || k == TK_VAR
+            || k == TK_IDENT || k == TK_REF || k == TK_MUT || k == TK_LESS;
     }
 
     private Node parseNamedTypeDecl() {
@@ -620,7 +931,11 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
             this.advance();
             init = this.parseExpr(0);
         }
-        this.expect(TK_SEMI);
+        this.knownIdents.add(name);
+        // TYPE_EXCEPTIONS.md — flag an initializer literal whose value kind
+        // can never fit the declared scalar type.
+        this.checkDeclValueType(typeName, init, name);
+        this.expectSemi();
         Node n = new Node(ND_VAR_DECL, ln, c);
         n.name = name;
         n.typeHint = typeName;
@@ -638,7 +953,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
             this.advance();
             init = this.parseExpr(0);
         }
-        this.expect(TK_SEMI);
+        this.expectSemi();
         Node n = new Node(ND_VAR_DECL, ln, c);
         n.name = name;
         n.addChild(init);
@@ -657,11 +972,22 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
                 this.advance();
             }
         }
-        this.expect(TK_RBRACE);
+        if (this.check(TK_RBRACE)) {
+            this.advance();
+        } else {
+            // Missing `}` at end of file: reported one line after the last
+            // line of code inside the block, column 1
+            // (SYNTAX_EXCEPTIONS.md #3 bracket position).
+            int closeLine = this.prevEndLine() + 1;
+            this.recordError("Missing closing curly bracket at line " + closeLine.toString() + ", column 1");
+        }
         return block;
     }
 
     private Node? parseStmt() {
+        // A stray `;` is an empty statement (also the recovery anchor used
+        // after an unknown-keyword error).
+        if (this.check(TK_SEMI)) { this.advance(); return this.noopNode(); }
         if (this.check(TK_FOR)) { return this.parseFor(); }
         if (this.check(TK_FOREACH)) { return this.parseForeach(); }
         if (this.check(TK_WHILE)) { return this.parseWhile(); }
@@ -714,7 +1040,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
                 this.advance();
                 n.addChild(this.parseExpr(0));
             }
-            this.expect(TK_SEMI);
+            this.expectSemi();
             return n;
         }
         if (this.check(TK_TYPEALIAS)) {
@@ -730,16 +1056,48 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
             n.name = name;
             n.typeHint = typ;
             n.isAlias = true;
-            this.expect(TK_SEMI);
+            this.expectSemi();
             return n;
         }
         if (this.check(TK_SWITCH)) { return this.parseSwitch(); }
         if (this.check(TK_LOOP)) { return this.parseLoop(); }
-        if (this.check(TK_BREAK)) { this.advance(); this.expect(TK_SEMI); return new Node(ND_BREAK, this.line(), this.col()); }
-        if (this.check(TK_CONTINUE)) { this.advance(); this.expect(TK_SEMI); return new Node(ND_CONTINUE, this.line(), this.col()); }
+        if (this.check(TK_BREAK)) { this.advance(); this.expectSemi(); return new Node(ND_BREAK, this.line(), this.col()); }
+        if (this.check(TK_CONTINUE)) { this.advance(); this.expectSemi(); return new Node(ND_CONTINUE, this.line(), this.col()); }
         if (this.check(TK_VAR)) { return this.parseVarDecl(); }
-        if (this.checkType()) { return this.parseTypedDecl(); }
+        if (this.checkType()) {
+            // `int.parseInt("42")` — a static conversion call, not a
+            // declaration headed by a primitive type.
+            if (this.pos + 1 < this.tokens.length && this.tokens[this.pos + 1].kind == TK_DOT) {
+                Node convExpr = this.parseExpr(0);
+                this.expectSemi();
+                Node convStmt = new Node(ND_EXPR_STMT, this.line(), this.col());
+                convStmt.addChild(convExpr);
+                return convStmt;
+            }
+            return this.parseTypedDecl();
+        }
         if (this.check(TK_IDENT)) {
+            // Unknown-keyword detection (SYNTAX_EXCEPTIONS.md). A statement
+            // that begins with a lowercase identifier not followed by any
+            // expression continuation (`(`, `.`, `=`, `[`, ...) is an unknown
+            // keyword or a typo of one. Uppercase-led identifiers stay on the
+            // user-defined type-declaration path below.
+            Token curTok = this.peek();
+            bool isTupleWord = this.strEq(curTok.text, "tuple");
+            if (!isTupleWord) {
+                int nk = -1;
+                if (this.pos + 1 < this.tokens.length) { nk = this.tokens[this.pos + 1].kind; }
+                bool continuesExpr = this.tokenContinuesExpr(nk);
+                // `print"hello world");` — a call missing its open parenthesis.
+                if (!continuesExpr && nk == TK_STRING_LIT) {
+                    return this.parseCallMissingOpenParen();
+                }
+                if (!continuesExpr && this.identShouldFlag(curTok, nk)) {
+                    this.advance();
+                    this.flagUnknownKeywordAt(curTok);
+                    return this.noopNode();
+                }
+            }
             int saved = this.pos;
             string typeName = this.expectIdent();
             bool isTypeDecl = this.check(TK_IDENT) || this.check(TK_MUT);
@@ -770,7 +1128,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
             }
         }
         Node expr = this.parseExpr(0);
-        this.expect(TK_SEMI);
+        this.expectSemi();
         Node n = new Node(ND_EXPR_STMT, this.line(), this.col());
         n.addChild(expr);
         return n;
@@ -969,7 +1327,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
         this.advance();
         Node n = new Node(ND_THROW, ln, c);
         n.addChild(this.parseExpr(0));
-        this.expect(TK_SEMI);
+        this.expectSemi();
         return n;
     }
 
@@ -980,7 +1338,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
         if (!this.check(TK_SEMI)) {
             n.addChild(this.parseExpr(0));
         }
-        this.expect(TK_SEMI);
+        this.expectSemi();
         return n;
     }
 
@@ -989,7 +1347,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
         this.advance();
         Node n = new Node(ND_RETURN, ln, c);
         n.addChild(this.parseExpr(0));
-        this.expect(TK_SEMI);
+        this.expectSemi();
         return n;
     }
 
@@ -997,7 +1355,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
         int ln = this.line(); int c = this.col();
         this.advance();
         string name = this.expectIdent();
-        this.expect(TK_SEMI);
+        this.expectSemi();
         Node n = new Node(ND_UNSET, ln, c);
         n.name = name;
         return n;
@@ -1041,6 +1399,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
         int ln = this.line(); int c = this.col();
         this.advance();
         string name = this.expectIdent();
+        this.knownIdents.add(name);
         Node n = new Node(ND_VAR_DECL, ln, c);
         n.name = name;
         if (this.check(TK_ASSIGN)) {
@@ -1057,10 +1416,10 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
             move.addChild(src);
             move.addChild(rhs);
             n.addChild(move);
-            this.expect(TK_SEMI);
+            this.expectSemi();
             return n;
         }
-        this.expect(TK_SEMI);
+        this.expectSemi();
         return n;
     }
 
@@ -1076,7 +1435,8 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
             al.name = aliasName;
             al.typeHint = typ;
             al.isAlias = true;
-            this.expect(TK_SEMI);
+            this.registerDeclaredType(aliasName);
+            this.expectSemi();
             return al;
         }
         bool isMut = false;
@@ -1098,7 +1458,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
             if (this.check(TK_ASSIGN)) {
                 this.advance();
                 d.addChild(this.parseExpr(0));
-                this.expect(TK_SEMI);
+                this.expectSemi();
                 return d;
             }
             this.pos = saved;
@@ -1142,10 +1502,16 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
             move.addChild(src);
             move.addChild(rhs);
             n.addChild(move);
-            this.expect(TK_SEMI);
+            this.expectSemi();
             return n;
         }
-        this.expect(TK_SEMI);
+        // TYPE_EXCEPTIONS.md — flag an initializer literal whose value kind
+        // can never fit the declared scalar type (`int x = "hello"`).
+        if (n.childCount() > 0 && !isFixed) {
+            this.checkDeclValueType(typ, n.child(0), name);
+        }
+        this.knownIdents.add(name);
+        this.expectSemi();
         return n;
     }
 
@@ -1166,7 +1532,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
             this.expect(TK_RPAREN);
             this.expect(TK_ASSIGN);
             d.addChild(this.parseExpr(0));
-            this.expect(TK_SEMI);
+            this.expectSemi();
             return d;
         }
         bool isMut = false;
@@ -1189,7 +1555,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
             if (this.check(TK_ASSIGN)) {
                 this.advance();
                 d.addChild(this.parseExpr(0));
-                this.expect(TK_SEMI);
+                this.expectSemi();
                 return d;
             }
             this.pos = saved;
@@ -1230,10 +1596,16 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
             move.addChild(src);
             move.addChild(rhs);
             n.addChild(move);
-            this.expect(TK_SEMI);
+            this.expectSemi();
             return n;
         }
-        this.expect(TK_SEMI);
+        // TYPE_EXCEPTIONS.md — flag an initializer literal whose value kind
+        // can never fit the declared scalar type (`int x = "hello"`).
+        if (n.childCount() > 0 && !isFixed) {
+            this.checkDeclValueType(typeName, n.child(0), name);
+        }
+        this.knownIdents.add(name);
+        this.expectSemi();
         return n;
     }
 
@@ -1683,16 +2055,33 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
         }
         if (k == TK_LPAREN) {
             this.advance();
+            // `add (1 2)` — argument separation and the closing parenthesis
+            // are recovered with doc-specified diagnostics
+            // (SYNTAX_EXCEPTIONS.md).
+            Token openTok = this.tokens[this.pos - 1];
             Node[] args = [];
             while (!this.check(TK_RPAREN) && !this.check(TK_EOF)) {
+                if (this.check(TK_COMMA)) {
+                    this.advance();
+                } elif (args.length > 0) {
+                    Token prevT = this.tokens[this.pos - 1];
+                    this.recordError("you forgot a comma \",\" at line " + prevT.line.toString() + ", column " + (prevT.col + this.tokenSrcLen(prevT)).toString());
+                }
                 args.add(this.parseExpr(0));
-                if (this.check(TK_COMMA)) { this.advance(); }
             }
-            this.expect(TK_RPAREN);
+            if (this.check(TK_RPAREN)) {
+                this.advance();
+            } else {
+                // Missing closing parenthesis: reported just past the
+                // opening one.
+                this.recordError("Missing close parenthesis at line " + openTok.line.toString() + ", column " + (openTok.col + 1).toString());
+            }
             if (lhs.kind == ND_IDENT) {
-                Node n = new Node(ND_CALL, ln, c);
+                Node n = new Node(ND_CALL, lhs.line, lhs.col);
                 n.name = lhs.name;
                 foreach (Node a in args) { n.addChild(a); }
+                // TYPE_EXCEPTIONS.md — chained parameter type mismatches.
+                this.checkCallArgTypes(n);
                 return n;
             }
             if (lhs.kind == ND_MEMBER) {
@@ -1700,6 +2089,11 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
                 n.addChild(lhs.child(0));
                 n.name = lhs.name;
                 foreach (Node a in args) { n.addChild(a); }
+                // VALUE_EXCEPTION.md — numeric parse conversions on a literal
+                // string argument (`int.parseInt("hello")`).
+                if (lhs.child(0).kind == ND_IDENT && args.length == 1) {
+                    this.checkParseValueException(lhs.child(0).name, lhs.name, args[0]);
+                }
                 return n;
             }
             Node n = new Node(ND_CALL, ln, c);
@@ -1936,4 +2330,530 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
         if (this.check(TK_QUESTION)) { this.advance(); return "?"; }
         return "";
     }
+
+    // ---- EXCEPTIONS/*.md value/type diagnostics ----------------------------
+
+    // TYPE_EXCEPTIONS.md fundamental value classes that must never mix
+    // silently: numbers/chars interoperate; strings and booleans do not.
+    private int typeFamily(string t) {
+        for (int i = 0; i < t.length; i++) {
+            char c = t[i];
+            if (c == '[' || c == ']' || c == '?' || c == '<' || c == '>' || c == '.' || c == ',') { return -1; }
+        }
+        if (this.strEq(t, "int") || this.strEq(t, "int32") || this.strEq(t, "int64")
+            || this.strEq(t, "uint") || this.strEq(t, "byte") || this.strEq(t, "float")
+            || this.strEq(t, "float64") || this.strEq(t, "double") || this.strEq(t, "char")) { return 0; }
+        if (this.strEq(t, "string")) { return 1; }
+        if (this.strEq(t, "bool")) { return 2; }
+        return -1;
+    }
+
+    private int literalFamily(Node n) {
+        if (n.kind == ND_INT_LIT || n.kind == ND_FLOAT_LIT || n.kind == ND_CHAR_LIT) { return 0; }
+        if (n.kind == ND_STRING_LIT) { return 1; }
+        if (n.kind == ND_BOOL_LIT) { return 2; }
+        return -1;
+    }
+
+    private string literalTypeName(Node n) {
+        if (n.kind == ND_INT_LIT) { return "int"; }
+        if (n.kind == ND_FLOAT_LIT) { return "float"; }
+        if (n.kind == ND_STRING_LIT) { return "string"; }
+        if (n.kind == ND_CHAR_LIT) { return "char"; }
+        if (n.kind == ND_BOOL_LIT) { return "bool"; }
+        return "var";
+    }
+
+    // `an int`, `a string`, ... for exception message phrasing.
+    private string articleOf(string typeName) {
+        if (typeName.length == 0) { return "a " + typeName; }
+        char fc = typeName[0];
+        if (fc == 'a' || fc == 'e' || fc == 'i' || fc == 'o') { return "an " + typeName; }
+        return "a " + typeName;
+    }
+
+    // Split a comma-joined signature component back into entries.
+    private string[] splitSigList(string joined) {
+        string[] parts = [];
+        string cur = "";
+        for (int i = 0; i < joined.length; i++) {
+            char c = joined[i];
+            if (c == ',') { parts.add(cur); cur = ""; }
+            else { cur = cur + c.toString(); }
+        }
+        parts.add(cur);
+        return parts;
+    }
+
+    // VALUE_EXCEPTION.md — a numeric parse conversion receiving a non-numeric
+    // string literal raises a ValueException pointing at the literal.
+    private bool stringIsNumber(string s, bool wantInt) {
+        string t = "";
+        int start = 0;
+        int end = s.length;
+        while (start < end && s[start] == ' ') { start += 1; }
+        while (end > start && s[end - 1] == ' ') { end -= 1; }
+        for (int i = start; i < end; i++) { t = t + s[i].toString(); }
+        int len = t.length;
+        if (len == 0) { return false; }
+        int i2 = 0;
+        if (t[0] == '+' || t[0] == '-') { i2 = 1; }
+        if (i2 >= len) { return false; }
+        bool sawDigit = false;
+        bool sawDot = false;
+        bool sawExp = false;
+        while (i2 < len) {
+            char c = t[i2];
+            if (c >= '0' && c <= '9') { sawDigit = true; }
+            elif (c == '.' && !wantInt && !sawDot && !sawExp) { sawDot = true; }
+            elif ((c == 'e' || c == 'E') && !wantInt && sawDigit && !sawExp) {
+                sawExp = true;
+                if (i2 + 1 < len && (t[i2 + 1] == '+' || t[i2 + 1] == '-')) { i2 += 1; }
+                if (i2 + 1 >= len) { return false; }
+            }
+            else { return false; }
+            i2 += 1;
+        }
+        return sawDigit;
+    }
+
+    private void checkParseValueException(string recv, string method, Node arg) {
+        bool isIntRecv = this.strEq(recv, "int") || this.strEq(recv, "int64");
+        bool isDblRecv = this.strEq(recv, "double") || this.strEq(recv, "float") || this.strEq(recv, "float64");
+        if (!isIntRecv && !isDblRecv) { return; }
+        bool wantsInt = this.strEq(method, "parseInt") || this.strEq(method, "toInt")
+            || this.strEq(method, "parseLong") || this.strEq(method, "toInt64");
+        bool wantsDouble = this.strEq(method, "parseDouble") || this.strEq(method, "toDouble")
+            || this.strEq(method, "parseFloat");
+        if (!wantsInt && !wantsDouble) { return; }
+        if (arg.kind != ND_STRING_LIT) { return; }
+        if (this.stringIsNumber(arg.strVal, wantsInt)) { return; }
+        this.recordError("expected a string of a number at line " + arg.line.toString() + ", column " + arg.col.toString() + ", got \"" + arg.strVal + "\"");
+    }
+
+    // TYPE_EXCEPTIONS.md — a declaration whose initializer's value kind
+    // cannot possibly fit (`int x = "hello"`) points at the value and names
+    // the declared type and variable.
+    private void checkDeclValueType(string declaredType, Node value, string varName) {
+        int df = this.typeFamily(declaredType);
+        if (df < 0) { return; }
+        int vf = this.literalFamily(value);
+        if (vf < 0 || vf == df) { return; }
+        this.recordError("wrong value type at line " + value.line.toString() + ", column " + value.col.toString() + ", expected " + this.articleOf(declaredType) + " got " + this.articleOf(this.literalTypeName(value)) + " for " + declaredType + " \"" + varName + "\"");
+    }
+
+    // TYPE_EXCEPTIONS.md — chained parameter type mismatches for a plain
+    // call whose callee matches a signature parsed in this file.
+    private void checkCallArgTypes(Node call) {
+        string joined = ",";
+        for (int s = 0; s < this.sigNames.length; s++) {
+            joined = joined + this.sigNames[s] + ",";
+        }
+        if (joined.indexOf("," + call.name + ",") < 0) { return; }
+        string bestSegs = "";
+        int bestCount = 0;
+        // Accept the call when any same-named signature fits its arguments.
+        for (int m = 0; m < this.sigNames.length; m++) {
+            if (!this.strEq(this.sigNames[m], call.name)) { continue; }
+            string[] types = this.splitSigList(this.sigTypes[m]);
+            string[] names = this.splitSigList(this.sigParams[m]);
+            int limit = types.length;
+            if (call.childCount() < limit) { limit = call.childCount(); }
+            string segs = "";
+            int count = 0;
+            for (int j = 0; j < limit; j++) {
+                int pf = this.typeFamily(types[j]);
+                if (pf < 0) { continue; }
+                Node arg = call.child(j);
+                int af = this.literalFamily(arg);
+                if (af < 0 || af == pf) { continue; }
+                if (count > 0) { segs = segs + ", and "; }
+                segs = segs + "line " + arg.line.toString() + ", column " + arg.col.toString() + " for \"" + names[j] + "\" parameter expected " + this.articleOf(types[j]) + " got " + this.articleOf(this.literalTypeName(arg));
+                count += 1;
+            }
+            if (count == 0) { return; }
+            if (count > 0) { bestSegs = segs; bestCount = count; }
+        }
+        if (bestCount > 0) {
+            this.recordError("wrong value type at " + bestSegs);
+        }
+    }
+
+    // ---- Post-parse call diagnostics (EXCEPTIONS/*.md) ---------------------
+    // Runs once after parseProgram (user programs only) so the whole symbol
+    // table (functions, methods, types, win32 grants) is visible.
+
+    public void checkCallDiagnostics(Node[] ast) {
+        for (int i = 0; i < ast.length; i++) {
+            this.walkCallDiagnostics(ast[i]);
+        }
+    }
+
+    private void walkCallDiagnostics(Node n) {
+        if (n.kind == ND_CALL && n.line > 0) {
+            this.checkPlainCallTarget(n);
+            this.checkFreePathValueException(n);
+        }
+        if (n.kind == ND_METHOD_CALL && n.line > 0) {
+            this.checkMemberPathValueException(n);
+        }
+        // Struct/class bodies are opaque to this pass: their member functions
+        // are not symbol-checked (the reference checker walks free functions
+        // only).
+        if (n.kind == ND_STRUCT_DEF || n.kind == ND_CLASS_DEF) { return; }
+        for (int i = 0; i < n.childCount(); i++) {
+            this.walkCallDiagnostics(n.child(i));
+        }
+    }
+
+    // SYNTAX_EXCEPTIONS.md — undefined plain calls emit `unknown method`,
+    // with a did-you-mean suggestion when the name resembles a known one.
+    // Uppercase-led names follow the native/Win32 export convention and stay
+    // unchecked, as do compiler-intrinsic `makeXxx` value factories.
+    private void checkPlainCallTarget(Node call) {
+        string name = call.name;
+        if (name.length == 0) { return; }
+        if (!this.identStartsLower(name)) { return; }
+        if (name.startsWith("make") && name.length > 4 && name[4] >= 'A' && name[4] <= 'Z') { return; }
+        if (this.isKnownCallableName(name)) { return; }
+        string sugg = diagClosestMatch(name, this.callableCandidates());
+        if (sugg.length > 0) {
+            this.recordError("did you mean \"" + sugg + "\"?, at line " + call.line.toString() + ", column " + call.col.toString());
+        } else {
+            this.recordError("unknown method \"" + name + "\", at line " + call.line.toString() + ", column " + call.col.toString());
+        }
+    }
+
+    private bool isAllCapsName(string name) {
+        if (name.length == 0) { return false; }
+        bool allCaps = true;
+        for (int c = 0; c < name.length; c++) {
+            char ch = name[c];
+            if (!((ch >= 'A' && ch <= 'Z') || ch == '_')) { allCaps = false; }
+        }
+        return allCaps;
+    }
+
+    private bool isKnownCallableName(string name) {
+        for (int i = 0; i < this.sigNames.length; i++) {
+            if (this.strEq(this.sigNames[i], name)) { return true; }
+        }
+        if (this.isDeclaredTypeName(name)) { return true; }
+        if (this.knownIdentName(name)) { return true; }
+        if (this.builtinCallableName(name)) { return true; }
+        if (this.win32Resolvable(name)) { return true; }
+        if (this.isAllCapsName(name)) { return true; }
+        if (name.length > 2 && name[0] == '_' && name[1] == '_') { return true; }
+        return false;
+    }
+
+    // Names the evaluator always resolves: builtins, native module
+    // singletons, and tray/registry bridges.
+    private bool builtinCallableName(string name) {
+        if (this.strEq(name, "print") || this.strEq(name, "printline")
+            || this.strEq(name, "input") || this.strEq(name, "exit")
+            || this.strEq(name, "end") || this.strEq(name, "sleep")
+            || this.strEq(name, "assert") || this.strEq(name, "now")
+            || this.strEq(name, "int") || this.strEq(name, "float")
+            || this.strEq(name, "double") || this.strEq(name, "char")
+            || this.strEq(name, "byte") || this.strEq(name, "string")
+            || this.strEq(name, "bool") || this.strEq(name, "void")
+            || this.strEq(name, "main") || this.strEq(name, "super")
+            || this.strEq(name, "strlen") || this.strEq(name, "string_cast")
+            || this.strEq(name, "readFile") || this.strEq(name, "readString")
+            || this.strEq(name, "writeFile") || this.strEq(name, "writeString")
+            || this.strEq(name, "writeBytes") || this.strEq(name, "exists")
+            || this.strEq(name, "delete") || this.strEq(name, "deleteFile")
+            || this.strEq(name, "rename") || this.strEq(name, "mkdir")
+            || this.strEq(name, "toString") || this.strEq(name, "toInt")
+            || this.strEq(name, "toUpper") || this.strEq(name, "toLower")
+            || this.strEq(name, "nativeToastShow")
+            // Native module singletons usable in expression position.
+            || this.strEq(name, "fs") || this.strEq(name, "file")
+            || this.strEq(name, "folder") || this.strEq(name, "url")
+            || this.strEq(name, "hash") || this.strEq(name, "path")
+            || this.strEq(name, "bom") || this.strEq(name, "console")
+            || this.strEq(name, "math") || this.strEq(name, "llmai")
+            || this.strEq(name, "LLMAI") || this.strEq(name, "keyboard")
+            || this.strEq(name, "mouse") || this.strEq(name, "time")
+            || this.strEq(name, "env") || this.strEq(name, "process")
+            || this.strEq(name, "Process") || this.strEq(name, "notifications")
+            || this.strEq(name, "json") || this.strEq(name, "yaml")
+            // Tray and registry bridges registered by the evaluator.
+            || this.strEq(name, "trayAdd") || this.strEq(name, "traySetTooltip")
+            || this.strEq(name, "trayDelete") || this.strEq(name, "trayRemove")
+            || this.strEq(name, "traySetMenu") || this.strEq(name, "trayRunLoop")
+            || this.strEq(name, "trayPollMenu") || this.strEq(name, "trayPollClick")
+            || this.strEq(name, "regOpen") || this.strEq(name, "regCreate")
+            || this.strEq(name, "regClose") || this.strEq(name, "regSubKey")
+            || this.strEq(name, "regGetString") || this.strEq(name, "regSetString")
+            || this.strEq(name, "regGetInt") || this.strEq(name, "regSetInt")
+            || this.strEq(name, "regGetInt64") || this.strEq(name, "regSetInt64")
+            || this.strEq(name, "regDeleteValue") || this.strEq(name, "regDeleteKey")
+            || this.strEq(name, "regValueExists") || this.strEq(name, "regEnumSubKeyName")
+            || this.strEq(name, "regEnumValueName") || this.strEq(name, "regSubKeyCount")
+            || this.strEq(name, "regValueCount")) { return true; }
+        return false;
+    }
+
+    private string[] callableCandidates() {
+        string[] cands = [];
+        for (int i = 0; i < this.sigNames.length; i++) { cands.add(this.sigNames[i]); }
+        cands.add("print"); cands.add("printline"); cands.add("exit");
+        cands.add("input"); cands.add("sleep"); cands.add("assert");
+        cands.add("int"); cands.add("float"); cands.add("double");
+        cands.add("char"); cands.add("byte"); cands.add("string_cast");
+        cands.add("now"); cands.add("cargs");
+        cands.add("getCommandLine");
+        cands.add("readFile"); cands.add("readString");
+        cands.add("writeBytes"); cands.add("writeString");
+        cands.add("writeFile"); cands.add("strlen");
+        cands.add("exists"); cands.add("delete");
+        cands.add("deleteFile");
+        cands.add("toString"); cands.add("toInt");
+        cands.add("toUpper"); cands.add("toLower");
+        return cands;
+    }
+
+    // DOCS/213 -- remember import grants for the unknown-method walk.
+    private void recordWin32ImportGrant(string src, bool all, string[] names) {
+        if (this.strEq(src, "win32")) {
+            if (all || names.length == 0) { this.win32AllModules = true; return; }
+            for (int j = 0; j < names.length; j++) {
+                this.win32OpenModules.add(names[j]);
+            }
+            return;
+        }
+        if (src.length > 6 && this.strEq(src.substr(0, 6), "win32.")) {
+            string module = src.substr(6);
+            if (all || names.length == 0) {
+                this.win32OpenModules.add(module);
+                return;
+            }
+            for (int j2 = 0; j2 < names.length; j2++) {
+                this.win32GrantNames.add(names[j2]);
+            }
+        }
+    }
+
+    private string win32ModuleNameDll(string module) {
+        if (this.strEq(module, "kernel32")) { return "kernel32.dll"; }
+        if (this.strEq(module, "ws2_32")) { return "ws2_32.dll"; }
+        if (this.strEq(module, "winhttp")) { return "winhttp.dll"; }
+        if (this.strEq(module, "wininet")) { return "wininet.dll"; }
+        if (this.strEq(module, "shell32")) { return "shell32.dll"; }
+        if (this.strEq(module, "msvcrt")) { return "msvcrt.dll"; }
+        if (this.strEq(module, "user32")) { return "user32.dll"; }
+        if (this.strEq(module, "registry") || this.strEq(module, "advapi32")) { return "advapi32.dll"; }
+        if (this.strEq(module, "version")) { return "version.dll"; }
+        return "";
+    }
+
+    // The raw Win32 exports the interpreter can execute, mapped to their
+    // owning DLL (mirrors Evaluator.win32DllForFn).
+    private string win32DllForFn(string fn) {
+        if (this.strEq(fn, "keybd_event") || this.strEq(fn, "mouse_event")
+            || this.strEq(fn, "VkKeyScanA") || this.strEq(fn, "GetKeyState")
+            || this.strEq(fn, "GetAsyncKeyState") || this.strEq(fn, "MapVirtualKeyA")
+            || this.strEq(fn, "GetCursorPos") || this.strEq(fn, "SetCursorPos")
+            || this.strEq(fn, "SendInput") || this.strEq(fn, "SetCursor")
+            || this.strEq(fn, "ClipCursor") || this.strEq(fn, "GetClipCursor")
+            || this.strEq(fn, "GetDoubleClickTime") || this.strEq(fn, "SetDoubleClickTime")
+            || this.strEq(fn, "RegisterHotKey") || this.strEq(fn, "UnregisterHotKey")
+            || this.strEq(fn, "MessageBeep") || this.strEq(fn, "RegisterRawInputDevices")
+            || this.strEq(fn, "GetRawInputData") || this.strEq(fn, "GetRawInputDeviceList")
+            || this.strEq(fn, "GetForegroundWindow") || this.strEq(fn, "GetWindowTextA")
+            || this.strEq(fn, "GetWindowThreadProcessId") || this.strEq(fn, "RegisterClassExA")
+            || this.strEq(fn, "CreateWindowExA") || this.strEq(fn, "ShowWindow")
+            || this.strEq(fn, "UpdateWindow") || this.strEq(fn, "SetWindowTextA")
+            || this.strEq(fn, "DestroyWindow") || this.strEq(fn, "GetSystemMetrics")
+            || this.strEq(fn, "LoadImageA") || this.strEq(fn, "SendMessageA")) { return "user32.dll"; }
+        if (this.strEq(fn, "OpenProcess") || this.strEq(fn, "QueryFullProcessImageNameA")
+            || this.strEq(fn, "CloseHandle") || this.strEq(fn, "GetModuleHandleA")) { return "kernel32.dll"; }
+        return "";
+    }
+
+    private bool win32Resolvable(string name) {
+        if (this.win32AllModules) { return true; }
+        for (int g = 0; g < this.win32GrantNames.length; g++) {
+            if (this.strEq(this.win32GrantNames[g], name)) { return true; }
+        }
+        string fnDll = this.win32DllForFn(name);
+        if (fnDll.length > 0) {
+            for (int m = 0; m < this.win32OpenModules.length; m++) {
+                if (this.strEq(this.win32ModuleNameDll(this.win32OpenModules[m]), fnDll)) { return true; }
+            }
+        }
+        return false;
+    }
+
+    // Filesystem entry points whose first argument must be a file path
+    // (VALUE_EXCEPTION.md).
+    private bool isPathFirstArgMethod(string m) {
+        if (this.strEq(m, "readString") || this.strEq(m, "readFile")) { return true; }
+        if (this.strEq(m, "readBytes") || this.strEq(m, "writeString")) { return true; }
+        if (this.strEq(m, "writeFile") || this.strEq(m, "writeBytes")) { return true; }
+        if (this.strEq(m, "exists") || this.strEq(m, "delete")) { return true; }
+        if (this.strEq(m, "deleteFile") || this.strEq(m, "rename")) { return true; }
+        if (this.strEq(m, "copy") || this.strEq(m, "mkdir")) { return true; }
+        if (this.strEq(m, "createDirectory") || this.strEq(m, "createDir")) { return true; }
+        if (this.strEq(m, "directoryExists") || this.strEq(m, "folderExists")) { return true; }
+        if (this.strEq(m, "isFile") || this.strEq(m, "isDirectory")) { return true; }
+        if (this.strEq(m, "size") || this.strEq(m, "listFiles")) { return true; }
+        return false;
+    }
+
+    private void checkFreePathValueException(Node call) {
+        if (!this.isPathFirstArgMethod(call.name)) { return; }
+        this.checkPathLiteralArg(call, 0);
+        // rename(src, dst) / copy(src, dst): both arguments are paths.
+        if (this.strEq(call.name, "rename") || this.strEq(call.name, "copy")) {
+            this.checkPathLiteralArg(call, 1);
+        }
+    }
+
+    private void checkMemberPathValueException(Node call) {
+        if (call.childCount() < 1) { return; }
+        Node recv = call.child(0);
+        if (recv.kind != ND_IDENT) { return; }
+        if (!this.strEq(recv.name, "fs") && !this.strEq(recv.name, "file")
+            && !this.strEq(recv.name, "folder")) { return; }
+        if (!this.isPathFirstArgMethod(call.name)) { return; }
+        // Children are [receiver, arg0, arg1, ...].
+        this.checkPathLiteralArg(call, 1);
+        if (this.strEq(call.name, "rename") || this.strEq(call.name, "copy")) {
+            this.checkPathLiteralArg(call, 2);
+        }
+    }
+
+    private void checkPathLiteralArg(Node call, int idx) {
+        if (idx < 0 || idx >= call.childCount()) { return; }
+        Node arg = call.child(idx);
+        if (arg.kind != ND_STRING_LIT) { return; }
+        if (this.looksLikeUrl(arg.strVal)) {
+            this.recordError("expected a string of a file path at line " + arg.line.toString() + ", column " + arg.col.toString() + ", got a url");
+            return;
+        }
+        if (this.isInvalidPathLiteral(arg.strVal)) {
+            this.recordError("expected a valid file path at line " + arg.line.toString() + ", column " + arg.col.toString() + ", got an invalid path");
+        }
+    }
+
+    private bool looksLikeUrl(string s) {
+        string lo = diagToLower(s);
+        if (lo.startsWith("http://") || lo.startsWith("https://")) { return true; }
+        if (lo.startsWith("http:") || lo.startsWith("https:")) { return true; }
+        if (lo.startsWith("ftp://") || lo.startsWith("ftps://")) { return true; }
+        if (lo.startsWith("file://")) { return true; }
+        if (lo.startsWith("www.")) { return true; }
+        return false;
+    }
+
+    // A literal is an unusable local path when it is empty, carries
+    // characters Windows forbids in paths, or sits on a drive that does not
+    // exist. Drive validity is probed with folder.exists on the bare root:
+    // the folder listing builtin fails gracefully on nonexistent drives
+    // where the file attribute builtins crash.
+    // A literal is an unusable local path when it is empty or carries
+    // characters Windows forbids in paths. Drive existence cannot be probed
+    // safely at parse time (the fs builtins are only stable once the
+    // evaluator is running), so dead-drive detection happens at runtime in
+    // the filesystem dispatch instead.
+    private bool isInvalidPathLiteral(string s) {
+        if (s.length == 0) { return true; }
+        for (int i = 0; i < s.length; i++) {
+            char c = s[i];
+            if (c == '<' || c == '>' || c == '"' || c == '|' || c == '?' || c == '*') { return true; }
+            if (c < 32) { return true; }
+        }
+        return false;
+    }
+
+    // `print"hello world");` — an identifier immediately followed by a string
+    // literal: the open parenthesis of the call is missing and is reported at
+    // the string literal's position.
+    private Node parseCallMissingOpenParen() {
+        Token nameTok = this.advance();
+        Token strTok = this.peek();
+        string lit = "";
+        if (strTok.kind == TK_STRING_LIT) { lit = strTok.strVal; }
+        this.advance();
+        if (this.check(TK_RPAREN)) { this.advance(); }
+        this.recordError("Missing open parenthesis at line " + strTok.line.toString() + ", column " + strTok.col.toString());
+        this.expectSemi();
+        Node call = new Node(ND_CALL, 0, 0);
+        call.name = nameTok.text;
+        Node strNode = new Node(ND_STRING_LIT, strTok.line, strTok.col);
+        strNode.strVal = lit;
+        call.addChild(strNode);
+        Node stmt = new Node(ND_EXPR_STMT, nameTok.line, nameTok.col);
+        stmt.addChild(call);
+        return stmt;
+    }
+}
+
+// ---- Suggestion helpers (SYNTAX_EXCEPTIONS.md did-you-mean) ---------------
+
+string diagToLower(string word) {
+    string lo = "";
+    for (int i = 0; i < word.length; i++) {
+        char c = word[i];
+        if (c >= 'A' && c <= 'Z') { c = c + 32; }
+        lo = lo + c.toString();
+    }
+    return lo;
+}
+
+int diagLevenshtein(string a, string b) {
+    int alen = a.length;
+    int blen = b.length;
+    if (alen == 0) { return blen; }
+    if (blen == 0) { return alen; }
+    int[] prev = [];
+    int[] cur = [];
+    for (int j = 0; j <= blen; j++) { prev.add(j); cur.add(0); }
+    for (int i = 1; i <= alen; i++) {
+        cur[0] = i;
+        for (int j = 1; j <= blen; j++) {
+            int cost = 1;
+            if (a[i - 1] == b[j - 1]) { cost = 0; }
+            int del = prev[j] + 1;
+            int ins = cur[j - 1] + 1;
+            int sub = prev[j - 1] + cost;
+            int best = del;
+            if (ins < best) { best = ins; }
+            if (sub < best) { best = sub; }
+            cur[j] = best;
+        }
+        for (int k = 0; k <= blen; k++) { prev[k] = cur[k]; }
+    }
+    return prev[blen];
+}
+
+// Smallest-edit-distance suggestion lookup (Levenshtein). A candidate
+// qualifies when it differs by one edit, or by two edits with the same first
+// two letters (a real typo shape, not merely similar junk).
+string diagClosestMatch(string needle, string[] candidates) {
+    string needleLc = diagToLower(needle);
+    if (needleLc.length == 0) { return ""; }
+    string best = "";
+    int bestDist = 0;
+    for (int i = 0; i < candidates.length; i++) {
+        string candLc = diagToLower(candidates[i]);
+        if (candLc.length == 0) { continue; }
+        int d = diagLevenshtein(needleLc, candLc);
+        bool acceptable = false;
+        if (d == 1) { acceptable = true; }
+        elif (d == 2 && needleLc.length >= 3) {
+            if (needleLc[0] == candLc[0] && needleLc[1] == candLc[1]) { acceptable = true; }
+        }
+        if (acceptable) {
+            if (best.length == 0 || d < bestDist) {
+                best = candidates[i];
+                bestDist = d;
+            }
+        }
+    }
+    return best;
+}
 }

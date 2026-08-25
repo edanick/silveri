@@ -43,6 +43,109 @@ class BuiltinMethods {
         return i < s.length && s[i] >= '0' && s[i] <= '9';
     }
 
+    // VALUE_EXCEPTION.md — full numeric-literal validation used by the static
+    // parse conversions: optional sign, digits, and for floats a single dot
+    // and exponent.
+    private static bool stringIsNumericRT(string s, bool wantInt) {
+        int start = 0;
+        int end = s.length;
+        while (start < end && (s[start] == ' ' || s[start] == '\t')) { start += 1; }
+        while (end > start && (s[end - 1] == ' ' || s[end - 1] == '\t')) { end -= 1; }
+        int len = end - start;
+        if (len <= 0) { return false; }
+        int i = start;
+        if (s[i] == '+' || s[i] == '-') { i += 1; }
+        if (i >= end) { return false; }
+        bool sawDigit = false;
+        bool sawDot = false;
+        bool sawExp = false;
+        while (i < end) {
+            char c = s[i];
+            if (c >= '0' && c <= '9') { sawDigit = true; }
+            elif (c == '.' && !wantInt && !sawDot && !sawExp) { sawDot = true; }
+            elif ((c == 'e' || c == 'E') && !wantInt && sawDigit && !sawExp) {
+                sawExp = true;
+                if (i + 1 < end && (s[i + 1] == '+' || s[i + 1] == '-')) { i += 1; }
+                if (i + 1 >= end) { return false; }
+            }
+            else { return false; }
+            i += 1;
+        }
+        return sawDigit;
+    }
+
+    // Filesystem entry points whose first argument must be a file path.
+    private static bool isPathFirstArgMethodRT(string m) {
+        if (m == "readString" || m == "readFile") { return true; }
+        if (m == "readBytes" || m == "writeString") { return true; }
+        if (m == "writeFile" || m == "writeBytes") { return true; }
+        if (m == "exists" || m == "delete") { return true; }
+        if (m == "deleteFile" || m == "rename") { return true; }
+        if (m == "copy" || m == "mkdir") { return true; }
+        if (m == "createDirectory" || m == "createDir") { return true; }
+        if (m == "directoryExists" || m == "folderExists") { return true; }
+        if (m == "isFile" || m == "isDirectory" || m == "isDir") { return true; }
+        if (m == "size" || m == "getSize" || m == "listFiles") { return true; }
+        if (m == "getEntries" || m == "entries" || m == "list") { return true; }
+        if (m == "getFiles" || m == "files" || m == "getFolders" || m == "folders") { return true; }
+        return false;
+    }
+
+    private static bool looksLikeUrlRT(string s) {
+        string lo = s.lower();
+        if (lo.startsWith("http://") || lo.startsWith("https://")) { return true; }
+        if (lo.startsWith("http:") || lo.startsWith("https:")) { return true; }
+        if (lo.startsWith("ftp://") || lo.startsWith("ftps://")) { return true; }
+        if (lo.startsWith("file://")) { return true; }
+        if (lo.startsWith("www.")) { return true; }
+        return false;
+    }
+
+    // A runtime path is unusable when it is empty, carries characters
+    // Windows forbids in paths, or sits on a drive that does not exist.
+    // Drive validity is probed with folder.exists on the bare root: the
+    // folder listing builtin fails gracefully on nonexistent drives where
+    // the file attribute builtins crash.
+    private static bool isInvalidPathRT(string s) {
+        if (s.length == 0) { return true; }
+        for (int i = 0; i < s.length; i++) {
+            char c = s[i];
+            if (c == '<' || c == '>' || c == '"' || c == '|' || c == '?' || c == '*') { return true; }
+            if (c < 32) { return true; }
+        }
+        if (s.length >= 2 && s[1] == ':') {
+            char d = s[0];
+            if ((d >= 'a' && d <= 'z') || (d >= 'A' && d <= 'Z')) {
+                string root = d.toString() + ":\\";
+                if (!folder.exists(root)) { return true; }
+            }
+        }
+        return false;
+    }
+
+    // Throws the doc-specified ValueException when a path-taking filesystem
+    // call receives a URL or an invalid path literal. Returns false when the
+    // caller must stop (the exception is already raised).
+    private static bool checkFsPathArgs(Evaluator ev, string method, Value[] args) {
+        if (!isPathFirstArgMethodRT(method)) { return true; }
+        int count = 1;
+        if (method == "copy" || method == "rename") { count = 2; }
+        for (int i = 0; i < count; i++) {
+            if (i >= args.length) { break; }
+            if (args[i].tag != VAL_STRING) { continue; }
+            string s = args[i].strVal;
+            if (looksLikeUrlRT(s)) {
+                ev.throwException("ValueException", "expected a string of a file path at line " + ev.diagLine.toString() + ", column " + ev.diagCol.toString() + ", got a url");
+                return false;
+            }
+            if (isInvalidPathRT(s)) {
+                ev.throwException("ValueException", "expected a valid file path at line " + ev.diagLine.toString() + ", column " + ev.diagCol.toString() + ", got an invalid path");
+                return false;
+            }
+        }
+        return true;
+    }
+
     private static Value[] splitValues(string text, string delim) {
         Value[] result = [];
         string rest = text;
@@ -640,6 +743,34 @@ class BuiltinMethods {
                 return makeChar(char(args[0].toInt()));
             }
             return makeNull();
+        }
+        // VALUE_EXCEPTION.md — numeric parse conversions on the interpreter's
+        // builtin type singletons (`int.parseInt("hello")`). A non-numeric
+        // string raises a ValueException pointing at the argument.
+        if (mod == "int") {
+            if (method == "parseInt" || method == "toInt" || method == "parseLong" || method == "toInt64") {
+                string s = args.length > 0 && args[0].tag == VAL_STRING ? args[0].strVal : "";
+                if (!stringIsNumericRT(s, true)) {
+                    ev.throwException("ValueException", "expected a string of a number at line " + ev.diagLine.toString() + ", column " + ev.diagCol.toString() + ", got \"" + s + "\"");
+                    return makeNull();
+                }
+                return makeInt(strToInt64Safe(s));
+            }
+        }
+        if (mod == "float") {
+            if (method == "parseFloat" || method == "parseDouble" || method == "toDouble") {
+                string s = args.length > 0 && args[0].tag == VAL_STRING ? args[0].strVal : "";
+                if (!stringIsNumericRT(s, false)) {
+                    ev.throwException("ValueException", "expected a string of a number at line " + ev.diagLine.toString() + ", column " + ev.diagCol.toString() + ", got \"" + s + "\"");
+                    return makeNull();
+                }
+                return makeFloat(floatStrToF64(s));
+            }
+        }
+        // VALUE_EXCEPTION.md — filesystem calls receiving a URL or an unusable
+        // path literal where a file path is required.
+        if (mod == "fs_module" || mod == "file_module" || mod == "folder_module") {
+            if (!checkFsPathArgs(ev, method, args)) { return makeNull(); }
         }
         if (mod == "notifications_module") {
             // DOCS/247 -- The interpreter cannot pop a real Win32 tray

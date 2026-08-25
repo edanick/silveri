@@ -7,12 +7,50 @@ class Lexer {
     private prop int pos;
     private prop int line;
     private prop int col;
+    // Per-line character lengths (1-based indexing via line-1), used to
+    // point at the last character of a line for unterminated strings and
+    // just past the end of a line for missing-bracket diagnostics.
+    private prop int[] lineLens;
+    // Recoverable lex diagnostics count (SYNTAX_EXCEPTIONS.md).
+    private prop int lexErrors;
 
     construct (string source) {
         this.src = source;
         this.pos = 0;
         this.line = 1;
         this.col = 1;
+        this.lineLens = [];
+        this.lexErrors = 0;
+        int current = 0;
+        for (int i = 0; i < source.length; i++) {
+            char c = source[i];
+            if (c == '\n') {
+                this.lineLens.add(current);
+                current = 0;
+            } elif (c != '\r') {
+                current += 1;
+            }
+        }
+        this.lineLens.add(current);
+    }
+
+    public int[] lineLengths() {
+        return this.lineLens;
+    }
+
+    public int errorCount() {
+        return this.lexErrors;
+    }
+
+    // Character length of the given 1-based line (0 when out of range).
+    private int lineCharLen(int ln) {
+        if (ln >= 1 && ln <= this.lineLens.length) { return this.lineLens[ln - 1]; }
+        return 0;
+    }
+
+    private void recordLexError(string msg) {
+        this.lexErrors += 1;
+        printline(msg);
     }
 
     private char? peek() {
@@ -84,14 +122,13 @@ class Lexer {
         return new Token(kind, text, this.line, this.col);
     }
 
-    private Token readString() {
-        int ln = this.line;
-        int c = this.col;
+    private Token readString(int ln, int c) {
         string s = "";
+        bool closed = false;
         while (this.pos < this.src.length) {
             char ch = this.src[this.pos];
             this.advance();
-            if (ch == '"') { break; }
+            if (ch == '"') { closed = true; break; }
             if (ch == '\\') {
                 if (this.pos < this.src.length) {
                     char esc = this.src[this.pos];
@@ -133,14 +170,19 @@ class Lexer {
                 s += ch.toString();
             }
         }
+        // SYNTAX_EXCEPTIONS.md — an unterminated literal reports the opening
+        // line with the column of its last character.
+        if (!closed) {
+            int endCol = this.lineCharLen(ln);
+            if (endCol <= 0) { endCol = c; }
+            this.recordLexError("you forgot to close your string quotes at line " + ln.toString() + ", column " + endCol.toString());
+        }
         Token tok = new Token(TK_STRING_LIT, s, ln, c);
         tok.strVal = s;
         return tok;
     }
 
-    private Token readChar() {
-        int ln = this.line;
-        int c = this.col;
+    private Token readChar(int ln, int c) {
         char ch = ' ';
         if (this.pos < this.src.length) {
             ch = this.src[this.pos];
@@ -186,9 +228,7 @@ class Lexer {
         return tok;
     }
 
-    private Token readNumber(char first) {
-        int ln = this.line;
-        int c = this.col;
+    private Token readNumber(char first, int ln, int c) {
         string s = first.toString();
         bool isFloat = false;
         if (first == '0' && this.pos < this.src.length) {
@@ -293,9 +333,7 @@ class Lexer {
         return tok;
     }
 
-    private Token readIdentifierOrKeyword(char first) {
-        int ln = this.line;
-        int c = this.col;
+    private Token readIdentifierOrKeyword(char first, int ln, int c) {
         string s = first.toString();
         while (this.pos < this.src.length) {
             char ch = this.src[this.pos];
@@ -353,19 +391,19 @@ class Lexer {
 
         if (c == '"') {
             this.advance();
-            return this.readString();
+            return this.readString(ln, cl);
         }
         if (c == '\'') {
             this.advance();
-            return this.readChar();
+            return this.readChar(ln, cl);
         }
         if (c.isDigit()) {
             this.advance();
-            return this.readNumber(c);
+            return this.readNumber(c, ln, cl);
         }
         if (c.isAlpha() || c == '_') {
             this.advance();
-            return this.readIdentifierOrKeyword(c);
+            return this.readIdentifierOrKeyword(c, ln, cl);
         }
 
         this.advance();
