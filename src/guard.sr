@@ -605,19 +605,7 @@ class MemoryGuard {
         }
         this.vars = merged;
     }
-            this.vars = merged;
-        }
-        if (!hasDefault) {
-            printline("GUARDDBG checkMatchStmt no default");
-            for (int i = 0; i < this.vars.length; i++) {
-                merged[i].isInit = merged[i].isInit && before[i].isInit;
-                merged[i].isAlive = merged[i].isAlive || before[i].isAlive;
-                merged[i].holdsAddress = merged[i].holdsAddress || before[i].holdsAddress;
-            }
-        }
-        this.vars = merged;
-    }
-    
+
     private void checkSwitch(Node n) {
         this.checkExpr(n.child(0));
         GuardVar[] before = this.snapshot();

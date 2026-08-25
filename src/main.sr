@@ -21,7 +21,8 @@ bool nativeModule(string name) {
     return cli.eq(n, "fs") || cli.eq(n, "json") || cli.eq(n, "yaml")
         || cli.eq(n, "env") || cli.eq(n, "url") || cli.eq(n, "hash")
         || cli.eq(n, "path") || cli.eq(n, "bom") || cli.eq(n, "console")
-        || cli.eq(n, "math") || cli.eq(n, "llmai") || cli.eq(n, "os");
+        || cli.eq(n, "math") || cli.eq(n, "llmai") || cli.eq(n, "os")
+        || cli.eq(n, "keyboard") || cli.eq(n, "mouse");
 }
 
 // Case-insensitive substring search.

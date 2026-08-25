@@ -377,12 +377,22 @@ class Evaluator {
             this.registerWin32Import(item);
         }
         if (item.kind == ND_FUNC) {
-            this.functions[item.name] = item;
-            if (item.isPublic) {
-                this.globals.define(item.name, makeFunc(item.name));
+            // The functions dict is keyed by name only; Silver has no
+            // function overloading. Keep the first definition so a later
+            // overload cannot overwrite it (e.g. `void press(string)` being
+            // replaced by `void press(int)`, which then crashes on the string
+            // call site).
+            if (!this.functions.contains(item.name)) {
+                this.functions[item.name] = item;
+                if (item.isPublic) {
+                    this.globals.define(item.name, makeFunc(item.name));
+                }
             }
             if (this.currentModule != "") {
-                this.functions[this.currentModule + "." + item.name] = item;
+                string moduleKey = this.currentModule + "." + item.name;
+                if (!this.functions.contains(moduleKey)) {
+                    this.functions[moduleKey] = item;
+                }
             }
         }
         if (item.kind == ND_STRUCT_DEF) {
@@ -1821,34 +1831,6 @@ class Evaluator {
             return;
         }
     }
-}
-
-// Byte-conversion guards used by byte / byte[] variable declarations. Values
-// outside the 0..255 range raise OverflowException (mirrors the compiled
-// checked-byte conversion in the native backend).
-Value checkedByte(Value value) {
-    if (value.tag == VAL_INT || value.tag == VAL_BYTE) {
-        if (value.intVal < 0 || value.intVal > 255) {
-            throw new OverflowException("byte value out of range: " + value.intVal);
-        }
-        return makeByte(value.intVal);
-    }
-    throw new ValueException("byte conversion requires an integer value");
-}
-
-Value checkedByteArray(Value value) {
-    if (value.tag == VAL_ARRAY) {
-        for (int i = 0; i < value.arrVal.length; i++) {
-            Value el = value.arrVal[i];
-            if (el.tag == VAL_INT || el.tag == VAL_BYTE) {
-                if (el.intVal < 0 || el.intVal > 255) {
-                    throw new OverflowException("byte[] element out of range: " + el.intVal);
-                }
-            }
-        }
-        return value;
-    }
-    throw new ValueException("byte[] conversion requires an array value");
 }
 
 // Byte-conversion guards used by byte / byte[] variable declarations. Values

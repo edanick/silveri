@@ -170,7 +170,7 @@ class Value {
         if (this.tag == VAL_INT || this.tag == VAL_BYTE) { return this.intVal; }
         if (this.tag == VAL_FLOAT) { return floatStrToInt(this.strVal); }
         if (this.tag == VAL_BOOL) { return this.boolVal ? 1 : 0; }
-        if (this.tag == VAL_STRING) { return this.strVal.toInt64(); }
+        if (this.tag == VAL_STRING) { return strToInt64Safe(this.strVal); }
         if (this.tag == VAL_CHAR) { return this.charVal.toInt64(); }
         return 0;
     }
@@ -256,6 +256,13 @@ public string arrValStrAt(Value v, int i) {
 
 public int64 arrValIntAt(Value v, int i) {
     return v.arrVal[i].toInt();
+}
+
+// Cross-module writes to the Value[] backing store miscompile (see the
+// mirror-helper note above), so element stores from other modules go through
+// this same-module helper.
+public void arrValSetAt(Value v, int i, Value val) {
+    v.arrVal[i] = val;
 }
 
 // High-offset fields of the 16-field Value struct are unreliable to touch
@@ -421,6 +428,22 @@ Value makeDict(dict<string, Value> v) {
 // by the compiler, so their results flow through as proper bit patterns).
 // ---------------------------------------------------------------------------
 
+// Safe strtoll(base 10) wrapper: skips leading whitespace and an optional
+// sign, and requires at least one leading digit before calling the native
+// toInt64. Without the leading-digit guard the compiled runtime's toInt64
+// throws an uncatchable native exception on strings like "a", crashing the
+// interpreter with "Unhandled exception". Non-numeric input returns 0, which
+// matches the compiled strtoll behavior.
+int64 strToInt64Safe(string s) {
+    int i = 0;
+    while (i < s.length && (s[i] == ' ' || s[i] == '\t')) { i += 1; }
+    if (i < s.length && (s[i] == '-' || s[i] == '+')) { i += 1; }
+    if (i < s.length && s[i] >= '0' && s[i] <= '9') {
+        return s.toInt64();
+    }
+    return 0;
+}
+
 // Parse the integer part of a decimal float string ("3.14" -> 3, "-2.5" -> -2).
 int64 floatStrToInt(string s) {
     string t = s;
@@ -432,7 +455,7 @@ int64 floatStrToInt(string s) {
     int dot = t.indexOf(".");
     string ip = t;
     if (dot >= 0) { ip = t.substr(0, dot); }
-    int64 result = ip.toInt64();
+    int64 result = strToInt64Safe(ip);
     if (neg) { result = -result; }
     return result;
 }
@@ -459,7 +482,7 @@ float64 floatStrToF64(string s) {
             expPart = expPart.substr(1);
         }
         if (expPart.length > 0 && expPart[0] == '+') { expPart = expPart.substr(1); }
-        exp = expPart.toInt64();
+        exp = strToInt64Safe(expPart);
         if (expNeg) { exp = -exp; }
     }
     int dot = mant.indexOf(".");
@@ -469,10 +492,10 @@ float64 floatStrToF64(string s) {
         ip = mant.substr(0, dot);
         fp = mant.substr(dot + 1);
     }
-    int64 intPart = ip.toInt64();
+    int64 intPart = strToInt64Safe(ip);
     float64 result = intPart.toFloat64();
     if (fp.length > 0) {
-        int64 fracPart = fp.toInt64();
+        int64 fracPart = strToInt64Safe(fp);
         int64 flen = fp.length;
         float64 divisor = 10.0;
         for (int64 i = 1; i < flen; i += 1) {

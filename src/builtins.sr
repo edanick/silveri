@@ -812,12 +812,17 @@ class BuiltinMethods {
             if (method == "copy" && args.length > 1) { fs.copy(args[0].strVal, args[1].strVal); return makeNull(); }
             if (method == "readString") {
                 if (!fs.exists(path)) { ev.throwException("FileNotFoundException", "file not found"); return makeNull(); }
-                return makeString(readString(args[0].strVal));
+                return makeString(file.readString(args[0].strVal));
             }
-            if (method == "writeString" && args.length > 1) { writeString(args[0].strVal, args[1].strVal); return makeNull(); }
+            if (method == "writeString" && args.length > 1) {
+                string wsPath = args[0].strVal;
+                string wsContent = args[1].strVal;
+                file.writeString(wsPath, wsContent);
+                return makeNull();
+            }
             if (method == "readBytes") {
                 if (!file.exists(path)) { ev.throwException("FileNotFoundException", "file not found"); return makeNull(); }
-                string content = readString(args[0].strVal);
+                string content = file.readString(args[0].strVal);
                 Value[] result = [];
                 for (int i = 0; i < content.length; i++) {
                     char ch = content[i];
@@ -845,12 +850,17 @@ class BuiltinMethods {
             if (method == "copy" && args.length > 1) { file.copy(args[0].strVal, args[1].strVal); return makeNull(); }
             if (method == "readString") {
                 if (!file.exists(path)) { ev.throwException("FileNotFoundException", "file not found"); return makeNull(); }
-                return makeString(readString(args[0].strVal));
+                return makeString(file.readString(args[0].strVal));
             }
-            if (method == "writeString" && args.length > 1) { writeString(args[0].strVal, args[1].strVal); return makeNull(); }
+            if (method == "writeString" && args.length > 1) {
+                string wsPath = args[0].strVal;
+                string wsContent = args[1].strVal;
+                file.writeString(wsPath, wsContent);
+                return makeNull();
+            }
             if (method == "readBytes") {
                 if (!file.exists(path)) { ev.throwException("FileNotFoundException", "file not found"); return makeNull(); }
-                string content = readString(args[0].strVal);
+                string content = file.readString(args[0].strVal);
                 Value[] result = [];
                 for (int i = 0; i < content.length; i++) {
                     char ch = content[i];
@@ -1366,7 +1376,7 @@ Value callBuiltin(string name, Value[] args) {
     }
     if (name == "int") {
         if (args.length > 0) {
-            if (args[0].tag == VAL_STRING) { return makeInt(args[0].strVal.toInt64()); }
+            if (args[0].tag == VAL_STRING) { return makeInt(strToInt64Safe(args[0].strVal)); }
             return makeInt(args[0].toInt());
         }
         return makeInt(0);
@@ -1477,14 +1487,19 @@ Value callBuiltin(string name, Value[] args) {
         return makeInt(GetCursorY());
     }
     if (name == "GetCursorPos") {
-        // The interpreter cannot pass a managed Value[] as LPPOINT.  Read the
-        // coordinates through the native scalar helpers and write them into
-        // the caller's two-element Value array instead.
+        // The interpreter cannot write to a managed Value[] from a cross-module
+        // context (the compiled codegen miscompiles the field offset).  Use the
+        // same-module arrValSetAt helper for the write, and compute the native
+        // cursor coordinates into local ints first so no function call appears
+        // in the argument expression of the store.
         if (args.length >= 1 && args[0].tag == VAL_ARRAY) {
-            Value target = args[0];
-            if (target.arrVal.length >= 2) {
-                target.arrVal[0] = makeInt(GetCursorX());
-                target.arrVal[1] = makeInt(GetCursorY());
+            if (arrValLen(args[0]) >= 2) {
+                int cx = GetCursorX();
+                int cy = GetCursorY();
+                Value vx = makeInt(cx);
+                Value vy = makeInt(cy);
+                arrValSetAt(args[0], 0, vx);
+                arrValSetAt(args[0], 1, vy);
                 return makeBool(true);
             }
             return makeBool(false);
