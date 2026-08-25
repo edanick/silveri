@@ -9,7 +9,7 @@ a native executable.
 ## Credits
 
 - **Author:** Edan M.
-- **Version:** 0.4.0
+- **Version:** 0.4.5
 - **Copyright:** © 2025 Edan M.
 
 ## Quick start
