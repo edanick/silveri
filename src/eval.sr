@@ -199,7 +199,7 @@ class Evaluator {
     public string win32DllForFn(string fn) {
         if (fn == "keybd_event" || fn == "mouse_event" || fn == "VkKeyScanA" || fn == "GetKeyState" || fn == "GetAsyncKeyState" || fn == "MapVirtualKeyA" || fn == "GetCursorPos" || fn == "SetCursorPos" || fn == "SendInput" || fn == "SetCursor" || fn == "ClipCursor" || fn == "GetClipCursor" || fn == "GetDoubleClickTime" || fn == "SetDoubleClickTime" || fn == "RegisterHotKey" || fn == "UnregisterHotKey" || fn == "MessageBeep" || fn == "RegisterRawInputDevices" || fn == "GetRawInputData" || fn == "GetRawInputDeviceList") { return "user32.dll"; }
         if (fn == "GetForegroundWindow" || fn == "GetWindowTextA" || fn == "GetWindowThreadProcessId" || fn == "RegisterClassExA" || fn == "CreateWindowExA" || fn == "ShowWindow" || fn == "UpdateWindow" || fn == "SetWindowTextA" || fn == "DestroyWindow" || fn == "GetSystemMetrics" || fn == "LoadImageA" || fn == "SendMessageA") { return "user32.dll"; }
-        if (fn == "OpenProcess" || fn == "QueryFullProcessImageNameA" || fn == "CloseHandle" || fn == "GetModuleHandleA") { return "kernel32.dll"; }
+        if (fn == "OpenProcess" || fn == "QueryFullProcessImageNameA" || fn == "CloseHandle" || fn == "GetModuleHandleA" || fn == "GetSystemInfo" || fn == "GlobalMemoryStatusEx") { return "kernel32.dll"; }
         return "";
     }
 
@@ -304,6 +304,8 @@ class Evaluator {
             k32.add("QueryFullProcessImageNameA");
             k32.add("CloseHandle");
             k32.add("GetModuleHandleA");
+            k32.add("GetSystemInfo");
+            k32.add("GlobalMemoryStatusEx");
             for (int j = 0; j < k32.length; j++) {
                 if (this.win32HasExport(dll, k32[j])) {
                     this.globals.define(k32[j], makeBuiltin(k32[j]));

@@ -1770,6 +1770,21 @@ Value callBuiltin(string name, Value[] args) {
         if (args.length >= 1) { return makeBool(CloseHandle(args[0].toInt().toInt())); }
         return makeBool(false);
     }
+    // Adaptive resource layer (resource.sr): SYSTEM_INFO/MEMORYSTATUSEX
+    // struct queries. The managed string argument lowers to the struct
+    // buffer pointer, so the native call fills it in place (same buffer
+    // contract the self-hosted resource.sr relies on).
+    if (name == "GetSystemInfo") {
+        if (args.length >= 1) { GetSystemInfo(args[0].toString()); }
+        return makeInt(0);
+    }
+    if (name == "GlobalMemoryStatusEx") {
+        if (args.length >= 1) {
+            int ok = GlobalMemoryStatusEx(args[0].toString());
+            return makeInt(ok);
+        }
+        return makeInt(0);
+    }
     // DOCS/248 -- window GUI Win32 forwarding. The self-hosted compiler
     // (silverc.exe) compiles these bare calls to the matching user32.dll /
     // kernel32.dll imports; the interpreter just passes the managed args

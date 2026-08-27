@@ -2,6 +2,7 @@ mod export cache;
 
 import * from win32.kernel32;
 import * from win32.msvcrt;
+import resource;
 
 // OVERHAUL.md --cache-bytecode — persistent bytecode cache for the
 // interpreter. Same reference binary formats as the compilers:
@@ -170,56 +171,35 @@ class CacheSession {
         icEnsureDirTree(this.dir);
         file.writeString(this.dir + "\\project.sbcri", indexText);
 
-        int[] outBytes = [];
-        outBytes.add(83);
-        outBytes.add(66);
-        outBytes.add(67);
-        outBytes.add(82);
-        outBytes.add(1);
-        outBytes.add(0);
-        int64 createdV = this.createdStamp;
-        for (int cb = 0; cb < 8; cb++) {
-            outBytes.add((createdV >> (cb * 8)) & 0xFF);
-        }
-        string pn = this.projectName;
-        int pnl = pn.length;
-        for (int nb = 0; nb < 4; nb++) {
-            outBytes.add((pnl >> (nb * 8)) & 0xFF);
-        }
-        for (int ni = 0; ni < pnl; ni++) {
-            outBytes.add(pn[ni] & 0xFF);
-        }
-        int kc = this.keys.length;
-        for (int kb = 0; kb < 4; kb++) {
-            outBytes.add((kc >> (kb * 8)) & 0xFF);
-        }
-        for (int rb = 0; rb < this.keys.length; rb++) {
-            string kp = this.keys[rb];
-            int kpl = kp.length;
-            for (int pb1 = 0; pb1 < 4; pb1++) {
-                outBytes.add((kpl >> (pb1 * 8)) & 0xFF);
+        // Reference-format binary record (little-endian, see module docs),
+        // streamed in adaptive bounded chunks like the .srbc artifacts.
+        BcBinWriter bw = new BcBinWriter(this.dir + "\\project.sbcr");
+        if (bw.ok()) {
+            bw.b8(83);
+            bw.b8(66);
+            bw.b8(67);
+            bw.b8(82);
+            bw.b16(1);
+            bw.b64(this.createdStamp);
+            string pn = this.projectName;
+            bw.b32(pn.length);
+            for (int ni = 0; ni < pn.length; ni++) {
+                bw.b8(pn[ni] & 0xFF);
             }
-            for (int pi = 0; pi < kpl; pi++) {
-                outBytes.add(kp[pi] & 0xFF);
-            }
-            int64 cv = icDecToI64(this.cTimesStr[rb]);
-            for (int c1 = 0; c1 < 8; c1++) {
-                outBytes.add((cv >> (c1 * 8)) & 0xFF);
-            }
-            int64 mv = icDecToI64(this.mTimesStr[rb]);
-            for (int c2 = 0; c2 < 8; c2++) {
-                outBytes.add((mv >> (c2 * 8)) & 0xFF);
-            }
-            int64 hv = icDecToI64(this.hashesStr[rb]);
-            for (int c3 = 0; c3 < 8; c3++) {
-                outBytes.add((hv >> (c3 * 8)) & 0xFF);
-            }
-            int64 lv = icDecToI64(this.cachedAtStr[rb]);
-            for (int c4 = 0; c4 < 8; c4++) {
-                outBytes.add((lv >> (c4 * 8)) & 0xFF);
+            bw.b32(this.keys.length);
+            for (int rb = 0; rb < this.keys.length; rb++) {
+                string kp = this.keys[rb];
+                bw.b32(kp.length);
+                for (int pi = 0; pi < kp.length; pi++) {
+                    bw.b8(kp[pi] & 0xFF);
+                }
+                bw.b64(icDecToI64(this.cTimesStr[rb]));
+                bw.b64(icDecToI64(this.mTimesStr[rb]));
+                bw.b64(icDecToI64(this.hashesStr[rb]));
+                bw.b64(icDecToI64(this.cachedAtStr[rb]));
             }
         }
-        file.writeBytes(this.dir + "\\project.sbcr", outBytes);
+        bw.close();
     }
 
     public int statsTotal() {
@@ -308,66 +288,104 @@ class CacheSession {
         if (path.length == 0) { return; }
         icEnsureDirTree(icDirname(path));
 
-        int[] outBytes = [];
-        outBytes.add(83);
-        outBytes.add(82);
-        outBytes.add(66);
-        outBytes.add(67);
-        outBytes.add(1);
-        outBytes.add(0);
-        int64 hv2 = icDecToI64(hashKey);
-        for (int hb = 0; hb < 8; hb++) {
-            outBytes.add((hv2 >> (hb * 8)) & 0xFF);
-        }
-        int64 sv = stamp;
-        for (int sb = 0; sb < 8; sb++) {
-            outBytes.add((sv >> (sb * 8)) & 0xFF);
-        }
-        int tc = tokens.length;
-        for (int cb = 0; cb < 4; cb++) {
-            outBytes.add((tc >> (cb * 8)) & 0xFF);
-        }
-        for (int ib = 0; ib < tokens.length; ib++) {
-            Token tb = tokens[ib];
-            int tag = icTagOf(tb);
-            outBytes.add(tag & 0xFF);
-            outBytes.add((tag >> 8) & 0xFF);
-            if (tag == 200) {
-                int64 tv = tb.intVal;
-                for (int tb2 = 0; tb2 < 8; tb2++) {
-                    outBytes.add((tv >> (tb2 * 8)) & 0xFF);
+        // Reference-format binary stream (see module docs), flushed in
+        // adaptive bounded chunks straight to disk — never materialized as
+        // one string or one whole-file array. The on-disk bytes are
+        // identical to the previous one-shot write regardless of the
+        // host-picked chunk size.
+        BcBinWriter bw = new BcBinWriter(path);
+        if (bw.ok()) {
+            bw.b8(83);
+            bw.b8(82);
+            bw.b8(66);
+            bw.b8(67);
+            bw.b16(1);
+            bw.b64(icDecToI64(hashKey));
+            int64 sv = stamp;
+            bw.b64(sv);
+            bw.b32(tokens.length);
+            for (int ib = 0; ib < tokens.length; ib++) {
+                Token tb = tokens[ib];
+                int tag = icTagOf(tb);
+                bw.b16(tag);
+                if (tag == 200) {
+                    bw.b64(tb.intVal);
+                } elif (tag == 203) {
+                    int ccv = tb.charVal;
+                    bw.b32(ccv);
+                } elif (tag == 202 || tag == 204 || tag == 205) {
+                    string sv2 = tb.strVal;
+                    bw.b32(sv2.length);
+                    for (int si3 = 0; si3 < sv2.length; si3++) {
+                        bw.b8(sv2[si3] & 0xFF);
+                    }
                 }
-            } elif (tag == 203) {
-                int ccv = tb.charVal;
-                for (int cb2 = 0; cb2 < 4; cb2++) {
-                    outBytes.add((ccv >> (cb2 * 8)) & 0xFF);
-                }
-            } elif (tag == 202 || tag == 204 || tag == 205) {
-                string sv2 = tb.strVal;
-                int sl = sv2.length;
-                for (int cb3 = 0; cb3 < 4; cb3++) {
-                    outBytes.add((sl >> (cb3 * 8)) & 0xFF);
-                }
-                for (int si3 = 0; si3 < sl; si3++) {
-                    outBytes.add(sv2[si3] & 0xFF);
-                }
-            }
-            int ln = tb.line;
-            for (int lb = 0; lb < 4; lb++) {
-                outBytes.add((ln >> (lb * 8)) & 0xFF);
-            }
-            int cl = tb.col;
-            for (int pb = 0; pb < 4; pb++) {
-                outBytes.add((cl >> (pb * 8)) & 0xFF);
+                bw.b32(tb.line);
+                bw.b32(tb.col);
             }
         }
-        file.writeBytes(path, outBytes);
+        bw.close();
 
-        string txt = hashKey + " " + stamp.toString() + " " + tokens.length.toString() + "\n";
-        for (int i = 0; i < tokens.length; i++) {
-            txt = txt + icTokenLine(tokens[i]);
+        // NUL-free text companion (authoritative read side), streamed the
+        // same way; hex payloads spill in bounded windows so no line is
+        // ever built with per-char concatenation.
+        BcTextWriter tw = new BcTextWriter(path + ".t");
+        if (tw.ok()) {
+            tw.put(hashKey);
+            tw.put(" ");
+            tw.put(stamp.toString());
+            tw.put(" ");
+            tw.put(tokens.length.toString());
+            tw.put("\n");
+            for (int i = 0; i < tokens.length; i++) {
+                this.writeTokenLine(tw, tokens[i]);
+            }
         }
-        file.writeString(path + ".t", txt);
+        tw.close();
+    }
+
+    // One token as one companion line: <tag> <line> <col> <payload>
+    // (payload "-" for unit tags, decimal for int/char, "<byteLen>:<hex>"
+    // for string payloads). Identical bytes to the previous one-shot
+    // tokenLine(); emitted piecewise into the streaming writer.
+    private void writeTokenLine(BcTextWriter t, Token tok) {
+        int tag = icTagOf(tok);
+        t.put(tag.toString());
+        t.put(" ");
+        t.put(tok.line.toString());
+        t.put(" ");
+        t.put(tok.col.toString());
+        if (tag == 200) {
+            t.put(" ");
+            t.put(icIntToStr(tok.intVal));
+            t.put("\n");
+            return;
+        }
+        if (tag == 203) {
+            int cvEnc = tok.charVal;
+            t.put(" ");
+            t.put(cvEnc.toString());
+            t.put("\n");
+            return;
+        }
+        if (tag == 202 || tag == 204 || tag == 205) {
+            t.put(" ");
+            string s = tok.strVal;
+            t.put(s.length.toString());
+            t.put(":");
+            string hex = "";
+            for (int i = 0; i < s.length; i++) {
+                hex = hex + icHexDigits(s[i] & 0xFF);
+                if (hex.length >= 64) {
+                    t.put(hex);
+                    hex = "";
+                }
+            }
+            t.put(hex);
+            t.put("\n");
+            return;
+        }
+        t.put(" -\n");
     }
 
     private Token[] loadSrbcText(string absPath, string expectHash) {
@@ -436,6 +454,173 @@ class CacheSession {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Streaming writers (memory bounds for --cache-bytecode).
+//
+// String concatenation allocates a fresh buffer on every `+` and the
+// runtime never frees the old one, so accumulating a whole artifact with
+// `s = s + piece` is quadratic in both time and peak memory. These sinks
+// keep only a bounded chunk resident and push bytes to disk with direct
+// kernel32 writes:
+//
+//   BcBinWriter  — .srbc/.sbcr bytes: a bounded int[] chunk staged through
+//                  a scratch file (file.writeBytes) and appended to the
+//                  artifact with a direct WriteFile of the exact byte
+//                  count. The full stream never exists as one string or
+//                  one whole-file array.
+//   BcTextWriter — NUL-free text (.srbc.t / project.sbcri): a preallocated
+//                  writable string buffer appended in place with lstrcatA
+//                  and flushed with WriteFile, reset in place with
+//                  lstrcpyA("") — the same buffer mechanism icEnvValue
+//                  relies on, so no per-piece allocation at all.
+//
+// Buffer sizes are memory-adaptive (see resource.rsCacheChunk): on
+// low-memory hosts they shrink so a cache write never overcommits RAM, on
+// big hosts they grow so large artifacts stream in fewer, larger flushes.
+// The on-disk byte format is independent of the buffer size — only the
+// flush cadence changes, so .srbc/.sbcr artifacts stay byte-identical
+// whatever buffer size the host picks.
+// ---------------------------------------------------------------------------
+
+class BcBinWriter {
+    public prop string path;
+    public prop int handle;
+    public prop int[] buf;
+    public prop string scratch;
+    public prop int failed;
+    public prop int chunk;
+
+    construct (string outPath) {
+        this.path = outPath;
+        this.buf = [];
+        this.failed = 0;
+        this.chunk = resource.rsCacheChunk(8192);
+        this.scratch = outPath + ".part";
+        icEnsureDirTree(icDirname(outPath));
+        // CREATE_ALWAYS: every artifact is rewritten whole on change.
+        this.handle = CreateFileA(outPath, 0x40000000, 0, null, 2, 0x80, 0);
+        if (this.handle == -1 || this.handle == 0) {
+            this.handle = 0;
+            this.failed = 1;
+        }
+    }
+
+    public bool ok() {
+        return this.failed == 0;
+    }
+
+    public void b8(int64 v) {
+        this.buf.add(v & 0xFF);
+        if (this.buf.length >= this.chunk) { this.flush(); }
+    }
+
+    public void b16(int64 v) {
+        this.b8(v);
+        this.b8(v >> 8);
+    }
+
+    public void b32(int64 v) {
+        for (int i = 0; i < 4; i++) { this.b8((v >> (i * 8)) & 0xFF); }
+    }
+
+    public void b64(int64 v) {
+        for (int i = 0; i < 8; i++) { this.b8((v >> (i * 8)) & 0xFF); }
+    }
+
+    public void flush() {
+        int n = this.buf.length;
+        if (n > 0 && this.failed == 0) {
+            // Chunk staging through a scratch file keeps this portable
+            // across bootstrap stages: file.writeBytes compacts the array's
+            // low bytes in place on the self-hosted backend but copies to a
+            // separate heap buffer on the Rust bootstrap, so the array
+            // itself must never be handed to WriteFile. The round trip
+            // (write dense bytes, read them back into a heap buffer, append
+            // with an explicit byte count) is byte-exact on both, NULs
+            // included — the carrier's strlen-based .length is never
+            // consulted.
+            file.writeBytes(this.scratch, this.buf);
+            if (file.getSize(this.scratch) == n) {
+                string carrier = file.readString(this.scratch);
+                int w = 0;
+                WriteFile(this.handle, carrier, n, &w, null);
+            } else {
+                this.failed = 1;
+            }
+        }
+        // pop() only drops the length slot; the buffer and its capacity
+        // stay alive so the next chunk reuses them without reallocation.
+        while (this.buf.length > 0) { this.buf.pop(); }
+    }
+
+    public void close() {
+        this.flush();
+        if (this.handle != 0) {
+            CloseHandle(this.handle);
+            this.handle = 0;
+        }
+        if (file.exists(this.scratch)) { file.delete(this.scratch); }
+    }
+}
+
+class BcTextWriter {
+    public prop string path;
+    public prop int handle;
+    public prop string buf;
+    public prop int cap;
+    public prop int thresh;
+
+    construct (string outPath) {
+        this.path = outPath;
+        this.handle = 0;
+        this.buf = "";
+        this.cap = resource.rsCacheChunk(4096);
+        this.thresh = this.cap - 96;
+        if (this.thresh < 160) { this.thresh = 160; }
+        icEnsureDirTree(icDirname(outPath));
+        int h = CreateFileA(outPath, 0x40000000, 0, null, 2, 0x80, 0);
+        if (h == -1 || h == 0) { return; }
+        this.handle = h;
+        // Heap-allocated capacity buffer (never a literal: lstrcatA writes
+        // through the pointer), emptied in place so appends stay within it.
+        this.buf = icSpaces(this.cap);
+        lstrcpyA(this.buf, "");
+    }
+
+    public bool ok() {
+        return this.handle != 0;
+    }
+
+    // NUL-free text only: the buffer is a plain C string, so lstrcatA
+    // appends in place and .length stays truthful.
+    public void put(string s) {
+        if (s.length == 0 || this.handle == 0) { return; }
+        if (s.length >= this.thresh) {
+            this.flush();
+            int w2 = 0;
+            WriteFile(this.handle, s, s.length, &w2, null);
+            return;
+        }
+        if (this.buf.length + s.length > this.thresh) { this.flush(); }
+        lstrcatA(this.buf, s);
+    }
+
+    public void flush() {
+        if (this.handle == 0 || this.buf.length == 0) { return; }
+        int w = 0;
+        WriteFile(this.handle, this.buf, this.buf.length, &w, null);
+        lstrcpyA(this.buf, "");
+    }
+
+    public void close() {
+        this.flush();
+        if (this.handle != 0) {
+            CloseHandle(this.handle);
+            this.handle = 0;
+        }
+    }
+}
+
 public string icEnvValue(string name) {
     string buf = "                                                                ";
     int cap = 64;
@@ -447,6 +632,19 @@ public string icEnvValue(string name) {
         r = r + c;
     }
     return r;
+}
+
+// Heap string of n spaces built with one join (linear) — the writable
+// buffer primitive for BcTextWriter.
+public string icSpaces(int n) {
+    if (n <= 0) { return ""; }
+    string unit = "                    ";
+    string[] parts = [];
+    int full = n / 20;
+    for (int i = 0; i < full; i++) { parts.add(unit); }
+    int rem = n - full * 20;
+    if (rem > 0) { parts.add(icSliceRange(unit, 0, rem)); }
+    return parts.join("");
 }
 
 public int icNowMillis() {
