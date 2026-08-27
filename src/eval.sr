@@ -110,6 +110,8 @@ class Evaluator {
         Value v = makeBuiltin("printline");
         this.globals.define("printline", v);
         this.globals.define("print", makeBuiltin("print"));
+        this.globals.define("eprintln", makeBuiltin("eprintln"));
+        this.globals.define("eprint", makeBuiltin("eprint"));
         this.globals.define("input", makeBuiltin("input"));
         this.globals.define("assert", makeBuiltin("assert"));
         this.globals.define("sleep", makeBuiltin("sleep"));

@@ -1476,6 +1476,20 @@ Value callBuiltin(string name, Value[] args) {
         }
         return makeNull();
     }
+    if (name == "eprintln") {
+        if (args.length > 0) {
+            writeStderrBuiltin(args[0].toString() + "\n");
+        } else {
+            writeStderrBuiltin("\n");
+        }
+        return makeNull();
+    }
+    if (name == "eprint") {
+        if (args.length > 0) {
+            writeStderrBuiltin(args[0].toString());
+        }
+        return makeNull();
+    }
     if (name == "input") {
         string inp = input();
         return makeString(inp);
@@ -1925,6 +1939,17 @@ Value callBuiltin(string name, Value[] args) {
         return makeInt(0);
     }
     return makeNull();
+}
+
+// Write a string to STD_ERROR_HANDLE (-12) via Win32, used by the eprintln/
+// eprint builtins so diagnostics stay off stdout (matches the compilers'
+// OVERHAUL.md CLI diagnostics overhaul).
+private void writeStderrBuiltin(string msg) {
+    if (msg.length == 0) { return; }
+    int h = GetStdHandle(-12);
+    if (h == -1 || h == 0) { return; }
+    int w = 0;
+    WriteFile(h, msg, msg.length, &w, null);
 }
 
 // ---------------------------------------------------------------------------

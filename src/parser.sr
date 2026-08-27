@@ -162,6 +162,7 @@ class Parser {
         }
         if (this.strEq(name, "cargs") || this.strEq(name, "getCommandLine")
             || this.strEq(name, "print") || this.strEq(name, "printline")
+            || this.strEq(name, "eprint") || this.strEq(name, "eprintln")
             || this.strEq(name, "exit") || this.strEq(name, "input")
             || this.strEq(name, "sleep") || this.strEq(name, "assert")
             || this.strEq(name, "strlen") || this.strEq(name, "now")) { return true; }
@@ -2551,6 +2552,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
     // singletons, and tray/registry bridges.
     private bool builtinCallableName(string name) {
         if (this.strEq(name, "print") || this.strEq(name, "printline")
+            || this.strEq(name, "eprint") || this.strEq(name, "eprintln")
             || this.strEq(name, "input") || this.strEq(name, "exit")
             || this.strEq(name, "end") || this.strEq(name, "sleep")
             || this.strEq(name, "assert") || this.strEq(name, "now")
@@ -2599,7 +2601,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
     private string[] callableCandidates() {
         string[] cands = [];
         for (int i = 0; i < this.sigNames.length; i++) { cands.add(this.sigNames[i]); }
-        cands.add("print"); cands.add("printline"); cands.add("exit");
+        cands.add("print"); cands.add("printline"); cands.add("eprint"); cands.add("eprintln"); cands.add("exit");
         cands.add("input"); cands.add("sleep"); cands.add("assert");
         cands.add("int"); cands.add("float"); cands.add("double");
         cands.add("char"); cands.add("byte"); cands.add("string_cast");
