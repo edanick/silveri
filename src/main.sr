@@ -14,6 +14,7 @@ import llmai_std;
 import exception_std;
 import project;
 import guard;
+import cache;
 
 // Native modules the interpreter provides without needing a source file.
 bool nativeModule(string name) {
@@ -255,6 +256,7 @@ void printHelp() {
     printline("Options:");
     printline("  -i <file>      Input Silver source file");
     printline("  -o <file>      Output file (ignored in interpreter)");
+    printline("  --cache-bytecode  Run bytecode interpretation via the persistent cache");
     printline("  --help, -h     Show this help message");
     printline("  --version      Show version information");
     printline("");
@@ -280,6 +282,7 @@ void main() {
 
     string filename = "";
     string[] scriptArgs = [];
+    bool cacheBytecode = false;
 
     for (int i = 1; i < args.length; i += 1) {
         string arg = args[i];
@@ -294,7 +297,9 @@ void main() {
             printline("License: " + APP_LICENSE);
             return;
         }
-        if (cli.eq(arg, "-i")) {
+        if (cli.isFlag(arg, ["--cache-bytecode"])) {
+            cacheBytecode = true;
+        } elif (cli.eq(arg, "-i")) {
             string v = cli.valueAfter(args, i);
             if (v != "") {
                 filename = v;
@@ -349,14 +354,48 @@ void main() {
     // functions are registered before the user source runs.
     inputSource = resolveImports(inputSource, filename);
 
-    Lexer lexer = new Lexer(inputSource);
-    Token[] tokens = lexer.tokenize();
-    if (lexer.errorCount() > 0) {
-        exit(1);
+    Token[] tokens;
+    int[] lineLens = [];
+    if (cacheBytecode) {
+        string cacheRoot = projDirname(filename);
+        string cacheProject = "";
+        int lastDot = -1;
+        int lastSep = -1;
+        for (int di = 0; di < filename.length; di++) {
+            if (filename[di] == '.' && di > lastSep) { lastDot = di; }
+            if (filename[di] == '/' || filename[di] == '\\') { lastSep = di; }
+        }
+        if (lastDot > lastSep + 1) {
+            for (int ci = lastSep + 1; ci < lastDot; ci++) { cacheProject += filename[ci]; }
+        } else {
+            cacheProject = "silveri_default";
+        }
+        CacheSession cache = new CacheSession(cacheRoot, cacheProject);
+        tokens = cache.tokensFor(filename, inputSource);
+        cache.flush();
+        // Compute line lengths from the source for bracket diagnostics.
+        int current = 0;
+        for (int i = 0; i < inputSource.length; i++) {
+            char c = inputSource[i];
+            if (c == '\n') {
+                lineLens.add(current);
+                current = 0;
+            } elif (c != '\r') {
+                current += 1;
+            }
+        }
+        lineLens.add(current);
+    } else {
+        Lexer lexer = new Lexer(inputSource);
+        tokens = lexer.tokenize();
+        if (lexer.errorCount() > 0) {
+            exit(1);
+        }
+        lineLens = lexer.lineLengths();
     }
 
     Parser p = new Parser(tokens);
-    p.setLineLengths(lexer.lineLengths());
+    p.setLineLengths(lineLens);
     Node[] program = p.parseProgram();
     if (p.errorCount() > 0) {
         exit(1);
