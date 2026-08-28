@@ -15,8 +15,6 @@ import exception_std;
 import project;
 import guard;
 import cache;
-import progress;
-import * from win32.kernel32;
 
 // Native modules the interpreter provides without needing a source file.
 bool nativeModule(string name) {
@@ -249,88 +247,6 @@ string resolveImports(string source, string inputFile) {
     return source;
 }
 
-// List the modules that resolveImports() will pull in for `source`
-// (star-form `import * from X` plus plain `import X;` modules), so the
-// --cache-bytecode progress reporter can show an exact [processed/total] and
-// one line per module. The scan mirrors resolveImports' cursor logic; only
-// modules that actually resolve to a readable, non-self file are returned.
-// The entry file itself is not included (the caller reports it as module 1).
-string[] listImportModules(string source, string inputFile) {
-    string[] names = [];
-    int cursor = 0;
-    while (cursor < source.length) {
-        int importPos = findCI(source, "import * from ", cursor);
-        if (importPos < 0) { break; }
-        if (importPos > 0) {
-            char prev = source[importPos - 1];
-            if (prev != '\n' && prev != '\r' && prev != ';') {
-                cursor = importPos + 1;
-                continue;
-            }
-        }
-        int semi = -1;
-        for (int si = importPos; si < source.length; si++) {
-            if (source[si] == ';') { semi = si; break; }
-        }
-        if (semi < 0) { break; }
-        int nameStart = importPos + 13;
-        while (nameStart < semi && source[nameStart] == ' ') { nameStart = nameStart + 1; }
-        int nameEnd = nameStart;
-        while (nameEnd < semi && ((source[nameEnd] >= 'a' && source[nameEnd] <= 'z') || (source[nameEnd] >= 'A' && source[nameEnd] <= 'Z') || (source[nameEnd] >= '0' && source[nameEnd] <= '9') || source[nameEnd] == '_')) {
-            nameEnd = nameEnd + 1;
-        }
-        string module = "";
-        for (int mi = nameStart; mi < nameEnd; mi++) {
-            module += source[mi];
-        }
-        if (module.length > 0 && !nativeModule(module)) {
-            string modSrc = readStdModule(module, inputFile, source);
-            if (modSrc.length > 0) {
-                names.add(module + ".sr");
-            }
-        }
-        cursor = semi + 1;
-    }
-    int cursor2 = 0;
-    while (cursor2 < source.length) {
-        int importPos2 = findCI(source, "import ", cursor2);
-        if (importPos2 < 0) { break; }
-        if (importPos2 > 0) {
-            char prev2 = source[importPos2 - 1];
-            if (prev2 != '\n' && prev2 != '\r' && prev2 != ';') {
-                cursor2 = importPos2 + 1;
-                continue;
-            }
-        }
-        int semi2 = -1;
-        for (int si2 = importPos2; si2 < source.length; si2++) {
-            if (source[si2] == ';') { semi2 = si2; break; }
-        }
-        if (semi2 < 0) { break; }
-        int p = importPos2 + 7;
-        string stmtText = "";
-        for (int ci = p; ci < semi2; ci++) { stmtText += source[ci]; }
-        string trimmed = stmtText.trim();
-        if (trimmed.startsWith("*") || trimmed.contains("{")
-            || trimmed.startsWith("kernel32") || trimmed.contains(" from ")) {
-            cursor2 = semi2 + 1;
-            continue;
-        }
-        string[] parts = trimmed.split(",");
-        for (int pi = 0; pi < parts.length; pi++) {
-            string modName = parts[pi].trim();
-            if (modName.length == 0) { continue; }
-            if (nativeModule(modName) || moduleAlwaysResolvable(modName)) { continue; }
-            string modSrc = readStdModule(modName, inputFile, source);
-            if (modSrc.length > 0) {
-                names.add(modName + ".sr");
-            }
-        }
-        cursor2 = semi2 + 1;
-    }
-    return names;
-}
-
 void printHelp() {
     printline("silveri " + APP_VERSION);
     printline("Copyright: © 2025 Edan M.");
@@ -424,10 +340,6 @@ void main() {
         exit(1);
     }
 
-    // Timestamp the start of the compile (lex + parse) phase so the final
-    // "compilation successful" line can report how long compilation took.
-    int interpStartTick = GetTickCount();
-
     string inputSource = "";
     if (isProjectPath(filename)) {
         inputSource = loadProjectSource(filename);
@@ -441,11 +353,7 @@ void main() {
     // Resolve `import * from <module>` statements by prepending the module
     // source (like the compiler driver does) so its classes, constants and
     // functions are registered before the user source runs.
-    // Snapshot the resolved import module names before prepending so the
-    // --cache-bytecode progress reporter can list each one.
-    string[] importModules = listImportModules(inputSource, filename);
     inputSource = resolveImports(inputSource, filename);
-    int interpModuleCount = 1 + importModules.length;
 
     Token[] tokens;
     int[] lineLens = [];
@@ -464,21 +372,8 @@ void main() {
             cacheProject = "silveri_default";
         }
         CacheSession cache = new CacheSession(cacheRoot, cacheProject);
-        int totalModules = 1 + importModules.length;
-        ProgressReporter progress = new ProgressReporter(totalModules);
         tokens = cache.tokensFor(filename, inputSource);
-        // Entry module done once it has been lexed through the cache; imported
-        // modules are reported in resolution order (mirrors the compilers).
-        progress.moduleDone(filename);
-        for (int mi = 0; mi < importModules.length; mi++) {
-            progress.moduleDone(importModules[mi]);
-        }
-        progress.finish();
-        // Cache-flush phase: the success line (below) prints only after the
-        // bytecode cache session has been flushed to disk.
-        progress.phaseCache();
         cache.flush();
-        progress.cacheDone(cache.statsDirty(), cache.statsTotal());
         // Compute line lengths from the source for bracket diagnostics.
         int current = 0;
         for (int i = 0; i < inputSource.length; i++) {
@@ -506,13 +401,6 @@ void main() {
     if (p.errorCount() > 0) {
         exit(1);
     }
-
-    // Compilation (lex + parse) succeeded; report on STDERR so stdout stays
-    // clean for program output. The elapsed time covers only the compile
-    // phase, not the execution that follows.
-    int compileMs = GetTickCount() - interpStartTick;
-    int compileSecs = compileMs / 1000;
-    eprintln("compilation successful: " + filename + " (" + interpModuleCount.toString() + " modules, " + formatDuration(compileSecs) + ")");
 
     Evaluator evaluator = new Evaluator();
     string[] userCargs = [];
