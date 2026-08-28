@@ -32,6 +32,16 @@ class ProgressReporter {
         return this.processed;
     }
 
+    public int totalCount() {
+        return this.total;
+    }
+
+    public int elapsedMs() {
+        int ms = GetTickCount() - this.startTick;
+        if (ms < 0) { return 0; }
+        return ms;
+    }
+
     public void moduleDone(string name) {
         this.processed = this.processed + 1;
         if (this.enabled) {

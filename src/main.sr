@@ -16,6 +16,7 @@ import project;
 import guard;
 import cache;
 import progress;
+import * from win32.kernel32;
 
 // Native modules the interpreter provides without needing a source file.
 bool nativeModule(string name) {
@@ -423,6 +424,9 @@ void main() {
         exit(1);
     }
 
+    // Timestamp the start of the compile (lex + parse) phase so the final
+    // "compilation successful" line can report how long compilation took.
+    int interpStartTick = GetTickCount();
 
     string inputSource = "";
     if (isProjectPath(filename)) {
@@ -441,6 +445,7 @@ void main() {
     // --cache-bytecode progress reporter can list each one.
     string[] importModules = listImportModules(inputSource, filename);
     inputSource = resolveImports(inputSource, filename);
+    int interpModuleCount = 1 + importModules.length;
 
     Token[] tokens;
     int[] lineLens = [];
@@ -497,6 +502,13 @@ void main() {
     if (p.errorCount() > 0) {
         exit(1);
     }
+
+    // Compilation (lex + parse) succeeded; report on STDERR so stdout stays
+    // clean for program output. The elapsed time covers only the compile
+    // phase, not the execution that follows.
+    int compileMs = GetTickCount() - interpStartTick;
+    int compileSecs = compileMs / 1000;
+    eprintln("compilation successful: " + filename + " (" + interpModuleCount.toString() + " modules, " + formatDuration(compileSecs) + ")");
 
     Evaluator evaluator = new Evaluator();
     string[] userCargs = [];
