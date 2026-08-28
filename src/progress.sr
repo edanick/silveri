@@ -56,6 +56,22 @@ class ProgressReporter {
         writeStderr(this.percentOf(total).toString() + "% done\n");
     }
 
+    // Cache-flush phase start: printed before the bytecode cache session is
+    // flushed (`--cache-bytecode`).
+    public void phaseCache() {
+        if (this.enabled) {
+            writeStderr("syncing bytecode cache...\n");
+        }
+    }
+
+    // Cache-flush phase end: `cache: K/M files re-cached` — K files whose
+    // bytecode was rewritten this run, M files the cache tracks in total.
+    public void cacheDone(int recached, int total) {
+        if (this.enabled) {
+            writeStderr("cache: " + recached.toString() + "/" + total.toString() + " files re-cached\n");
+        }
+    }
+
     private void printLine(string name) {
         int total = this.total;
         if (total < this.processed) { total = this.processed; }

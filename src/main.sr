@@ -474,7 +474,11 @@ void main() {
             progress.moduleDone(importModules[mi]);
         }
         progress.finish();
+        // Cache-flush phase: the success line (below) prints only after the
+        // bytecode cache session has been flushed to disk.
+        progress.phaseCache();
         cache.flush();
+        progress.cacheDone(cache.statsDirty(), cache.statsTotal());
         // Compute line lengths from the source for bracket diagnostics.
         int current = 0;
         for (int i = 0; i < inputSource.length; i++) {
