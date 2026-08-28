@@ -361,7 +361,10 @@ string loadProjectSource(string projectPath) {
 
     string body = "";
     for (int k = 0; k < files.length; k = k + 1) {
-        body = body + fs.readFile(files[k]) + "\n";
+        // Read into a local first: a chained `x = x + f() + "lit"` concat
+        // with the call in the middle miscompiles and corrupts x.
+        string content = fs.readFile(files[k]);
+        body = body + content + "\n";
     }
 
     // `.qs` libraries listed under `imports` are not auto-imported: declaring
