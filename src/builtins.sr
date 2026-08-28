@@ -706,6 +706,13 @@ class BuiltinMethods {
         }
         if (method == "toFloat") { return makeFloat(valueToFloat(n)); }
         if (method == "toInt") { return makeInt(n.toInt()); }
+        if (method == "parse") {
+            // DOCS/113 -- numeric parse on a number receiver (`0.parse("30")`).
+            // Strings parse via strtoll/strtod; a non-string arg is a no-op.
+            string s = args.length > 0 && args[0].tag == VAL_STRING ? args[0].strVal : "";
+            if (n.tag == VAL_FLOAT) { return makeFloat(floatStrToF64(s)); }
+            return makeInt(strToInt64Safe(s));
+        }
         printline("Runtime error: unknown number method '" + method + "'");
         return makeNull();
     }
@@ -791,19 +798,11 @@ class BuiltinMethods {
             if (args.length > 0) { data = args[0].strVal; }
             if (method == "djb2" || method == "djb2File") {
                 if (method == "djb2File") { data = file.readString(data); }
-                int64 result = 5381;
-                for (int i = 0; i < data.length; i++) { result = result * 33 + data[i]; }
-                return makeInt(result);
+                return makeInt(djb2Hash(data));
             }
             if (method == "fnv1" || method == "fnv1File") {
                 if (method == "fnv1File") { data = file.readString(data); }
-                // FNV-1 offset basis represented in signed int64 form.
-                int64 result = -3750763034362891955;
-                for (int i = 0; i < data.length; i++) {
-                    result = result * 1099511628211;
-                    result = result ^ data[i];
-                }
-                return makeInt(result);
+                return makeInt(fnv1Hash(data));
             }
             return makeNull();
         }
@@ -1959,6 +1958,29 @@ private void writeStderrBuiltin(string msg) {
 // Float-to-int conversions use `int(...)` (cvttsd2si) and int-to-float use
 // `float64(...)` (cvtsi2sd), both recognized by the native compiler.
 // ---------------------------------------------------------------------------
+
+// djb2 / FNV-1 hashing (DOCS/80).  These live in free functions (mirroring
+// silverc/std/hash.sr) so the accumulation loop is emitted on a plain
+// function frame; inline in the static BuiltinMethods.moduleMethod the
+// compiled loop's result update was dropped.
+int64 djb2Hash(string data) {
+    int64 result = 5381;
+    for (int i = 0; i < data.length; i++) { result = result * 33 + int64(data[i]); }
+    return result;
+}
+
+int64 fnv1Hash(string data) {
+    // FNV-1 offset basis (0xcbf29ce484222325).  Spell it as the unsigned
+    // 64-bit literal, exactly like silverc/std/hash.sr: the signed form
+    // (-3750763034362891955) is truncated to int32 by the compiler's literal
+    // codegen and produces a wrong offset basis.
+    int64 result = 14695981039346656037;
+    for (int i = 0; i < data.length; i++) {
+        result = result * 1099511628211;
+        result = result ^ int64(data[i]);
+    }
+    return result;
+}
 
 // The module-level LCG state keeps successive math.random() calls different.
 // A mutable field on a global object (rather than a bare global scalar) is

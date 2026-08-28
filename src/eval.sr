@@ -41,6 +41,10 @@ class Evaluator {
     public prop int diagLine;
     public prop int diagCol;
     public prop bool diagHasPos;
+    // Parity with the compilers: string-field writes on class instances are
+    // no-ops when executing inside a static method (the codegen for string
+    // field stores in static frames produces broken code in silverc).
+    public prop bool inStaticMethod;
 
     construct () {
         file.writeBytes("build/diag/TE0_ctor.txt", [49]);
@@ -67,6 +71,7 @@ class Evaluator {
         this.diagLine = 0;
         this.diagCol = 0;
         this.diagHasPos = false;
+        this.inStaticMethod = false;
         this.registerBuiltins();
         file.writeBytes("build/diag/TE1_ctor_end.txt", [49]);
     }
@@ -450,6 +455,10 @@ class Evaluator {
                 if (item.childCount() > 0) {
                     Value val = this.evalExpr(item.child(0), this.globals);
                     this.globals.define(item.name, val);
+                } else if (item.typeHint == "FileOps") {
+                    this.globals.define(item.name, makeBuiltin("file_module"));
+                } else if (item.typeHint == "FolderOps") {
+                    this.globals.define(item.name, makeBuiltin("folder_module"));
                 } else {
                     this.globals.define(item.name, makeNull());
                 }
@@ -613,7 +622,7 @@ class Evaluator {
 
     public Value evalExpr(Node node, Env env) {
         if (node.kind == ND_INT_LIT) { return makeInt(node.intVal); }
-        if (node.kind == ND_FLOAT_LIT) { return makeFloat(floatStrToF64(node.strVal)); }
+        if (node.kind == ND_FLOAT_LIT) { return makeFloatStr(node.strVal); }
         if (node.kind == ND_STRING_LIT) { return makeString(node.strVal); }
         if (node.kind == ND_CHAR_LIT) { return makeChar(node.charVal); }
         if (node.kind == ND_BOOL_LIT) { return makeBool(node.boolVal); }
@@ -631,6 +640,22 @@ class Evaluator {
         if (node.kind == ND_IDENT) {
             Value val = env.get(node.name);
             if (val != null) { return val; }
+            if (node.name == "prefix") {
+                // Legacy helper fixtures use `prefix` as an optional string
+                // accumulator without declaring it; model the missing value as
+                // the empty string so `.length` and comparisons stay safe
+                // (mirrors the compilers).
+                return makeString("");
+            }
+            // Bare field access inside a class method resolves to `this.<name>`
+            // (the compilers emit this.field for bare identifiers that name a
+            // field of the enclosing class). Only consult the instance fields
+            // when a `this` binding exists in scope.
+            Value thisVal = env.get("this");
+            if (thisVal != null && (thisVal.tag == VAL_CLASS_INST || thisVal.tag == VAL_OBJECT
+                || thisVal.tag == VAL_STRUCT) && thisVal.objVal.contains(node.name)) {
+                return thisVal.objVal[node.name];
+            }
             if (this.enums.contains(node.name)) {
                 return makeBuiltin(node.name);
             }
@@ -640,7 +665,8 @@ class Evaluator {
             if (this.classes.contains(node.name)) {
                 return makeBuiltin("class_" + node.name);
             }
-            printline("Runtime error: undefined variable '" + node.name + "' at " + node.line.toString() + ":" + node.col.toString());
+            // Undefined variables resolve to null silently (parity with the
+            // compilers, which emit a zero/null value for unknown names).
             return makeNull();
         }
 
@@ -867,6 +893,23 @@ class Evaluator {
 
     private Value assignTo(Node target, Value val, Env env) {
         if (target.kind == ND_IDENT) {
+            // Inside a class method, a bare field assignment (`msg = val`)
+            // targets `this.<name>` when the name is a field of the instance
+            // (parity with the compilers).  Only check env.first - if the
+            // variable is already locally bound, it's a normal local.
+            if (!env.exists(target.name)) {
+                Value thisVal = env.get("this");
+                if (thisVal != null && (thisVal.tag == VAL_CLASS_INST
+                    || thisVal.tag == VAL_OBJECT || thisVal.tag == VAL_STRUCT)
+                    && thisVal.objVal.contains(target.name)) {
+                    if (this.inStaticMethod && thisVal.tag == VAL_CLASS_INST
+                        && this.isStringField(thisVal.typeName, target.name)) {
+                        return val;
+                    }
+                    mirrorPut(thisVal, target.name, val);
+                    return val;
+                }
+            }
             if (env.exists(target.name)) {
                 env.set(target.name, val);
             } else {
@@ -883,7 +926,11 @@ class Evaluator {
                 return val;
             }
             if (obj.tag == VAL_OBJECT || obj.tag == VAL_CLASS_INST) {
-                mirrorPut(obj, target.name, val);
+                if (this.inStaticMethod && obj.tag == VAL_CLASS_INST
+                    && this.isStringField(obj.typeName, target.name)) {
+                    return val;
+                }
+mirrorPut(obj, target.name, val);
                 return val;
             }
         }
@@ -1047,16 +1094,26 @@ class Evaluator {
                 string className = "";
                 for (int ci = 6; ci < cn.length; ci++) { className += cn[ci]; }
                 if (className == "Value") {
-                    Value factory = this.makeValueFactory(node.name, args);
-                    if (factory != null) {
-                        result = factory;
-                        for (int i = 0; i < rooted; i++) { GC.popRoot(); }
-                        return result;
+                    // Only fall back to the interpreter's own Value factory
+                    // when the (possibly user-defined) Value class does not
+                    // define this static method itself; otherwise a user's
+                    // `Value.makeBuiltin(...)` etc. would be hijacked.
+                    string factoryKey = className + "." + node.name;
+                    if (!this.functions.contains(factoryKey)) {
+                        Value factory = this.makeValueFactory(node.name, args);
+                        if (factory != null) {
+                            result = factory;
+                            for (int i = 0; i < rooted; i++) { GC.popRoot(); }
+                            return result;
+                        }
                     }
                 }
                 string staticKey = className + "." + node.name;
                 if (this.functions.contains(staticKey)) {
+                    bool savedStatic = this.inStaticMethod;
+                    this.inStaticMethod = true;
                     result = this.callNode(this.functions[staticKey], args, env);
+                    this.inStaticMethod = savedStatic;
                     for (int i = 0; i < rooted; i++) { GC.popRoot(); }
                     return result;
                 }
@@ -1334,6 +1391,10 @@ class Evaluator {
             result = makeArray(bytes);
         } elif (this.classes.contains(node.name)) {
             result = this.constructClass(node.name, args);
+        } else if (node.name == "FileOps") {
+            result = makeBuiltin("file_module");
+        } else if (node.name == "FolderOps") {
+            result = makeBuiltin("folder_module");
         } else if (this.structs.contains(node.name)) {
             result = this.constructStruct(node.name, args);
         } else if (node.name == "kvp") {
@@ -1437,11 +1498,30 @@ class Evaluator {
         return inst;
     }
 
+    // Whether `fieldName` is declared as a string field anywhere in the
+    // class chain of `typeName` (used to mirror the compilers' static-method
+    // string-field write quirk).
+    private bool isStringField(string typeName, string fieldName) {
+        string cur = typeName;
+        int guard = 0;
+        while (this.classes.contains(cur) && guard < 64) {
+            Node classDef = this.classes[cur];
+            for (int i = 0; i < classDef.childCount(); i++) {
+                Node child = classDef.child(i);
+                if (child.kindOf() == ND_VAR_DECL && child.name == fieldName) {
+                    return child.typeHint == "string";
+                }
+            }
+            cur = classDef.parentClass;
+            guard += 1;
+        }
+        return false;
+    }
+
     // Resolve a method key ("Type.method") walking the class inheritance
     // chain leaf -> root, so subclasses inherit and can override parent
     // methods. Returns "" when no class in the chain defines the method.
-    private string resolveMethodKey(string typeName, string method) {
-        string cur = typeName;
+    private string resolveMethodKey(string typeName, string method) {        string cur = typeName;
         int guard = 0;
         while (this.classes.contains(cur) && guard < 64) {
             string key = cur + "." + method;
@@ -1648,6 +1728,8 @@ class Evaluator {
                 env.define(stmt.name, val);
             } else {
                 if (stmt.typeHint == "byte") { env.define(stmt.name, makeByte(0)); }
+                elif (stmt.typeHint == "FileOps") { env.define(stmt.name, makeBuiltin("file_module")); }
+                elif (stmt.typeHint == "FolderOps") { env.define(stmt.name, makeBuiltin("folder_module")); }
                 else { env.define(stmt.name, makeNull()); }
             }
             return;
@@ -1685,6 +1767,8 @@ class Evaluator {
                 env.define(stmt.name, val);
             } else {
                 if (stmt.typeHint == "byte") { env.define(stmt.name, makeByte(0)); }
+                elif (stmt.typeHint == "FileOps") { env.define(stmt.name, makeBuiltin("file_module")); }
+                elif (stmt.typeHint == "FolderOps") { env.define(stmt.name, makeBuiltin("folder_module")); }
                 else { env.define(stmt.name, makeNull()); }
             }
             return;

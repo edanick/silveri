@@ -73,6 +73,8 @@ string readStdModule(string name, string inputFile, string selfSource) {
     paths.add("silverc\\std\\" + lower + ".sr");
     paths.add("..\\std\\" + lower + ".sr");
     paths.add("..\\silverc\\std\\" + lower + ".sr");
+    paths.add("..\\silveri\\src\\" + lower + ".sr");
+    paths.add("silveri\\src\\" + lower + ".sr");
     for (int i = 0; i < paths.length; i++) {
         // Skip the input file itself (same path spelling).
         if (paths[i].lower() == inputFile.lower()) { continue; }

@@ -125,7 +125,7 @@ class Value {
             char ch = this.charVal;
             return "" + ch;
         }
-        if (this.tag == VAL_NULL) { return "null"; }
+        if (this.tag == VAL_NULL) { return "(null)"; }
         if (this.tag == VAL_ARRAY) { return arrayToString(this.arrVal); }
         if (this.tag == VAL_TUPLE) { return "(" + arrayToString(this.arrVal) + ")"; }
         if (this.tag == VAL_OBJECT || this.tag == VAL_CLASS_INST) {
@@ -156,7 +156,7 @@ class Value {
         if (this.tag == VAL_BOOL) { return "bool"; }
         if (this.tag == VAL_STRING) { return "string"; }
         if (this.tag == VAL_CHAR) { return "char"; }
-        if (this.tag == VAL_NULL) { return "null"; }
+        if (this.tag == VAL_NULL) { return "(null)"; }
         if (this.tag == VAL_ARRAY) { return "array"; }
         if (this.tag == VAL_TUPLE) { return "tuple"; }
         if (this.tag == VAL_FUNC || this.tag == VAL_BUILTIN) { return "function"; }
@@ -321,6 +321,16 @@ Value makeFloat(float64 v) {
     Value val = GC.acquireValue();
     val.tag = VAL_FLOAT;
     val.strVal = v.toString();
+    return val;
+}
+
+// Create a float whose decimal string is the literal text from the source
+// (e.g. "3.14").  The runtime float64.toString() path truncates to %lld, so
+// float literals keep their exact spelling to print full precision.
+Value makeFloatStr(string s) {
+    Value val = GC.acquireValue();
+    val.tag = VAL_FLOAT;
+    val.strVal = s;
     return val;
 }
 

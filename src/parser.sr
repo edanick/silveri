@@ -2,7 +2,6 @@ mod export parser;
 
 import token;
 import lexer;
-import node;
 import ast;
 class Parser {
     private prop Token[] tokens;
@@ -1725,7 +1724,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
         if (k == TK_EQ || k == TK_NEQ) { return 4; }
         if (k == TK_LESS || k == TK_LEQ || k == TK_GREATER || k == TK_GEQ) { return 5; }
         if (k == TK_PIPE) { return 6; }
-        if (k == TK_AMP) { return 7; }
+        if (k == TK_AMP || k == TK_CARET) { return 7; }
         if (k == TK_SHL || k == TK_SHR) { return 8; }
         if (k == TK_PLUS || k == TK_MINUS) { return 9; }
         if (k == TK_STAR || k == TK_SLASH || k == TK_PERCENT) { return 10; }
@@ -2226,7 +2225,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
         if (op == OP_EQ || op == OP_NEQ) { return 4; }
         if (op == OP_LT || op == OP_LEQ || op == OP_GT || op == OP_GEQ) { return 5; }
         if (op == OP_BIT_OR) { return 6; }
-        if (op == OP_BIT_AND) { return 7; }
+        if (op == OP_BIT_AND || op == OP_BIT_XOR) { return 7; }
         if (op == OP_SHL || op == OP_SHR) { return 8; }
         if (op == OP_ADD || op == OP_SUB) { return 9; }
         if (op == OP_MUL || op == OP_DIV || op == OP_MOD) { return 10; }
@@ -2857,5 +2856,4 @@ string diagClosestMatch(string needle, string[] candidates) {
         }
     }
     return best;
-}
 }
