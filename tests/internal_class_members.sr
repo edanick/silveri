@@ -1,0 +1,47 @@
+// `internal` class members: internal: sections, public internal /
+// internal public combinations, star-private + internal, static methods.
+public class Person {
+    internal:
+    prop string secret;
+    prop int badge;
+    public:
+    prop string name;
+    public internal prop bool verified;
+    internal public prop bool flagged;
+    construct (string n) {
+        this.name = n;
+        this.secret = "s3cret";
+        this.badge = 7;
+        this.verified = true;
+        this.flagged = false;
+    }
+    internal int GetBadge() {
+        return this.badge;
+    }
+    internal:
+    static string Hide(string s) {
+        return "**" + s + "**";
+    }
+}
+
+class Widget {
+    internal * string serial;
+    construct () {
+        this.serial = "W-1";
+    }
+}
+
+void main() {
+    Person p = new Person("ed");
+    printline(p.name);
+    printline(p.secret.length.toString());
+    printline(p.GetBadge().toString());
+    printline(p.verified.toString());
+    printline(p.flagged.toString());
+    printline(Person.Hide("top").toString());
+    Widget w = new Widget();
+    printline(w.serial);
+    if (p.GetBadge() != 7) { exit(1); }
+    if (w.serial != "W-1") { exit(1); }
+    printline("members ok");
+}

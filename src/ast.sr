@@ -132,6 +132,7 @@ class Node {
     public prop bool isMut;
     public prop bool isPublic;
     public prop bool isStatic;
+    public prop bool isInternal;
     public prop bool isFixed;
     public prop bool isLive;
     public prop bool isOnce;
@@ -157,6 +158,7 @@ class Node {
         this.isMut = false;
         this.isPublic = true;
         this.isStatic = false;
+        this.isInternal = false;
         this.isFixed = false;
         this.isLive = false;
         this.isOnce = false;

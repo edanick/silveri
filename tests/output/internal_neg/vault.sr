@@ -1,0 +1,26 @@
+mod export vault;
+
+internal int treasure = 99;
+internal const int CODE = 7;
+public int openCount = 0;
+
+internal void Unlock() {
+    printline("unlocked");
+}
+
+internal class Key {
+    public prop string id;
+    construct (string i) {
+        this.id = i;
+    }
+}
+
+public class Box {
+    internal prop string contents;
+    construct () {
+        this.contents = "gold";
+    }
+    public string Peek() {
+        return this.contents;
+    }
+}

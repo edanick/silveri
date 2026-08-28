@@ -1,0 +1,6 @@
+// Calls an internal function of the external vault module: runtime error.
+import * from vault;
+
+void main() {
+    Unlock();
+}

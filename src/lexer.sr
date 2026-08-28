@@ -552,6 +552,7 @@ int keywordKind(string s) {
     if (s == "public") { return TK_PUBLIC; }
     if (s == "private") { return TK_PRIVATE; }
     if (s == "static") { return TK_STATIC; }
+    if (s == "internal") { return TK_INTERNAL; }
     if (s == "prop") { return TK_PROP; }
     if (s == "construct") { return TK_CONSTRUCT; }
     if (s == "unset") { return TK_UNSET; }

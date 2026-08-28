@@ -1,0 +1,10 @@
+// Control: only the public surface of the external vault module is touched.
+import * from vault;
+
+void main() {
+    Box b = new Box();
+    printline(b.Peek());
+    openCount++;
+    printline(openCount.toString());
+    printline("public ok");
+}

@@ -1,0 +1,7 @@
+// Instantiates an internal class of the external vault module: runtime error.
+import * from vault;
+
+void main() {
+    Key k = new Key("k1");
+    printline(k.id);
+}

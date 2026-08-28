@@ -1,0 +1,8 @@
+// Reads an internal prop on an instance of the external vault's public
+// class: runtime error.
+import * from vault;
+
+void main() {
+    Box b = new Box();
+    printline(b.contents);
+}

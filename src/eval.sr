@@ -45,6 +45,19 @@ class Evaluator {
     // no-ops when executing inside a static method (the codegen for string
     // field stores in static frames produces broken code in silverc).
     public prop bool inStaticMethod;
+    // `internal` project-boundary enforcement. projectBoundaryLine is the
+    // 1-based line where the project's own sources begin in the flattened
+    // program (0 = no external modules were prepended, nothing enforced).
+    // internalOwner maps registry keys (function name, "mod.name",
+    // "Class.member", class name, global name) to the declaring module for
+    // items that are internal to an EXTERNAL module; a present-but-empty
+    // value marks the key as explicitly not-internal (e.g. a project class
+    // overwriting an external one).
+    public prop int projectBoundaryLine;
+    public prop dict<string, string> internalOwner;
+    public prop dict<string, bool> projectFnNames;
+    public prop dict<string, bool> projectGlobalNames;
+    public prop string[] internalExportedModules;
 
     construct () {
         file.writeBytes("build/diag/TE0_ctor.txt", [49]);
@@ -72,6 +85,11 @@ class Evaluator {
         this.diagCol = 0;
         this.diagHasPos = false;
         this.inStaticMethod = false;
+        this.projectBoundaryLine = 0;
+        this.internalOwner = {};
+        this.projectFnNames = {};
+        this.projectGlobalNames = {};
+        this.internalExportedModules = [];
         this.registerBuiltins();
         file.writeBytes("build/diag/TE1_ctor_end.txt", [49]);
     }
@@ -88,6 +106,121 @@ class Evaluator {
         }
         this.scriptCargs = makeArray(items);
         this.globals.define("cargs", this.scriptCargs);
+    }
+
+    // ------------------------------------------------------------------
+    // `internal` visibility — project-boundary enforcement (DOCS/258
+    // semantics, mirroring silverc-rs src/visibility.rs and the self-hosted
+    // compiler/visibility.sr). The interpreter flattens every source into
+    // one program: external module sources prepended by the driver, then the
+    // project's own sources. Items parsed before the boundary line belong to
+    // external modules; their `internal` items are marked here at
+    // registration and rejected when project code touches them.
+    // ------------------------------------------------------------------
+
+    public void setProjectBoundary(int line) {
+        this.projectBoundaryLine = line;
+    }
+
+    // True when the item's declaration sits in an external module's source.
+    private bool isExternalItem(Node item) {
+        return this.projectBoundaryLine > 0 && item.line < this.projectBoundaryLine;
+    }
+
+    // True when the access site belongs to the project's own sources and
+    // must be checked. Usages inside external module code keep full access
+    // to their own internals (mirrors the compilers).
+    private bool accessIsProject(Node at) {
+        return this.projectBoundaryLine > 0 && at.line >= this.projectBoundaryLine;
+    }
+
+    // Record `key` as internal-to-external-module when the declaration is
+    // internal and external; an external-origin declaration that is NOT
+    // internal clears the mark (class definitions overwrite, so a project
+    // redeclaration must unmark).
+    private void markInternal(string key, bool ext, bool isInternal) {
+        if (!isInternal) { return; }
+        if (!ext) { return; }
+        if (this.internalOwner.contains(key) && this.internalOwner[key].length > 0) { return; }
+        this.internalOwner[key] = this.currentModule;
+    }
+
+    private void unmarkInternal(string key) {
+        this.internalOwner[key] = "";
+    }
+
+    private void addInternalExportedModule(string name) {
+        string lower = name.lower();
+        for (int i = 0; i < this.internalExportedModules.length; i++) {
+            if (this.internalExportedModules[i] == lower) { return; }
+        }
+        this.internalExportedModules.add(lower);
+    }
+
+    private bool isInternalExportedModule(string name) {
+        string lower = name.lower();
+        for (int i = 0; i < this.internalExportedModules.length; i++) {
+            if (this.internalExportedModules[i] == lower) { return true; }
+        }
+        return false;
+    }
+
+    // `` `x` is internal to project `mod` and cannot be used here `` — the
+    // diagnostic format shared with silverc-rs and the self-hosted compiler.
+    private void internalAccessError(string name, string owner, Node at) {
+        if (owner.length == 0) { owner = "module"; }
+        printline("Runtime error: `" + name + "` is internal to project `" + owner + "` and cannot be used here, at line " + at.line.toString() + ", column " + at.col.toString());
+        exit(1);
+    }
+
+    // Registry lookup by key ("name", "mod.name", "Class.member"): reject
+    // when the key was marked internal to an external module.
+    private void checkInternalUse(string key, string displayName, string fallbackOwner, Node at) {
+        if (!this.accessIsProject(at)) { return; }
+        if (!this.internalOwner.contains(key)) { return; }
+        string owner = this.internalOwner[key];
+        if (owner.length == 0) { return; }
+        this.internalAccessError(displayName, owner, at);
+    }
+
+    // Instantiation/reference of an internal class or struct.
+    private void checkInternalClassUse(string name, Node at) {
+        this.checkInternalUse(name, name, "", at);
+    }
+
+    // Plain-name call of an internal function: the project-shadow rule
+    // applies (a project declaration of the same name wins the flat
+    // namespace, mirroring silverc's project_decl_names check).
+    private void checkInternalFnName(string name, Node at) {
+        if (!this.accessIsProject(at)) { return; }
+        if (this.projectFnNames.contains(name)) { return; }
+        if (!this.internalOwner.contains(name)) { return; }
+        string owner = this.internalOwner[name];
+        if (owner.length == 0) { return; }
+        this.internalAccessError(name, owner, at);
+    }
+
+    // Unqualified read of an internal global/const. Local bindings shadow
+    // the global, so they are never flagged.
+    private void checkInternalGlobalName(string name, Env env, Node at) {
+        if (!this.accessIsProject(at)) { return; }
+        if (this.envBindsLocally(env, name)) { return; }
+        if (this.projectGlobalNames.contains(name)) { return; }
+        if (!this.internalOwner.contains(name)) { return; }
+        string owner = this.internalOwner[name];
+        if (owner.length == 0) { return; }
+        this.internalAccessError(name, owner, at);
+    }
+
+    // True when `name` resolves to a binding in a non-root env (a local or
+    // parameter), so the identifier read must not be treated as a global.
+    private bool envBindsLocally(Env env, string name) {
+        Env e = env;
+        while (e != null) {
+            if (e.vars.contains(name)) { return e.parent != null; }
+            e = e.parent;
+        }
+        return false;
     }
 
     private void maybeGC(Env env) {
@@ -390,6 +523,7 @@ class Evaluator {
     }
 
     private void registerItem(Node item) {
+        bool ext = this.isExternalItem(item);
         if (item.kind == ND_IMPORT) {
             // DOCS/213 -- grant access to the imported win32 DLL modules.
             this.registerWin32Import(item);
@@ -405,23 +539,46 @@ class Evaluator {
                 if (item.isPublic) {
                     this.globals.define(item.name, makeFunc(item.name));
                 }
+                if (item.isInternal && ext) {
+                    this.markInternal(item.name, true, true);
+                }
+                if (!ext) {
+                    this.projectFnNames[item.name] = true;
+                }
             }
             if (this.currentModule != "") {
                 string moduleKey = this.currentModule + "." + item.name;
                 if (!this.functions.contains(moduleKey)) {
                     this.functions[moduleKey] = item;
+                    if (item.isInternal && ext) {
+                        this.markInternal(moduleKey, true, true);
+                    }
                 }
             }
         }
         if (item.kind == ND_STRUCT_DEF) {
             this.structs[item.name] = item;
+            if (ext) {
+                this.markInternal(item.name, true, item.isInternal);
+            } else {
+                this.unmarkInternal(item.name);
+            }
         }
         if (item.kind == ND_CLASS_DEF) {
             this.classes[item.name] = item;
+            if (ext) {
+                this.markInternal(item.name, true, item.isInternal);
+            } else {
+                this.unmarkInternal(item.name);
+            }
             for (int i = 0; i < item.childCount(); i++) {
                 Node child = item.child(i);
                 if (child.kind == ND_FUNC) {
                     this.functions[item.name + "." + child.name] = child;
+                    this.markInternal(item.name + "." + child.name, ext, child.isInternal);
+                }
+                if (child.kind == ND_VAR_DECL && child.isInternal) {
+                    this.markInternal(item.name + "." + child.name, ext, true);
                 }
             }
         }
@@ -433,11 +590,24 @@ class Evaluator {
             if (item.strVal == "export") {
                 this.currentModule = item.name;
                 this.globals.define(item.name, makeBuiltin("module_" + item.name));
+                if (item.isInternal && ext) {
+                    this.addInternalExportedModule(item.name);
+                }
             }
         }
         if (item.kind == ND_CONST && item.childCount() > 0) {
             Value val = this.evalExpr(item.child(0), this.globals);
             this.globals.define(item.name, val);
+            this.markInternal(item.name, ext, item.isInternal);
+            if (!ext) {
+                this.projectGlobalNames[item.name] = true;
+            }
+        }
+        if (item.kind == ND_VAR_DECL) {
+            this.markInternal(item.name, ext, item.isInternal);
+            if (!ext) {
+                this.projectGlobalNames[item.name] = true;
+            }
         }
     }
 
@@ -639,7 +809,10 @@ class Evaluator {
 
         if (node.kind == ND_IDENT) {
             Value val = env.get(node.name);
-            if (val != null) { return val; }
+            if (val != null) {
+                this.checkInternalGlobalName(node.name, env, node);
+                return val;
+            }
             if (node.name == "prefix") {
                 // Legacy helper fixtures use `prefix` as an optional string
                 // accumulator without declaring it; model the missing value as
@@ -660,9 +833,11 @@ class Evaluator {
                 return makeBuiltin(node.name);
             }
             if (this.structs.contains(node.name)) {
+                this.checkInternalClassUse(node.name, node);
                 return makeBuiltin("struct_" + node.name);
             }
             if (this.classes.contains(node.name)) {
+                this.checkInternalClassUse(node.name, node);
                 return makeBuiltin("class_" + node.name);
             }
             // Undefined variables resolve to null silently (parity with the
@@ -926,6 +1101,7 @@ class Evaluator {
                 return val;
             }
             if (obj.tag == VAL_OBJECT || obj.tag == VAL_CLASS_INST) {
+                this.checkInternalUse(obj.typeName + "." + target.name, target.name, obj.typeName, target);
                 if (this.inStaticMethod && obj.tag == VAL_CLASS_INST
                     && this.isStringField(obj.typeName, target.name)) {
                     return val;
@@ -1002,6 +1178,7 @@ mirrorPut(obj, target.name, val);
             else { result = makeArray([]); }
         } else if (this.functions.contains(node.name)) {
             // TYPE_EXCEPTIONS.md — chained parameter type mismatches.
+            this.checkInternalFnName(node.name, node);
             this.checkCallParamTypes(node, args);
             if (!this.hasThrown) {
                 result = this.callNodeWithRefs(this.functions[node.name], args, env, refNames);
@@ -1016,8 +1193,10 @@ mirrorPut(obj, target.name, val);
                 result = callBuiltin(globalFn.funcName, args);
             }
         } else if (this.classes.contains(node.name)) {
+            this.checkInternalClassUse(node.name, node);
             result = this.constructClass(node.name, args);
         } else if (this.structs.contains(node.name)) {
+            this.checkInternalClassUse(node.name, node);
             result = this.constructStruct(node.name, args);
         } else {
             printline("Runtime error: undefined function '" + node.name + "'");
@@ -1081,6 +1260,7 @@ mirrorPut(obj, target.name, val);
         if (receiver.tag == VAL_CLASS_INST) {
             string methodKey = this.resolveMethodKey(receiver.typeName, node.name);
             if (this.functions.contains(methodKey)) {
+                this.checkInternalUse(methodKey, node.name, receiver.typeName, node);
                 Value[] methodArgs = [receiver];
                 foreach (Value a in args) { methodArgs.add(a); }
                 result = this.callNode(this.functions[methodKey], methodArgs, env);
@@ -1110,6 +1290,7 @@ mirrorPut(obj, target.name, val);
                 }
                 string staticKey = className + "." + node.name;
                 if (this.functions.contains(staticKey)) {
+                    this.checkInternalUse(staticKey, node.name, className, node);
                     bool savedStatic = this.inStaticMethod;
                     this.inStaticMethod = true;
                     result = this.callNode(this.functions[staticKey], args, env);
@@ -1122,6 +1303,12 @@ mirrorPut(obj, target.name, val);
                 string moduleName = "";
                 for (int mi = 7; mi < cn.length; mi++) { moduleName += cn[mi]; }
                 string modKey = moduleName + "." + node.name;
+                if (this.accessIsProject(node)) {
+                    if (this.isInternalExportedModule(moduleName)) {
+                        this.internalAccessError(node.name, moduleName, node);
+                    }
+                }
+                this.checkInternalUse(modKey, node.name, moduleName, node);
                 if (this.functions.contains(modKey)) {
                     result = this.callNode(this.functions[modKey], args, env);
                     for (int i = 0; i < rooted; i++) { GC.popRoot(); }
@@ -1301,12 +1488,16 @@ mirrorPut(obj, target.name, val);
         string member = node.name;
 
         if (obj.tag == VAL_CLASS_INST || obj.tag == VAL_OBJECT || obj.tag == VAL_STRUCT) {
+            this.checkInternalUse(obj.typeName + "." + member, member, obj.typeName, node);
             if (obj.objVal.contains(member)) {
                 return obj.objVal[member];
             }
             if (obj.tag == VAL_CLASS_INST && this.classes.contains(obj.typeName)) {
                 string key = this.resolveMethodKey(obj.typeName, member);
-                if (key.length > 0) { return makeFunc(key); }
+                if (key.length > 0) {
+                    this.checkInternalUse(key, member, obj.typeName, node);
+                    return makeFunc(key);
+                }
             }
         }
         if (obj.tag == VAL_ENUM_VAL) {
@@ -1357,6 +1548,12 @@ mirrorPut(obj, target.name, val);
                 string moduleName = "";
                 for (int mi = 7; mi < obj.funcName.length; mi++) { moduleName += obj.funcName[mi]; }
                 string modKey = moduleName + "." + member;
+                if (this.accessIsProject(node)) {
+                    if (this.isInternalExportedModule(moduleName)) {
+                        this.internalAccessError(member, moduleName, node);
+                    }
+                }
+                this.checkInternalUse(modKey, member, moduleName, node);
                 if (this.functions.contains(modKey)) {
                     return makeFunc(modKey);
                 }
@@ -1390,12 +1587,14 @@ mirrorPut(obj, target.name, val);
             }
             result = makeArray(bytes);
         } elif (this.classes.contains(node.name)) {
+            this.checkInternalClassUse(node.name, node);
             result = this.constructClass(node.name, args);
         } else if (node.name == "FileOps") {
             result = makeBuiltin("file_module");
         } else if (node.name == "FolderOps") {
             result = makeBuiltin("folder_module");
         } else if (this.structs.contains(node.name)) {
+            this.checkInternalClassUse(node.name, node);
             result = this.constructStruct(node.name, args);
         } else if (node.name == "kvp") {
             result = makeDict({});

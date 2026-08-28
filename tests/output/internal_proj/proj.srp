@@ -1,0 +1,9 @@
+{
+    name: "internalproj",
+    version: "1.0.0",
+    entry: "main.sr",
+    sources: [
+        "helpers.sr"
+    ],
+    output: "out.exe"
+}

@@ -1,0 +1,11 @@
+// Same-project internal usage across the manifest's two source files: the
+// helpers module's internal items stay fully usable from the entry file.
+void main() {
+    printline(helpers.Pub(3).toString());
+    printline(Scale(4).toString());
+    printline(base.toString());
+    printline(helpers.Scale(2).toString());
+    if (Scale(4) != 20) { exit(1); }
+    if (helpers.Pub(3) != 15) { exit(1); }
+    printline("project ok");
+}

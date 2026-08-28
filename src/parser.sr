@@ -34,6 +34,10 @@ class Parser {
     private bool win32AllModules;
     private string[] win32OpenModules;
     private string[] win32GrantNames;
+    // Set when a top-level `internal` modifier was peeled; attached to the
+    // next parsed item (functions, var decls, consts, structs, classes,
+    // defs, `mod export`).
+    private bool pendingInternal;
 
     construct (Token[] toks) {
         file.writeBytes("build/diag/TP_c.txt", [49]);
@@ -53,6 +57,7 @@ class Parser {
         this.win32AllModules = false;
         this.win32OpenModules = [];
         this.win32GrantNames = [];
+        this.pendingInternal = false;
     }
 
     public int errorCount() {
@@ -129,6 +134,7 @@ class Parser {
         cands.add("export"); cands.add("import"); cands.add("from"); cands.add("as");
         cands.add("new"); cands.add("const"); cands.add("true"); cands.add("false");
         cands.add("null"); cands.add("public"); cands.add("private"); cands.add("static");
+        cands.add("internal");
         cands.add("prop"); cands.add("construct"); cands.add("unset"); cands.add("local");
         cands.add("alias"); cands.add("fixed"); cands.add("live"); cands.add("once");
         cands.add("shared"); cands.add("mut"); cands.add("ref"); cands.add("try");
@@ -338,6 +344,22 @@ private Node? parseItem() {
             this.advance();
             return this.parseItem();
         }
+        if (this.check(TK_INTERNAL)) {
+            // Record the project-bound visibility modifier and attach it to
+            // whatever declaration follows.
+            this.advance();
+            this.pendingInternal = true;
+            return this.parseItem();
+        }
+        Node? item = this.parseItemBody();
+        if (item != null && this.pendingInternal) {
+            item.isInternal = true;
+        }
+        this.pendingInternal = false;
+        return item;
+    }
+
+    private Node? parseItemBody() {
         if (this.check(TK_MOD)) { return this.parseModule(); }
         if (this.check(TK_IMPORT)) { return this.parseImport(); }
         if (this.check(TK_CONST)) { return this.parseConst(); }
@@ -592,18 +614,28 @@ private Node? parseItem() {
         n.name = name;
         n.parentClass = parent;
         this.registerDeclaredType(name);
+        bool sectionInternal = false;
         while (!this.check(TK_RBRACE) && !this.check(TK_EOF)) {
             if (this.check(TK_PUBLIC) && this.pos + 1 < this.tokens.length && this.tokens[this.pos + 1].kind == TK_COLON) {
-                this.advance(); this.advance(); continue;
+                this.advance(); this.advance(); sectionInternal = false; continue;
             }
             if (this.check(TK_PRIVATE) && this.pos + 1 < this.tokens.length && this.tokens[this.pos + 1].kind == TK_COLON) {
-                this.advance(); this.advance(); continue;
+                this.advance(); this.advance(); sectionInternal = false; continue;
+            }
+            if (this.check(TK_INTERNAL) && this.pos + 1 < this.tokens.length && this.tokens[this.pos + 1].kind == TK_COLON) {
+                this.advance(); this.advance(); sectionInternal = true; continue;
             }
             bool isPub = true;
             bool isStat = false;
-            if (this.check(TK_PUBLIC)) { this.advance(); isPub = true; }
-            elif (this.check(TK_PRIVATE)) { this.advance(); isPub = false; }
-            if (this.check(TK_STATIC)) { this.advance(); isStat = true; }
+            bool isInt = sectionInternal;
+            bool sawModifier = true;
+            while (sawModifier) {
+                sawModifier = false;
+                if (this.check(TK_PUBLIC)) { this.advance(); isPub = true; sectionInternal = false; sawModifier = true; }
+                elif (this.check(TK_PRIVATE)) { this.advance(); isPub = false; sectionInternal = false; sawModifier = true; }
+                elif (this.check(TK_INTERNAL)) { this.advance(); isInt = true; sawModifier = true; }
+                elif (this.check(TK_STATIC)) { this.advance(); isStat = true; sawModifier = true; }
+            }
             if (this.check(TK_DEF)) {
                 this.advance();
                 int dln = this.line(); int dc = this.col();
@@ -611,6 +643,7 @@ private Node? parseItem() {
                     Node ctor = this.parseConstructor(name);
                     ctor.isPublic = isPub;
                     ctor.isStatic = isStat;
+                    ctor.isInternal = isInt;
                     n.addChild(ctor);
                     continue;
                 }
@@ -628,6 +661,7 @@ private Node? parseItem() {
                 fn.typeHint = retType;
                 fn.isPublic = isPub;
                 fn.isStatic = isStat;
+                fn.isInternal = isInt;
                 fn.addChild(params);
                 if (this.check(TK_SHL)) {
                     this.advance();
@@ -649,6 +683,7 @@ private Node? parseItem() {
                 Node ctor = this.parseConstructor(name);
                 ctor.isPublic = isPub;
                 ctor.isStatic = isStat;
+                ctor.isInternal = isInt;
                 n.addChild(ctor);
                 continue;
             }
@@ -661,6 +696,7 @@ private Node? parseItem() {
                 field.name = fieldName;
                 field.typeHint = typ;
                 field.isPublic = isPub;
+                field.isInternal = isInt;
                 n.addChild(field);
                 continue;
             }
@@ -673,6 +709,7 @@ private Node? parseItem() {
                 field.name = fieldName;
                 field.typeHint = typ;
                 field.isPublic = false;
+                field.isInternal = isInt;
                 n.addChild(field);
                 continue;
             }
@@ -680,7 +717,7 @@ private Node? parseItem() {
                 string retType = this.parseTypeStr();
                 string mname = this.expectIdent();
                 if (this.check(TK_LPAREN)) {
-                    Node fn = this.parseFunctionDef(isPub, isStat, retType, mname);
+                    Node fn = this.parseFunctionDef(isPub, isStat, isInt, retType, mname);
                     if (!isStat) {
                         this.prependThisParam(fn, name);
                     }
@@ -691,6 +728,7 @@ private Node? parseItem() {
                     field.name = mname;
                     field.typeHint = retType;
                     field.isPublic = isPub;
+                    field.isInternal = isInt;
                     n.addChild(field);
                 }
                 continue;
@@ -794,7 +832,7 @@ private Node parseFunctionOrVarDecl() {
     string name = this.expectIdent();
     this.knownIdents.add(name);
     if (this.check(TK_LPAREN)) {
-        Node fn = this.parseFunctionDef(isPub, isStat, retType, name);
+        Node fn = this.parseFunctionDef(isPub, isStat, false, retType, name);
         return fn;
         }
         Node init = new Node(ND_NULL_LIT, ln, c);
@@ -815,7 +853,7 @@ private Node parseFunctionOrVarDecl() {
         return n;
     }
 
-private Node parseFunctionDef(bool isPub, bool isStat, string retType, string name) {
+private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retType, string name) {
     int ln = this.line(); int c = this.col();
     Token openParen = this.peek();
     this.expect(TK_LPAREN);
@@ -832,6 +870,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
         n.typeHint = retType;
         n.isPublic = isPub;
         n.isStatic = isStat;
+        n.isInternal = isInt;
         n.addChild(params);
         // TYPE_EXCEPTIONS.md — remember this signature for call-arg checks.
         this.recordSignature(n.name, params);
@@ -924,7 +963,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, string retType, string na
         // class/type name (e.g. `Spinner dots() { ... }`), not a variable
         // declaration.
         if (this.check(TK_LPAREN)) {
-            return this.parseFunctionDef(false, false, typeName, name);
+            return this.parseFunctionDef(false, false, false, typeName, name);
         }
         Node init = new Node(ND_NULL_LIT, ln, c);
         if (this.check(TK_ASSIGN)) {

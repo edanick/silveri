@@ -1,0 +1,50 @@
+// `internal` visibility: every item is project-internal and the program IS
+// the project, so everything stays fully usable (single-file positive).
+internal class Vehicle {
+    public internal prop string Name;
+    construct (string n) {
+        this.Name = n;
+    }
+    internal void Describe() {
+        printline("Vehicle " + this.Name);
+    }
+}
+
+public class Person {
+    public internal prop bool verified;
+    construct () {
+        this.verified = true;
+    }
+}
+
+internal int counter = 2;
+internal bool skip = false;
+internal const int LIMIT = 10;
+
+internal void bump() {
+    counter++;
+}
+
+internal mod export helpers;
+
+internal void shout(string msg) {
+    printline(msg.upper());
+}
+
+void main() {
+    Vehicle v = new Vehicle("sedan");
+    v.Describe();
+    printline(v.Name);
+    Person p = new Person();
+    printline(p.verified.toString());
+    bump();
+    bump();
+    printline(counter.toString());
+    printline(skip.toString());
+    printline(LIMIT.toString());
+    shout("hey");
+    helpers.shout("qualified");
+    if (counter != 4) { exit(1); }
+    if (v.Name != "sedan") { exit(1); }
+    printline("internal ok");
+}

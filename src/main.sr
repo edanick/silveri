@@ -136,7 +136,11 @@ int[] diagSourceLoc(string src, int off) {
 // std/<module>.sr content for non-native modules. Native modules are
 // handled directly by the interpreter and must not be loaded from disk.
 // Unknown modules are reported with SYNTAX_EXCEPTIONS.md diagnostics.
-string resolveImports(string source, string inputFile) {
+// The total length of the prepended region is reported through
+// prependLen[0] so the evaluator knows where the project's own sources
+// begin (the `internal` visibility boundary).
+string resolveImports(string source, string inputFile, int[] prependLen) {
+    if (prependLen.length == 0) { prependLen.add(0); } else { prependLen[0] = 0; }
     string prepend = "";
     bool badModule = false;
     int cursor = 0;
@@ -242,6 +246,7 @@ string resolveImports(string source, string inputFile) {
         combined = combined + plainPrepend + "\n";
     }
     if (combined.length > 0) {
+        prependLen[0] = combined.length;
         return combined + source;
     }
     return source;
@@ -353,7 +358,21 @@ void main() {
     // Resolve `import * from <module>` statements by prepending the module
     // source (like the compiler driver does) so its classes, constants and
     // functions are registered before the user source runs.
-    inputSource = resolveImports(inputSource, filename);
+    int[] prependLen = [];
+    inputSource = resolveImports(inputSource, filename, prependLen);
+
+    // `internal` visibility boundary: the first line of the project's own
+    // sources in the flattened program. Everything the driver prepended
+    // before it belongs to external modules whose internal items are off
+    // limits to project code.
+    int boundaryLine = 0;
+    if (prependLen.length > 0 && prependLen[0] > 0) {
+        int newlines = 0;
+        for (int bi = 0; bi < prependLen[0] && bi < inputSource.length; bi++) {
+            if (inputSource[bi] == '\n') { newlines++; }
+        }
+        boundaryLine = newlines + 1;
+    }
 
     Token[] tokens;
     int[] lineLens = [];
@@ -403,6 +422,7 @@ void main() {
     }
 
     Evaluator evaluator = new Evaluator();
+    evaluator.setProjectBoundary(boundaryLine);
     string[] userCargs = [];
     userCargs.add(filename);
     for (int i = 0; i < scriptArgs.length; i++) {

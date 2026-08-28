@@ -1,0 +1,11 @@
+mod export helpers;
+
+internal int base = 5;
+
+internal int Scale(int v) {
+    return v * base;
+}
+
+public int Pub(int v) {
+    return Scale(v);
+}
