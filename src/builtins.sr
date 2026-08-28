@@ -1970,11 +1970,10 @@ int64 djb2Hash(string data) {
 }
 
 int64 fnv1Hash(string data) {
-    // FNV-1 offset basis (0xcbf29ce484222325).  Spell it as the unsigned
-    // 64-bit literal, exactly like silverc/std/hash.sr: the signed form
-    // (-3750763034362891955) is truncated to int32 by the compiler's literal
-    // codegen and produces a wrong offset basis.
-    int64 result = 14695981039346656037;
+    // FNV-1 offset basis (0xcbf29ce484222325), spelled as the signed int64
+    // bit pattern: the unsigned decimal literal 14695981039346656037 exceeds
+    // the int64 literal range and is rejected by the parser.
+    int64 result = -3750763034362895579;
     for (int i = 0; i < data.length; i++) {
         result = result * 1099511628211;
         result = result ^ int64(data[i]);
