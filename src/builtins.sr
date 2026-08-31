@@ -231,7 +231,9 @@ class BuiltinMethods {
             int end = s.strVal.length;
             if (args.length > 1) { end = args[1].toInt().toInt(); if (end > s.strVal.length) { end = s.strVal.length; } }
             if (end <= start) { return makeString(""); }
-            return makeString(s.strVal.substr(start, end));
+            // substr(start, X) takes X = LENGTH, so slice's exclusive end
+            // must be converted to a length here (matches rs slice).
+            return makeString(s.strVal.substr(start, end - start));
         }
         if (method == "charAt") {
             if (args.length < 1) { return makeChar(' '); }
