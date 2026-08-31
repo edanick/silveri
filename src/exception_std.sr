@@ -1,5 +1,3 @@
-import * from win32.msvcrt;
-
 mod export exception_std;
 
 // The interpreter has no source-loader, so the exception hierarchy is

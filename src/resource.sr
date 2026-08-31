@@ -1,7 +1,6 @@
 mod export resource;
 
-import * from win32.kernel32;
-import * from win32.msvcrt;
+import resource_win;
 
 // ---------------------------------------------------------------------------
 // Adaptive resource layer — auto-adjust to the host machine.
@@ -18,7 +17,8 @@ import * from win32.msvcrt;
 // the buffer pointer straight across the boundary. The MEMORYSTATUSEX
 // dwLength member is primed to sizeof(MEMORYSTATUSEX) == 64 by copying a
 // single "@" (0x40) into the first byte after zeroing the buffer — the same
-// trick the self-hosted compiler's resource.sr relies on.
+// trick the self-hosted compiler's resource.sr relies on. The raw
+// kernel32/msvcrt calls live in the internal resource_win backend.
 // ---------------------------------------------------------------------------
 
 private int64 LOW_MEMORY_FLOOR = 1073741824; // 1 GiB
@@ -43,7 +43,7 @@ private int rsDword(string buf, int off) {
 // Logical processor count from GetSystemInfo (dwNumberOfProcessors).
 public int rsCpuThreadCount() {
     string buf = rsBuf(48);
-    GetSystemInfo(buf);
+    rwinSystemInfo(buf);
     int n = rsDword(buf, 32);
     if (n < 1) { n = 1; }
     return n;
@@ -55,9 +55,9 @@ public int rsCpuThreadCount() {
 // call; a failing call yields 0.
 private int64 rsRamField(int startOff) {
     string buf = rsBuf(64);
-    memset(buf, 0, 64);
-    lstrcpyA(buf, "@");
-    int ok = GlobalMemoryStatusEx(buf);
+    rwinZeroBuf(buf);
+    rwinPrimeBuf(buf);
+    int ok = rwinMemoryStatusEx(buf);
     if (ok == 0) { return 0; }
     int64 v = 0;
     for (int i = 0; i < 8; i++) {

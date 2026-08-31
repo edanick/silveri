@@ -1,0 +1,63 @@
+import * from win32.kernel32;
+import * from win32.msvcrt;
+
+internal mod export cache_win;
+
+// ---------------------------------------------------------------------------
+// cache_win - INTERNAL Windows backend of the interpreter's bytecode cache
+// (UNIFIED_CORE_LIBRARY.md phase 3).
+//
+// The raw kernel32/msvcrt primitives cache.sr cannot route through the
+// unified std live here and nowhere else: CREATE_ALWAYS file handles for the
+// streaming BcBinWriter/BcTextWriter append writers (the unified fs module
+// has no append bridge), the in-place lstrcatA/lstrcpyA text-buffer resets,
+// CreateDirectoryA for the cache-dir tree, and the msvcrt time(0) stamp
+// (no portable epoch-millis builtin exists; silverc's bcache.sr uses the
+// identical time(0)*1000 idiom). Env reads stay in cache.sr via unified
+// fs.getenv. The wrappers are one-to-one forwards, so bytes on disk and
+// stamps are identical to the pre-split direct calls.
+//
+// Everything in this file is project-internal: `internal mod export` plus
+// `internal` on every function keeps the backend from leaking to interpreted
+// user programs. The by-ref WriteFile byte counter stays inside cwinWrite.
+// ---------------------------------------------------------------------------
+
+// CREATE_ALWAYS handle for an artifact rewritten whole on change.
+internal int cwinCreateWrite(string path) {
+    return CreateFileA(path, 0x40000000, 0, null, 2, 0x80, 0);
+}
+
+// Append exactly n bytes of a string at the current handle offset; the
+// by-ref lpNumberOfBytesWritten out-param stays internal.
+internal void cwinWrite(int h, string s, int n) {
+    int w = 0;
+    WriteFile(h, s, n, &w, null);
+}
+
+internal void cwinClose(int h) {
+    CloseHandle(h);
+}
+
+// Reset the preallocated writable text buffer in place (lstrcpyA("")),
+// the same buffer mechanism the BcTextWriter relies on.
+internal void cwinBufReset(string buf) {
+    lstrcpyA(buf, "");
+}
+
+// Append a NUL-free text piece to the buffer in place (lstrcatA), so
+// appends stay within the preallocated capacity with no allocation.
+internal void cwinBufAppend(string buf, string s) {
+    lstrcatA(buf, s);
+}
+
+// Best-effort directory creation (CreateDirectoryA is a no-op when the
+// directory already exists; failures are ignored exactly as before).
+internal void cwinCreateDir(string dir) {
+    CreateDirectoryA(dir, null);
+}
+
+// Seconds-since-epoch * 1000 — identical granularity to the pre-split
+// icNowMillis (msvcrt time, matching silverc/compiler/bcache.sr).
+internal int cwinNowMillis() {
+    return time(0) * 1000;
+}

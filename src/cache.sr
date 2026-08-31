@@ -1,8 +1,7 @@
 mod export cache;
 
-import * from win32.kernel32;
-import * from win32.msvcrt;
 import resource;
+import cache_win;
 
 // OVERHAUL.md --cache-bytecode — persistent bytecode cache for the
 // interpreter. Same reference binary formats as the compilers:
@@ -465,14 +464,14 @@ class CacheSession {
 //
 //   BcBinWriter  — .srbc/.sbcr bytes: a bounded int[] chunk staged through
 //                  a scratch file (file.writeBytes) and appended to the
-//                  artifact with a direct WriteFile of the exact byte
-//                  count. The full stream never exists as one string or
-//                  one whole-file array.
+//                  artifact with a direct kernel32 WriteFile of the exact
+//                  byte count (cache_win backend). The full stream never
+//                  exists as one string or one whole-file array.
 //   BcTextWriter — NUL-free text (.srbc.t / project.sbcri): a preallocated
 //                  writable string buffer appended in place with lstrcatA
 //                  and flushed with WriteFile, reset in place with
-//                  lstrcpyA("") — the same buffer mechanism icEnvValue
-//                  relies on, so no per-piece allocation at all.
+//                  lstrcpyA("") — the same buffer mechanism the cache_win
+//                  backend provides, so no per-piece allocation at all.
 //
 // Buffer sizes are memory-adaptive (see resource.rsCacheChunk): on
 // low-memory hosts they shrink so a cache write never overcommits RAM, on
@@ -498,7 +497,7 @@ class BcBinWriter {
         this.scratch = outPath + ".part";
         icEnsureDirTree(icDirname(outPath));
         // CREATE_ALWAYS: every artifact is rewritten whole on change.
-        this.handle = CreateFileA(outPath, 0x40000000, 0, null, 2, 0x80, 0);
+        this.handle = cwinCreateWrite(outPath);
         if (this.handle == -1 || this.handle == 0) {
             this.handle = 0;
             this.failed = 1;
@@ -542,8 +541,7 @@ class BcBinWriter {
             file.writeBytes(this.scratch, this.buf);
             if (file.getSize(this.scratch) == n) {
                 string carrier = file.readString(this.scratch);
-                int w = 0;
-                WriteFile(this.handle, carrier, n, &w, null);
+                cwinWrite(this.handle, carrier, n);
             } else {
                 this.failed = 1;
             }
@@ -556,7 +554,7 @@ class BcBinWriter {
     public void close() {
         this.flush();
         if (this.handle != 0) {
-            CloseHandle(this.handle);
+            cwinClose(this.handle);
             this.handle = 0;
         }
         if (file.exists(this.scratch)) { file.delete(this.scratch); }
@@ -578,13 +576,13 @@ class BcTextWriter {
         this.thresh = this.cap - 96;
         if (this.thresh < 160) { this.thresh = 160; }
         icEnsureDirTree(icDirname(outPath));
-        int h = CreateFileA(outPath, 0x40000000, 0, null, 2, 0x80, 0);
+        int h = cwinCreateWrite(outPath);
         if (h == -1 || h == 0) { return; }
         this.handle = h;
         // Heap-allocated capacity buffer (never a literal: lstrcatA writes
         // through the pointer), emptied in place so appends stay within it.
         this.buf = icSpaces(this.cap);
-        lstrcpyA(this.buf, "");
+        cwinBufReset(this.buf);
     }
 
     public bool ok() {
@@ -597,41 +595,32 @@ class BcTextWriter {
         if (s.length == 0 || this.handle == 0) { return; }
         if (s.length >= this.thresh) {
             this.flush();
-            int w2 = 0;
-            WriteFile(this.handle, s, s.length, &w2, null);
+            cwinWrite(this.handle, s, s.length);
             return;
         }
         if (this.buf.length + s.length > this.thresh) { this.flush(); }
-        lstrcatA(this.buf, s);
+        cwinBufAppend(this.buf, s);
     }
 
     public void flush() {
         if (this.handle == 0 || this.buf.length == 0) { return; }
-        int w = 0;
-        WriteFile(this.handle, this.buf, this.buf.length, &w, null);
-        lstrcpyA(this.buf, "");
+        cwinWrite(this.handle, this.buf, this.buf.length);
+        cwinBufReset(this.buf);
     }
 
     public void close() {
         this.flush();
         if (this.handle != 0) {
-            CloseHandle(this.handle);
+            cwinClose(this.handle);
             this.handle = 0;
         }
     }
 }
 
 public string icEnvValue(string name) {
-    string buf = "                                                                ";
-    int cap = 64;
-    GetEnvironmentVariableA(name, buf, cap);
-    string r = "";
-    for (int i = 0; i < cap; i++) {
-        char c = buf[i];
-        if (c == 0) { break; }
-        r = r + c;
-    }
-    return r;
+    // Unified std: the compiler lowers fs.getenv to a native
+    // GetEnvironmentVariableA that returns "" when the variable is unset.
+    return fs.getenv(name);
 }
 
 // Heap string of n spaces built with one join (linear) — the writable
@@ -648,7 +637,7 @@ public string icSpaces(int n) {
 }
 
 public int icNowMillis() {
-    return time(0) * 1000;
+    return cwinNowMillis();
 }
 
 // FNV-1 64-bit hash of the source text. Compiled int64 arithmetic wraps in
@@ -727,13 +716,13 @@ public void icEnsureDirTree(string dir) {
     for (int i = 0; i < dir.length; i++) {
         char c = dir[i];
         if (c == '\\' || c == '/') {
-            if (cur.length >= 2) { CreateDirectoryA(cur, null); }
+            if (cur.length >= 2) { cwinCreateDir(cur); }
             cur = cur + '\\';
         } else {
             cur = cur + c;
         }
     }
-    if (cur.length >= 2) { CreateDirectoryA(cur, null); }
+    if (cur.length >= 2) { cwinCreateDir(cur); }
 }
 
 public string icSliceRange(string s, int start, int end) {

@@ -1,5 +1,3 @@
-import * from win32.msvcrt;
-
 mod export project;
 
 import * from fs;
