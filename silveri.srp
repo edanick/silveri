@@ -4,6 +4,7 @@
     license: "Edan M. © 2025 All Rights Reserved Proprietary",
     entry: "src/main.sr",
     sources: [
+        "std",
         "src"
     ],
     output: "silveri.exe"
