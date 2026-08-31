@@ -3041,6 +3041,12 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             || this.strEq(name, "toString") || this.strEq(name, "toInt")
             || this.strEq(name, "toUpper") || this.strEq(name, "toLower")
             || this.strEq(name, "nativeToastShow")
+            // UNIFIED_CORE_LIBRARY.md phase 3 -- native os/time intercepts:
+            // osType()/OSTypes are the compile-time WINDOWS contract and the
+            // time module's win32 backend leaves (std/time_win.sr) are served
+            // natively, mirroring silverc-rs and the self-hosted compiler.
+            || this.strEq(name, "osType") || this.strEq(name, "timeWinSleepInt")
+            || this.strEq(name, "timeWinSleepUint") || this.strEq(name, "timeWinNow")
             // Native module singletons usable in expression position.
             || this.strEq(name, "fs") || this.strEq(name, "file")
             || this.strEq(name, "folder") || this.strEq(name, "url")

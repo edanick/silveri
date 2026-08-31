@@ -200,3 +200,21 @@ internal void bwinSystemInfo(string buf) {
 internal int bwinGlobalMemoryStatusEx(string buf) {
     return GlobalMemoryStatusEx(buf);
 }
+
+// DOCS -- monotonic tick source for the native time module
+// (UNIFIED_CORE_LIBRARY.md phase 3): raw QueryPerformanceCounter/Frequency
+// access, exactly like std/time_win.sr's timeWinNow imports. builtins.sr
+// derives milliseconds from the pair so the interpreted float keeps full
+// fractional precision (makeFloat's %g string would collapse sub-millisecond
+// stopwatch deltas at boot-scale magnitudes).
+internal int64 bwinQpcFreq() {
+    int64 freq = 0;
+    QueryPerformanceFrequency(&freq);
+    return freq;
+}
+
+internal int64 bwinQpcCount() {
+    int64 count = 0;
+    QueryPerformanceCounter(&count);
+    return count;
+}

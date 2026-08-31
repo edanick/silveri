@@ -1507,6 +1507,38 @@ Value callBuiltin(string name, Value[] args) {
         }
         return makeNull();
     }
+    // UNIFIED_CORE_LIBRARY.md phase 3 -- native os/time backend leaves
+    // (mirrors the compilers): osType() is the compile-time WINDOWS constant
+    // and the time module's win32 backend std/time_win.sr is served
+    // directly -- Sleep forwards and QPC milliseconds for timeWinNow.
+    if (name == "osType") {
+        return makeInt(0);
+    }
+    if (name == "timeWinSleepInt" || name == "timeWinSleepUint") {
+        if (args.length > 0) {
+            bwinSleep(args[0].toInt());
+        }
+        return makeNull();
+    }
+    if (name == "timeWinNow") {
+        // QPC milliseconds, derived exactly like std/time_win.sr's timeWinNow
+        // (float64(count) / float64(freq) * 1000.0) but assembled into the
+        // float's string form with full fractional precision: makeFloat
+        // formats through %g (six significant digits), which would collapse
+        // sub-millisecond stopwatch deltas at boot-scale magnitudes. The
+        // int64 math stays far below overflow (rem < freq <= ~1e7 ticks/s).
+        int64 freq = bwinQpcFreq();
+        if (freq <= 0) { return makeFloatStr("0"); }
+        int64 count = bwinQpcCount();
+        int64 secs = count / freq;
+        int64 rem = count % freq;
+        int64 micros = rem * 1000000 / freq;
+        int64 ms = secs * 1000 + micros / 1000;
+        int64 frac = micros % 1000;
+        string fracStr = frac.toString();
+        while (fracStr.length < 3) { fracStr = "0" + fracStr; }
+        return makeFloatStr(ms.toString() + "." + fracStr);
+    }
     if (name == "exit") {
         int code = 0;
         if (args.length > 0) { code = args[0].toInt().toInt(); }
