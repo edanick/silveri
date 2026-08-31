@@ -28,6 +28,7 @@ const int ND_INTERP = 22;
 const int ND_PAREN = 23;
 const int ND_DICT_LIT = 24;
 const int ND_CAST = 29;
+const int ND_ANON_FN = 85;
 
 const int ND_VAR_DECL = 50;
 const int ND_RETURN = 51;
@@ -240,6 +241,7 @@ string kindName(int k) {
     if (k == ND_NEW) { return "New"; }
     if (k == ND_INTERP) { return "Interp"; }
     if (k == ND_DICT_LIT) { return "DictLit"; }
+    if (k == ND_ANON_FN) { return "AnonFn"; }
     if (k == ND_VAR_DECL) { return "VarDecl"; }
     if (k == ND_RETURN) { return "Return"; }
     if (k == ND_IF_STMT) { return "IfStmt"; }

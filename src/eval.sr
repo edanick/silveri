@@ -58,6 +58,14 @@ class Evaluator {
     public prop dict<string, bool> projectFnNames;
     public prop dict<string, bool> projectGlobalNames;
     public prop string[] internalExportedModules;
+    // DOCS/259 -- anonymous function values `(void () { ... })`. Each
+    // evaluated anon expression registers its body block AST under a unique
+    // synthetic name and evaluates to a VAL_FUNC value carrying that name;
+    // invoking the value runs the body in a fresh environment parented only
+    // to the globals (isolated scope). No relocation machinery is needed --
+    // the interpreter binds the body AST directly.
+    public prop dict<string, Node> anonBodies;
+    public prop int anonCounter;
 
     construct () {
         file.writeBytes("build/diag/TE0_ctor.txt", [49]);
@@ -90,6 +98,8 @@ class Evaluator {
         this.projectFnNames = {};
         this.projectGlobalNames = {};
         this.internalExportedModules = [];
+        this.anonBodies = {};
+        this.anonCounter = 0;
         this.registerBuiltins();
         file.writeBytes("build/diag/TE1_ctor_end.txt", [49]);
     }
@@ -786,6 +796,31 @@ class Evaluator {
         return result;
     }
 
+    // DOCS/259 -- invoke a callable value bound to an anonymous body. The
+    // body runs in a fresh environment parented ONLY to the globals, so the
+    // caller's locals and fn-typed parameters are invisible (isolated scope)
+    // while body locals, file globals, functions and builtins resolve. Every
+    // invocation gets fresh locals; `return` inside the body ends the body,
+    // never the enclosing function.
+    private Value callAnonBody(string name) {
+        Node body = this.anonBodies[name];
+        Env fnEnv = this.globals.push();
+        Value result = makeNull();
+        this.hasReturned = false;
+        this.hasBroken = false;
+        this.hasContinued = false;
+        this.returnValue = null;
+        this.execBlock(body, fnEnv);
+        if (this.hasReturned && this.returnValue != null) {
+            result = this.returnValue;
+        }
+        this.hasReturned = false;
+        this.hasBroken = false;
+        this.hasContinued = false;
+        this.returnValue = null;
+        return result;
+    }
+
     public Value callMethod(Value receiver, string method, Value[] args) {
         return BuiltinMethods.callMethod(this, receiver, method, args);
     }
@@ -871,6 +906,16 @@ class Evaluator {
         if (node.kind == ND_STRUCT_LIT) { return this.evalStructLit(node, env); }
         if (node.kind == ND_INTERP) { return this.evalInterp(node, env); }
         if (node.kind == ND_PAREN) { return this.evalExpr(node.child(0), env); }
+        if (node.kind == ND_ANON_FN) {
+            // DOCS/259 -- bind the body AST as a callable value: a VAL_FUNC
+            // whose synthetic name keys the anonBodies registry. Every
+            // evaluation binds a fresh callable so each invocation re-executes
+            // the body with fresh locals.
+            string name = "__anon_" + this.anonCounter.toString();
+            this.anonCounter = this.anonCounter + 1;
+            this.anonBodies[name] = node.child(0);
+            return makeFunc(name);
+        }
         if (node.kind == ND_MATCH) { return this.evalMatch(node, env); }
         if (node.kind == ND_IF_EXPR) {
             Value cond = this.evalExpr(node.child(0), env);
@@ -1187,6 +1232,18 @@ mirrorPut(obj, target.name, val);
         // Split the null check from the field access: the self-hosted backend
         // does not always short-circuit `x != null && x.tag == ...`, and the
         // compiled interpreter would dereference a null value and crash.
+        // DOCS/259 -- a callable value bound to an anonymous body (a
+        // fn-typed parameter or a forwarded argument) resolves before the
+        // global fallbacks; zero-arg calls only, mirroring the compilers.
+        bool invokedAnon = false;
+        if (node.childCount() == 0) {
+            Value localFn = env.get(node.name);
+            if (localFn != null && localFn.tag == VAL_FUNC && this.anonBodies.contains(localFn.funcName)) {
+                result = this.callAnonBody(localFn.funcName);
+                invokedAnon = true;
+            }
+        }
+        if (!invokedAnon) {
         Value globalFn = this.globals.get(node.name);
         if (globalFn != null) {
             if (globalFn.tag == VAL_BUILTIN) {
@@ -1200,6 +1257,7 @@ mirrorPut(obj, target.name, val);
             result = this.constructStruct(node.name, args);
         } else {
             printline("Runtime error: undefined function '" + node.name + "'");
+        }
         }
         }
         this.diagHasPos = false;
