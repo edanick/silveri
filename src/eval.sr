@@ -66,6 +66,11 @@ class Evaluator {
     // the interpreter binds the body AST directly.
     public prop dict<string, Node> anonBodies;
     public prop int anonCounter;
+    // Overload dispatch by arity (UNIFIED_CORE_LIBRARY.md 7.4 #2):
+    // fnDeclSeen counts declarations per registry key ("name", "mod.name",
+    // "Class.member") so each declaration registers a per-arity symbol
+    // `key#k`; dispatch scans these symbols for the arity match.
+    public prop dict<string, int> fnDeclSeen;
 
     construct () {
         file.writeBytes("build/diag/TE0_ctor.txt", [49]);
@@ -100,6 +105,7 @@ class Evaluator {
         this.internalExportedModules = [];
         this.anonBodies = {};
         this.anonCounter = 0;
+        this.fnDeclSeen = {};
         this.registerBuiltins();
         file.writeBytes("build/diag/TE1_ctor_end.txt", [49]);
     }
@@ -552,30 +558,35 @@ class Evaluator {
             this.registerWin32Import(item);
         }
         if (item.kind == ND_FUNC) {
-            // The functions dict is keyed by name only; Silver has no
-            // function overloading. Keep the first definition so a later
-            // overload cannot overwrite it (e.g. `void press(string)` being
-            // replaced by `void press(int)`, which then crashes on the string
-            // call site).
-            if (!this.functions.contains(item.name)) {
-                this.functions[item.name] = item;
-                if (item.isPublic) {
-                    this.globals.define(item.name, makeFunc(item.name));
-                }
-                if (item.isInternal && ext) {
-                    this.markInternal(item.name, true, true);
-                }
-                if (!ext) {
-                    this.projectFnNames[item.name] = true;
-                }
+            // Overload dispatch by arity (UNIFIED_CORE_LIBRARY.md 7.4 #2):
+            // every declaration registers under its per-arity symbol
+            // `name#k` (k = declaration order) so call sites can resolve to
+            // the LAST declaration accepting the argument count. The bare
+            // name maps to the last declaration, leaving single-declaration
+            // names and every non-dispatch reader unchanged.
+            int decl = 0;
+            if (this.fnDeclSeen.contains(item.name)) { decl = this.fnDeclSeen[item.name]; }
+            this.fnDeclSeen[item.name] = decl + 1;
+            this.functions[item.name + "#" + decl.toString()] = item;
+            this.functions[item.name] = item;
+            if (item.isPublic) {
+                this.globals.define(item.name, makeFunc(item.name));
+            }
+            if (item.isInternal && ext) {
+                this.markInternal(item.name, true, true);
+            }
+            if (!ext) {
+                this.projectFnNames[item.name] = true;
             }
             if (this.currentModule != "") {
                 string moduleKey = this.currentModule + "." + item.name;
-                if (!this.functions.contains(moduleKey)) {
-                    this.functions[moduleKey] = item;
-                    if (item.isInternal && ext) {
-                        this.markInternal(moduleKey, true, true);
-                    }
+                int mdecl = 0;
+                if (this.fnDeclSeen.contains(moduleKey)) { mdecl = this.fnDeclSeen[moduleKey]; }
+                this.fnDeclSeen[moduleKey] = mdecl + 1;
+                this.functions[moduleKey + "#" + mdecl.toString()] = item;
+                this.functions[moduleKey] = item;
+                if (item.isInternal && ext) {
+                    this.markInternal(moduleKey, true, true);
                 }
             }
         }
@@ -597,8 +608,17 @@ class Evaluator {
             for (int i = 0; i < item.childCount(); i++) {
                 Node child = item.child(i);
                 if (child.kind == ND_FUNC) {
-                    this.functions[item.name + "." + child.name] = child;
-                    this.markInternal(item.name + "." + child.name, ext, child.isInternal);
+                    // Overload dispatch by arity (7.4 #2): per-class method
+                    // keys, every declaration under its `Class.method#k`
+                    // symbol; the bare key maps to the last declaration so
+                    // single-declaration classes keep their exact body.
+                    string mkey = item.name + "." + child.name;
+                    int cdecl = 0;
+                    if (this.fnDeclSeen.contains(mkey)) { cdecl = this.fnDeclSeen[mkey]; }
+                    this.fnDeclSeen[mkey] = cdecl + 1;
+                    this.functions[mkey + "#" + cdecl.toString()] = child;
+                    this.functions[mkey] = child;
+                    this.markInternal(mkey, ext, child.isInternal);
                 }
                 if (child.kind == ND_VAR_DECL && child.isInternal) {
                     this.markInternal(item.name + "." + child.name, ext, true);
@@ -699,7 +719,16 @@ class Evaluator {
     public Value callFunction(string name, Value[] args, Env callerEnv) {
         file.writeBytes("build/diag/TF0.txt", [49]);
         if (this.functions.contains(name)) {
+            // Overload dispatch by arity (7.4 #2): same rule as evalCall.
             Node fn = this.functions[name];
+            Node selected = this.selectOverload(name, args.length);
+            if (selected == null && this.overloadArityMismatch(name, args.length)) {
+                printline("no overload of '" + name + "' takes " + args.length.toString() + " argument(s)");
+                exit(1);
+            }
+            if (selected != null) {
+                fn = selected;
+            }
             return this.callNode(fn, args, callerEnv);
         }
         // Calling a class name directly (`Token t = Token();`) constructs an
@@ -1204,6 +1233,50 @@ mirrorPut(obj, target.name, val);
         return operand;
     }
 
+    // Overload dispatch by argument count (UNIFIED_CORE_LIBRARY.md 7.4 #2):
+    // when `key` is declared more than once (a `key#0` per-arity symbol
+    // exists), the LAST declaration whose parameter list accepts `nargs`
+    // wins — defaults lower the accepted minimum, same-arity ties keep the
+    // last declaration. Single-declaration keys return null so the legacy
+    // bare-name lookup stays in charge, mirroring the compilers' overload
+    // tables that only open at the second declaration.
+    private Node selectOverload(string key, int nargs) {
+        if (!this.functions.contains(key + "#0")) { return null; }
+        Node best = null;
+        int k = 0;
+        while (true) {
+            string sym = key + "#" + k.toString();
+            if (!this.functions.contains(sym)) { break; }
+            Node fn = this.functions[sym];
+            if (fn.childCount() >= 1 && this.paramsAcceptArity(fn.child(0), nargs)) {
+                best = fn;
+            }
+            k += 1;
+        }
+        return best;
+    }
+
+    private bool overloadArityMismatch(string key, int nargs) {
+        return this.selectOverload(key, nargs) == null
+            && this.functions.contains(key + "#0");
+    }
+
+    // Accepted-argument range of one declaration: required parameters lower
+    // the minimum (a default-bearing parameter binds from evalExpr when the
+    // call omits it), and the maximum is the full parameter count. The
+    // implicit `this` receiver the parser prepends to instance methods and
+    // constructors is not caller-supplied, so it never counts.
+    private bool paramsAcceptArity(Node params, int nargs) {
+        int start = 0;
+        if (params.childCount() > 0 && params.child(0).name == "this") { start = 1; }
+        int pc = params.childCount() - start;
+        int minArgs = 0;
+        for (int k2 = start; k2 < params.childCount(); k2++) {
+            if (params.child(k2).childCount() == 0) { minArgs += 1; }
+        }
+        return nargs >= minArgs && nargs <= pc;
+    }
+
     private Value evalCall(Node node, Env env) {
         Value[] args = [];
         string[] refNames = [];
@@ -1236,10 +1309,22 @@ mirrorPut(obj, target.name, val);
             else { result = makeArray([]); }
         } else if (this.functions.contains(node.name)) {
             // TYPE_EXCEPTIONS.md — chained parameter type mismatches.
+            // Overload dispatch by arity (7.4 #2): when the name is declared
+            // more than once, the argument count picks the target body; a
+            // count no overload accepts is the exact compilers' error
+            // (printline + exit 1, mirroring silverc's genUserCall).
             this.checkInternalFnName(node.name, node);
-            this.checkCallParamTypes(node, args);
+            Node selected = this.selectOverload(node.name, node.childCount());
+            if (selected == null && this.overloadArityMismatch(node.name, node.childCount())) {
+                printline("no overload of '" + node.name + "' takes " + node.childCount().toString() + " argument(s)");
+                exit(1);
+            }
+            if (selected == null) {
+                selected = this.functions[node.name];
+            }
+            this.checkCallParamTypesNode(selected, node, args);
             if (!this.hasThrown) {
-                result = this.callNodeWithRefs(this.functions[node.name], args, env, refNames);
+                result = this.callNodeWithRefs(selected, args, env, refNames);
             }
         } else {
         // Split the null check from the field access: the self-hosted backend
@@ -1330,11 +1415,19 @@ mirrorPut(obj, target.name, val);
         Value result = makeNull();
         if (receiver.tag == VAL_CLASS_INST) {
             string methodKey = this.resolveMethodKey(receiver.typeName, node.name);
-            if (this.functions.contains(methodKey)) {
+            if (methodKey.length > 0) {
+                // Overload dispatch by arity (7.4 #2): among the receiver
+                // class's same-named methods, the argument count picks the
+                // body. A count no overload accepts keeps the compilers'
+                // member-call fallback: the bare key (last declaration).
+                Node selected = this.selectOverload(methodKey, args.length);
+                if (selected == null) {
+                    selected = this.functions[methodKey];
+                }
                 this.checkInternalUse(methodKey, node.name, receiver.typeName, node);
                 Value[] methodArgs = [receiver];
                 foreach (Value a in args) { methodArgs.add(a); }
-                result = this.callNode(this.functions[methodKey], methodArgs, env);
+                result = this.callNode(selected, methodArgs, env);
                 for (int i = 0; i < rooted; i++) { GC.popRoot(); }
                 return result;
             }
@@ -1361,10 +1454,19 @@ mirrorPut(obj, target.name, val);
                 }
                 string staticKey = className + "." + node.name;
                 if (this.functions.contains(staticKey)) {
+                    // Overload dispatch by arity (7.4 #2): args carry no
+                    // receiver for statics, matching the compilers'
+                    // explicit-argument dispatch. No accepting overload
+                    // falls back to the bare key (last declaration), like
+                    // the compilers' static-call path.
+                    Node selectedStatic = this.selectOverload(staticKey, args.length);
+                    if (selectedStatic == null) {
+                        selectedStatic = this.functions[staticKey];
+                    }
                     this.checkInternalUse(staticKey, node.name, className, node);
                     bool savedStatic = this.inStaticMethod;
                     this.inStaticMethod = true;
-                    result = this.callNode(this.functions[staticKey], args, env);
+                    result = this.callNode(selectedStatic, args, env);
                     this.inStaticMethod = savedStatic;
                     for (int i = 0; i < rooted; i++) { GC.popRoot(); }
                     return result;
@@ -1381,7 +1483,18 @@ mirrorPut(obj, target.name, val);
                 }
                 this.checkInternalUse(modKey, node.name, moduleName, node);
                 if (this.functions.contains(modKey)) {
-                    result = this.callNode(this.functions[modKey], args, env);
+                    // Overload dispatch by arity (7.4 #2): module-qualified
+                    // calls dispatch over the module's own declarations
+                    // (e.g. the two time.sleep shapes select the last one).
+                    Node selectedMod = this.selectOverload(modKey, args.length);
+                    if (selectedMod == null && this.overloadArityMismatch(modKey, args.length)) {
+                        printline("no overload of '" + node.name + "' takes " + args.length.toString() + " argument(s)");
+                        exit(1);
+                    }
+                    if (selectedMod == null) {
+                        selectedMod = this.functions[modKey];
+                    }
+                    result = this.callNode(selectedMod, args, env);
                     for (int i = 0; i < rooted; i++) { GC.popRoot(); }
                     return result;
                 }
@@ -1397,8 +1510,7 @@ mirrorPut(obj, target.name, val);
     // known user function. Mirrors the reference checker's static rule: only
     // literal arguments whose value kind can never fit the parameter type are
     // flagged, so dynamic values keep the interpreter's lenient behavior.
-    private void checkCallParamTypes(Node callNode, Value[] args) {
-        Node fn = this.functions[callNode.name];
+    private void checkCallParamTypesNode(Node fn, Node callNode, Value[] args) {
         if (fn.childCount() < 1) { return; }
         Node params = fn.child(0);
         string segs = "";
