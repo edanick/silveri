@@ -722,11 +722,18 @@ class BuiltinMethods {
         }
         if (method == "toInt64") { return makeInt(c.charVal.toInt64()); }
         if (method == "toInt") { return makeInt(c.charVal.toInt64()); }
-        if (method == "isAlpha") { return makeBool(c.charVal.isAlpha()); }
-        if (method == "isAlphaNum") { return makeBool(c.charVal.isAlphaNum()); }
-        if (method == "isLower") { return makeBool(c.charVal.isLower()); }
-        if (method == "isUpper") { return makeBool(c.charVal.isUpper()); }
-        if (method == "isWhiteSpace") { return makeBool(c.charVal.isWhiteSpace()); }
+        // char-typed member receivers (`c.charVal.isLower()`) miscompile in
+        // the bootstrap codegen (the is_char_expr special case only matches
+        // locals/params), silently yielding the raw code instead of a bool.
+        // Hoist the char into a local so the range-check inlines correctly.
+        char ch = c.charVal;
+        if (method == "isAlpha") { return makeBool(ch.isAlpha()); }
+        if (method == "isAlphaNum") { return makeBool(ch.isAlphaNum()); }
+        if (method == "isDigit") { return makeBool(ch.isDigit()); }
+        if (method == "isLower") { return makeBool(ch.isLower()); }
+        if (method == "isUpper") { return makeBool(ch.isUpper()); }
+        if (method == "isWhiteSpace") { return makeBool(ch.isWhiteSpace()); }
+        if (method == "isWhitespace") { return makeBool(ch.isWhiteSpace()); }
         return makeNull();
     }
 
