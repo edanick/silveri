@@ -884,6 +884,42 @@ class Evaluator {
             return operand;
         }
 
+        if (node.kind == ND_AS_CAST) {
+            // DOCS/259 G4 -- `expr as Type` is a no-op for class instances:
+            // the value IS the instance. Primitive operands/targets are
+            // rejected at parse time with the compilers' diagnostic.
+            return this.evalExpr(node.child(0), env);
+        }
+
+        if (node.kind == ND_INDIRECT_CALL) {
+            // DOCS/259 G3 -- call through a function-typed value: the callee
+            // expression (a bounds-checked element load for `jobs[0]()`)
+            // evaluates to the stored callable, which runs with fresh locals
+            // in an isolated scope (same machinery as fn-typed parameters).
+            Value calleeVal = this.evalExpr(node.child(0), env);
+            GC.pushRoot(calleeVal);
+            if (this.hasThrown) {
+                // The bounds-checked element load raised (e.g. an
+                // IndexOutOfRangeException); let it unwind like the
+                // compilers' element-load exception instead of reporting a
+                // null-callable error over it.
+                GC.popRoot();
+                return makeNull();
+            }
+            bool callable = calleeVal != null && calleeVal.tag == VAL_FUNC
+                && this.anonBodies.contains(calleeVal.funcName);
+            Value result = makeNull();
+            if (callable) {
+                result = this.callAnonBody(calleeVal.funcName);
+            }
+            GC.popRoot();
+            if (!callable) {
+                printline("Runtime error: cannot invoke a null function value");
+                exit(1);
+            }
+            return result;
+        }
+
         if (node.kind == ND_IDENT) {
             Value val = env.get(node.name);
             if (val != null) {
@@ -1127,8 +1163,22 @@ class Evaluator {
             }
             return makeInt(lhs.toInt() % divisor);
         }
-        if (op == OP_EQ) { return makeBool(lhs.equals(rhs)); }
-        if (op == OP_NEQ) { return makeBool(!lhs.equals(rhs)); }
+        if (op == OP_EQ) {
+            if (lhs.tag == VAL_CLASS_INST && rhs.tag == VAL_CLASS_INST) {
+                // DOCS/259 G4 parity: the compilers emit a raw pointer cmp
+                // for `==` on class instances, so identity — not field-wise
+                // equality — decides. A cast view (`b as Box`) of the same
+                // object therefore compares equal to the original.
+                return makeBool(this.sameRef(lhs, rhs));
+            }
+            return makeBool(lhs.equals(rhs));
+        }
+        if (op == OP_NEQ) {
+            if (lhs.tag == VAL_CLASS_INST && rhs.tag == VAL_CLASS_INST) {
+                return makeBool(!this.sameRef(lhs, rhs));
+            }
+            return makeBool(!lhs.equals(rhs));
+        }
         if (op == OP_LT) {
             if (lhs.tag == VAL_FLOAT || rhs.tag == VAL_FLOAT) { return makeBool(valueToFloat(lhs) < valueToFloat(rhs)); }
             return makeBool(lhs.toInt() < rhs.toInt());
@@ -1231,6 +1281,14 @@ mirrorPut(obj, target.name, val);
         if (node.op == UOP_REF) { return operand; }
         if (node.op == UOP_DEREF) { return operand; }
         return operand;
+    }
+
+    // DOCS/259 G4 parity for class-instance `==`: the compilers emit a raw
+    // pointer cmp for `==` on class instances, so identity — not field-wise
+    // equality — decides. `a == b` on two Value references compiles to that
+    // same pointer comparison.
+    private bool sameRef(Value a, Value b) {
+        return a == b;
     }
 
     // Overload dispatch by argument count (UNIFIED_CORE_LIBRARY.md 7.4 #2):
@@ -1430,6 +1488,27 @@ mirrorPut(obj, target.name, val);
                 result = this.callNode(selected, methodArgs, env);
                 for (int i = 0; i < rooted; i++) { GC.popRoot(); }
                 return result;
+            }
+            // DOCS/259 G2 -- a zero-arg member call on a receiver whose class
+            // (or a parent) declares a fn-typed field of this name
+            // (`this.cb()` / `obj.cb()`) invokes the stored callable. The
+            // parent chain is walked so inherited fn fields dispatch too.
+            if (args.length == 0 && this.classHasFnField(receiver.typeName, node.name)) {
+                Value callable = null;
+                if (receiver.objVal.contains(node.name)) {
+                    callable = receiver.objVal[node.name];
+                }
+                bool callableAnon = callable != null && callable.tag == VAL_FUNC
+                    && this.anonBodies.contains(callable.funcName);
+                Value callResult = makeNull();
+                if (callableAnon) {
+                    callResult = this.callAnonBody(callable.funcName);
+                } else {
+                    printline("Runtime error: cannot invoke a null function value");
+                    exit(1);
+                }
+                for (int i = 0; i < rooted; i++) { GC.popRoot(); }
+                return callResult;
             }
         }
         if (receiver.tag == VAL_BUILTIN) {
@@ -1909,6 +1988,26 @@ mirrorPut(obj, target.name, val);
         return false;
     }
 
+    // DOCS/259 G2 -- whether `fieldName` is declared as a fn-typed field
+    // (`void () name`) anywhere in the class chain of `typeName`. Fn-typed
+    // fields parse to the type hint "void ()".
+    private bool classHasFnField(string typeName, string fieldName) {
+        string cur = typeName;
+        int guard = 0;
+        while (this.classes.contains(cur) && guard < 64) {
+            Node classDef = this.classes[cur];
+            for (int i = 0; i < classDef.childCount(); i++) {
+                Node child = classDef.child(i);
+                if (child.kindOf() == ND_VAR_DECL && child.name == fieldName) {
+                    return child.typeHint == "void ()";
+                }
+            }
+            cur = classDef.parentClass;
+            guard += 1;
+        }
+        return false;
+    }
+
     // Resolve a method key ("Type.method") walking the class inheritance
     // chain leaf -> root, so subclasses inherit and can override parent
     // methods. Returns "" when no class in the chain defines the method.
@@ -2119,6 +2218,16 @@ mirrorPut(obj, target.name, val);
                 env.define(stmt.name, val);
             } else {
                 if (stmt.typeHint == "byte") { env.define(stmt.name, makeByte(0)); }
+                elif (stmt.typeHint == "void ()[]") {
+                    // DOCS/259 G3 -- fn-typed arrays auto-allocate 8 slots so
+                    // `jobs[0] = job; jobs[0]();` works immediately (mirrors
+                    // the compilers' zeroed 8-address-slot allocation).
+                    Value[] slots = [];
+                    for (int s = 0; s < 8; s++) {
+                        slots.add(makeNull());
+                    }
+                    env.define(stmt.name, makeArray(slots));
+                }
                 elif (stmt.typeHint == "FileOps") { env.define(stmt.name, makeBuiltin("file_module")); }
                 elif (stmt.typeHint == "FolderOps") { env.define(stmt.name, makeBuiltin("folder_module")); }
                 else { env.define(stmt.name, makeNull()); }

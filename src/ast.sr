@@ -29,6 +29,11 @@ const int ND_PAREN = 23;
 const int ND_DICT_LIT = 24;
 const int ND_CAST = 29;
 const int ND_ANON_FN = 85;
+// DOCS/259 G4 -- `expr as Type` (no-op for class instances); same kind
+// numbering as the self-hosted compiler's node kinds.
+const int ND_AS_CAST = 86;
+// DOCS/259 G3 -- indirect call through a fn-typed value (`jobs[0]()`).
+const int ND_INDIRECT_CALL = 87;
 
 const int ND_VAR_DECL = 50;
 const int ND_RETURN = 51;
@@ -242,6 +247,8 @@ string kindName(int k) {
     if (k == ND_INTERP) { return "Interp"; }
     if (k == ND_DICT_LIT) { return "DictLit"; }
     if (k == ND_ANON_FN) { return "AnonFn"; }
+    if (k == ND_AS_CAST) { return "AsCast"; }
+    if (k == ND_INDIRECT_CALL) { return "IndirectCall"; }
     if (k == ND_VAR_DECL) { return "VarDecl"; }
     if (k == ND_RETURN) { return "Return"; }
     if (k == ND_IF_STMT) { return "IfStmt"; }

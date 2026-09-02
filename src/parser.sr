@@ -332,6 +332,60 @@ class Parser {
         this.sigVariadic.add(0);
     }
 
+    // DOCS/259 G4 -- lookahead for the `as` cast: the `as` keyword must be
+    // followed by a type-like token (class identifier, primitive keyword, or
+    // generic opener). Used by isInfix and getInfixPrec so the
+    // `for (x as start..end)` range-for spelling — consumed before
+    // expressions are parsed — and other bare-`as` identifiers keep their
+    // existing behavior (mirrors rs's is_as_cast_ahead).
+    private bool isAsCastAhead() {
+        if (this.pos + 1 >= this.tokens.length) { return false; }
+        int nk = this.tokens[this.pos + 1].kind;
+        return nk == TK_IDENT || nk == TK_INT || nk == TK_INT32 || nk == TK_INT64
+            || nk == TK_UINT || nk == TK_FLOAT || nk == TK_FLOAT64 || nk == TK_DOUBLE
+            || nk == TK_BOOL || nk == TK_BYTE || nk == TK_CHAR || nk == TK_STRING
+            || nk == TK_LESS;
+    }
+
+    // DOCS/259 G4 -- parse the cast target spelling after `as`: an
+    // identifier (class name) or a primitive keyword; generic, array and
+    // nullable suffixes are accepted like a plain type.
+    private string parseAsCastTarget() {
+        Token t = this.advance();
+        string target = t.text;
+        if (this.check(TK_LESS)) {
+            while (!this.check(TK_GREATER) && !this.check(TK_SEMI) && !this.check(TK_RBRACE) && !this.check(TK_EOF)) {
+                target = target + this.advance().text;
+            }
+            if (this.check(TK_GREATER)) { target = target + ">"; this.advance(); }
+        }
+        while (this.check(TK_LBRACKET)) {
+            this.advance();
+            this.expect(TK_RBRACKET);
+            target = target + "[]";
+        }
+        if (this.check(TK_QUESTION)) { this.advance(); target = target + "?"; }
+        return target;
+    }
+
+    // DOCS/259 G4 -- primitive type spellings rejected as cast targets (the
+    // cast only asserts class-instance types; mirrors the rs type checker).
+    private bool isPrimitiveTypeSpelling(string t) {
+        if (this.strEq(t, "int")) { return true; }
+        if (this.strEq(t, "int32")) { return true; }
+        if (this.strEq(t, "int64")) { return true; }
+        if (this.strEq(t, "uint")) { return true; }
+        if (this.strEq(t, "float")) { return true; }
+        if (this.strEq(t, "float64")) { return true; }
+        if (this.strEq(t, "double")) { return true; }
+        if (this.strEq(t, "bool")) { return true; }
+        if (this.strEq(t, "byte")) { return true; }
+        if (this.strEq(t, "char")) { return true; }
+        if (this.strEq(t, "string")) { return true; }
+        if (this.strEq(t, "void")) { return true; }
+        return false;
+    }
+
     // With the current token on the outer `(` of a parenthesized expression,
     // decide whether what follows is an anonymous-function attempt whose
     // shape is not the supported `void ()`: a type keyword, `(`, a balanced
@@ -880,6 +934,19 @@ private Node? parseItem() {
             if (this.check(TK_PROP)) {
                 this.advance();
                 string typ = this.parseTypeStr();
+                // DOCS/259 G2 -- fn-typed prop: `prop void () cb;` (fn arrays
+                // too via the `[]` suffix below). Any other base type, or any
+                // other `(...)` shape after `void`, is left untouched.
+                if (this.strEq(typ, "void") && this.check(TK_LPAREN) && this.pos + 1 < this.tokens.length && this.tokens[this.pos + 1].kind == TK_RPAREN) {
+                    this.advance();
+                    this.advance();
+                    typ = "void ()";
+                    while (this.check(TK_LBRACKET) && this.pos + 1 < this.tokens.length && this.tokens[this.pos + 1].kind == TK_RBRACKET) {
+                        this.advance();
+                        this.advance();
+                        typ = typ + "[]";
+                    }
+                }
                 string fieldName = this.expectIdent();
                 this.expectSemi();
                 Node field = new Node(ND_VAR_DECL, ln, c);
@@ -905,6 +972,20 @@ private Node? parseItem() {
             }
             if (this.checkType() || this.check(TK_IDENT)) {
                 string retType = this.parseTypeStr();
+                // DOCS/259 G2 -- bare fn-typed field: `void () cb;` (fn arrays
+                // too via the `[]` suffix below). The `(` after `void` never
+                // reaches parseTypeStr because the class body checks for a
+                // method shape first (`(` would otherwise mean a method).
+                if (this.strEq(retType, "void") && this.check(TK_LPAREN) && this.pos + 1 < this.tokens.length && this.tokens[this.pos + 1].kind == TK_RPAREN) {
+                    this.advance();
+                    this.advance();
+                    retType = "void ()";
+                    while (this.check(TK_LBRACKET) && this.pos + 1 < this.tokens.length && this.tokens[this.pos + 1].kind == TK_RBRACKET) {
+                        this.advance();
+                        this.advance();
+                        retType = retType + "[]";
+                    }
+                }
                 string mname = this.expectIdent();
                 if (this.check(TK_LPAREN)) {
                     Node fn = this.parseFunctionDef(isPub, isStat, isInt, retType, mname);
@@ -1351,6 +1432,13 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         if (this.check(TK_BREAK)) { this.advance(); this.expectSemi(); return new Node(ND_BREAK, this.line(), this.col()); }
         if (this.check(TK_CONTINUE)) { this.advance(); this.expectSemi(); return new Node(ND_CONTINUE, this.line(), this.col()); }
         if (this.check(TK_VAR)) { return this.parseVarDecl(); }
+        // DOCS/259 G2/G3 -- local fn-typed declaration: `void () cb;` or
+        // `void ()[] jobs;` (decl-init forms included). The value is a
+        // callable (or an array of callables); only the `void ()` shape is
+        // supported (mirrors the compilers).
+        if (this.check(TK_VOID) && this.pos + 2 < this.tokens.length && this.tokens[this.pos + 1].kind == TK_LPAREN && this.tokens[this.pos + 2].kind == TK_RPAREN) {
+            return this.parseFnTypedLocalDecl();
+        }
         if (this.checkType()) {
             // `int.parseInt("42")` — a static conversion call, not a
             // declaration headed by a primitive type.
@@ -1710,6 +1798,33 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         return n;
     }
 
+    // DOCS/259 G2/G3 -- local fn-typed declaration (`void () cb;` /
+    // `void ()[] jobs;`, decl-init forms included): a `void ()` base type
+    // optionally followed by `[]` suffixes for an array of callables.
+    private Node parseFnTypedLocalDecl() {
+        int ln = this.line(); int c = this.col();
+        this.advance();
+        this.advance();
+        this.advance();
+        string declType = "void ()";
+        while (this.check(TK_LBRACKET) && this.pos + 1 < this.tokens.length && this.tokens[this.pos + 1].kind == TK_RBRACKET) {
+            this.advance();
+            this.advance();
+            declType = declType + "[]";
+        }
+        string name = this.expectIdent();
+        this.knownIdents.add(name);
+        Node n = new Node(ND_VAR_DECL, ln, c);
+        n.name = name;
+        n.typeHint = declType;
+        if (this.check(TK_ASSIGN)) {
+            this.advance();
+            n.addChild(this.parseExpr(0));
+        }
+        this.expectSemi();
+        return n;
+    }
+
     private Node parseTypedDecl() {
         int ln = this.line(); int c = this.col();
         string typ = this.parseTypeStr();
@@ -1982,6 +2097,10 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
 
     private bool isInfix() {
         int k = this.peekKind();
+        if (k == TK_AS && this.isAsCastAhead()) {
+            // DOCS/259 G4 -- `expr as Type` is an infix keyword operator.
+            return true;
+        }
         if (k == TK_RANGE && this.rangeIsSliceBoundary) {
             // `..` inside a `[...]` index starts a slice, so it is not an
             // infix operator there.
@@ -2003,6 +2122,15 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
 
     private int getInfixPrec() {
         int k = this.peekKind();
+        if (k == TK_AS && this.isAsCastAhead()) {
+            // DOCS/259 G4: the rs compiler binds `as` at 5 — above the
+            // comparison operators (4) and below bitwise (6+) — with the
+            // right operand of every binary op parsed at prec+1. This
+            // parser's same-level rhs recursion shifts the equivalent
+            // binding point to 4, so `a == b as T` -> `a == (b as T)` and
+            // `a < b as T` -> `(a < b) as T` group exactly like rs.
+            return 4;
+        }
         if (k == TK_ASSIGN || k == TK_PLUS_EQ || k == TK_MINUS_EQ || k == TK_STAR_EQ || k == TK_SLASH_EQ
             || k == TK_PERCENT_EQ || k == TK_AMP_EQ || k == TK_PIPE_EQ || k == TK_CARET_EQ || k == TK_SHL_EQ || k == TK_SHR_EQ) { return 1; }
         if (k == TK_QUESTION || k == TK_QUESTIONQUESTION) { return 1; }
@@ -2421,6 +2549,22 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
                 }
                 return n;
             }
+            if (lhs.kind == ND_INDEX) {
+                // DOCS/259 G3 -- indirect call through a function-typed value
+                // (`jobs[0]()`). The FULL index expression is carried as the
+                // callee child so evaluation performs the bounds-checked
+                // element load (the element holds the callable value); keeping
+                // only the array sub-expression was the reference compiler's
+                // crash root cause. Zero-argument calls only — the supported
+                // function type is `void ()`.
+                if (args.length > 0) {
+                    Token callOpen = this.tokens[this.pos - 1];
+                    this.recordError(callOpen.line.toString() + ":" + callOpen.col.toString() + ": Unexpected token '(: function-typed values support only zero-argument calls — the supported type is `void ()` (see DOCS/259)'");
+                }
+                Node n = new Node(ND_INDIRECT_CALL, lhs.line, lhs.col);
+                n.addChild(lhs);
+                return n;
+            }
             Node n = new Node(ND_CALL, ln, c);
             n.name = lhs.name;
             foreach (Node a in args) { n.addChild(a); }
@@ -2489,6 +2633,30 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             n.addChild(body);
             n.name = "arrow";
             return n;
+        }
+        if (k == TK_AS && this.isAsCastAhead()) {
+            // DOCS/259 G4 -- `expr as Type`: a no-op cast for class
+            // instances. Binds so `a == b as T` groups as `a == (b as T)`
+            // and `a < b as T` as `(a < b) as T`, exactly like the reference
+            // compiler's prec-5 left-associative binding, and chains
+            // (`b as C as D` = `(b as C) as D`). An `as` NOT followed by a
+            // type-like token never enters this path, so `T as Alias;` type
+            // aliases and the range-for spelling are untouched.
+            int castLine = this.peek().line;
+            int castCol = this.peek().col;
+            this.advance();
+            string target = this.parseAsCastTarget();
+            bool primitiveOperand = lhs.kind == ND_INT_LIT || lhs.kind == ND_FLOAT_LIT
+                || lhs.kind == ND_BOOL_LIT || lhs.kind == ND_CHAR_LIT || lhs.kind == ND_STRING_LIT;
+            if (this.isPrimitiveTypeSpelling(target) || primitiveOperand) {
+                this.recordError(castLine.toString() + ":" + castCol.toString() + ": Unexpected token 'as: as cast only supports class instances (see DOCS/259); got 'expression as " + target + "''");
+            }
+            Node cast = new Node(ND_AS_CAST, castLine, castCol);
+            cast.name = target;
+            cast.addChild(lhs);
+            // Left-associative chaining (`b as C as D` = `(b as C) as D`)
+            // falls out of the parseExpr loop re-entering parseInfix.
+            return cast;
         }
 
         int op = this.tokenToOp(k);
@@ -2822,6 +2990,12 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
     }
 
     private void walkCallDiagnostics(Node n) {
+        if (n.kind == ND_VAR_DECL && this.strEq(n.typeHint, "void ()") && n.name.length > 0) {
+            // DOCS/259 G2 -- fn-typed locals are invocable like fn-typed
+            // parameters once declared (forward-visible for the rest of the
+            // walk, matching the reference compiler's never-popped registry).
+            this.fnPtrCallScope.add(n.name);
+        }
         if (n.kind == ND_FUNC) {
             // DOCS/259 -- the enclosing function's fn-typed parameters are
             // invocable as zero-arg calls within its body only. The scope is
