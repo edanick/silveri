@@ -1510,6 +1510,12 @@ Value callBuiltin(string name, Value[] args) {
     if (name == "nativeToastShow") {
         return makeNull();
     }
+    // UNIFIED_CORE_LIBRARY.md phase 3 -- the notifications wrapper's internal
+    // backend leaf (notifWinShow(title, body, appUserModelId)): no-op like
+    // nativeToastShow; the toast balloon is best-effort on the interpreter.
+    if (name == "notifWinShow") {
+        return makeNull();
+    }
     if (name == "sleep") {
         if (args.length > 0) {
             bwinSleep(args[0].toInt());

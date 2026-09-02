@@ -304,6 +304,12 @@ class Evaluator {
         // it; the interpreter simulates the side effect by returning null (the
         // notifications.sr `show` function already printed the NOTIFY: line).
         this.globals.define("nativeToastShow", makeBuiltin("nativeToastShow"));
+        // UNIFIED_CORE_LIBRARY.md phase 3 -- notifications' internal Windows
+        // backend (std/notifications_win.sr) bridge leaf. The public wrapper
+        // (std/notifications.sr) is prepended as source; its one backend call
+        // is served here natively as a no-op, exactly like nativeToastShow
+        // (the wrapper's show() already printed the NOTIFY: parity line).
+        this.globals.define("notifWinShow", makeBuiltin("notifWinShow"));
 
         // UNIFIED_CORE_LIBRARY.md phase 3 -- os/time native intercepts. The
         // backend answers the OS gate leaves natively (mirrors silverc-rs

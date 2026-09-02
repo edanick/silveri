@@ -3221,6 +3221,10 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             // natively, mirroring silverc-rs and the self-hosted compiler.
             || this.strEq(name, "osType") || this.strEq(name, "timeWinSleepInt")
             || this.strEq(name, "timeWinSleepUint") || this.strEq(name, "timeWinNow")
+            // notifications' internal backend leaf (std/notifications_win.sr)
+            // is served natively like nativeToastShow (UNIFIED_CORE_LIBRARY.md
+            // phase 3).
+            || this.strEq(name, "notifWinShow")
             // Native module singletons usable in expression position.
             || this.strEq(name, "fs") || this.strEq(name, "file")
             || this.strEq(name, "folder") || this.strEq(name, "url")
