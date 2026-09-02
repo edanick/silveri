@@ -23,7 +23,14 @@ bool nativeModule(string name) {
         || cli.eq(n, "env") || cli.eq(n, "url") || cli.eq(n, "hash")
         || cli.eq(n, "path") || cli.eq(n, "bom") || cli.eq(n, "console")
         || cli.eq(n, "math") || cli.eq(n, "llmai") || cli.eq(n, "os")
-        || cli.eq(n, "keyboard") || cli.eq(n, "mouse");
+        || cli.eq(n, "keyboard") || cli.eq(n, "mouse")
+        // process is a native stdlib module on silverc-rs (stdlib::process
+        // emits getFocusedProcess natively); the interpreter mirrors that:
+        // std/process.sr is NOT prepended, Process.getFocusedProcess lands
+        // in the builtins.sr native dispatch. Prepending the wrapper would
+        // also drag in process_win, whose aliased win32 grants the parser
+        // cannot spell (`X as Y`), so the source path is not viable.
+        || cli.eq(n, "process");
 }
 
 // Case-insensitive substring search.
