@@ -2125,11 +2125,13 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         if (k == TK_AS && this.isAsCastAhead()) {
             // DOCS/259 G4: the rs compiler binds `as` at 5 — above the
             // comparison operators (4) and below bitwise (6+) — with the
-            // right operand of every binary op parsed at prec+1. This
-            // parser's same-level rhs recursion shifts the equivalent
-            // binding point to 4, so `a == b as T` -> `a == (b as T)` and
-            // `a < b as T` -> `(a < b) as T` group exactly like rs.
-            return 4;
+            // right operand of every binary op parsed at prec+1, so this
+            // parser must carry the same shape: rhs at prec+1 (the generic
+            // binary path below) and `as` at 5. That keeps `a == b as T`
+            // -> `a == (b as T)` and `a < b as T` -> `(a < b) as T`
+            // grouping exactly like rs, and chains (`b as C as D` =
+            // `(b as C) as D`) left-associative.
+            return 5;
         }
         if (k == TK_ASSIGN || k == TK_PLUS_EQ || k == TK_MINUS_EQ || k == TK_STAR_EQ || k == TK_SLASH_EQ
             || k == TK_PERCENT_EQ || k == TK_AMP_EQ || k == TK_PIPE_EQ || k == TK_CARET_EQ || k == TK_SHL_EQ || k == TK_SHR_EQ) { return 1; }
@@ -2666,7 +2668,13 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             Node n = new Node(ND_BINARY, ln, c);
             n.op = op;
             n.addChild(lhs);
-            n.addChild(this.parseExpr(prec));
+            // PARITY — binary operators are left-associative like the rs
+            // compiler: the right operand must bind above this level
+            // (prec+1), not at the same level. Parsing at `prec` made
+            // same-precedence chains right-associative (`24 / 2 * 3` =
+            // `24 / (2 * 3)` = 4 instead of 36; the stopwatch shape
+            // `float64(count) / float64(freq) * 1000.0` divided by 1000).
+            n.addChild(this.parseExpr(prec + 1));
             return n;
         }
         this.advance();
@@ -3203,6 +3211,12 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             || this.strEq(name, "assert") || this.strEq(name, "now")
             || this.strEq(name, "int") || this.strEq(name, "float")
             || this.strEq(name, "double") || this.strEq(name, "char")
+            // Wide numeric cast-call spellings: the rs compiler maps
+            // int64(x)/uint(x) onto the int conversion and float64(x) onto
+            // the double conversion (parser.rs Int/Uint/Float token arms),
+            // so all three must be callable in expression position here.
+            || this.strEq(name, "int64") || this.strEq(name, "uint")
+            || this.strEq(name, "float64")
             || this.strEq(name, "byte") || this.strEq(name, "string")
             || this.strEq(name, "bool") || this.strEq(name, "void")
             || this.strEq(name, "main") || this.strEq(name, "super")
@@ -3259,6 +3273,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         cands.add("print"); cands.add("printline"); cands.add("eprint"); cands.add("eprintln"); cands.add("exit");
         cands.add("input"); cands.add("sleep"); cands.add("assert");
         cands.add("int"); cands.add("float"); cands.add("double");
+        cands.add("int64"); cands.add("uint"); cands.add("float64");
         cands.add("char"); cands.add("byte"); cands.add("string_cast");
         cands.add("now"); cands.add("cargs");
         cands.add("getCommandLine");

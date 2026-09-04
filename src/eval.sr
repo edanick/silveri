@@ -4,6 +4,7 @@ import ast;
 import value;
 import env;
 import builtins;
+import builtins_win;
 import fs;
 class ReturnSignal {
     public prop Value val;
@@ -273,6 +274,12 @@ class Evaluator {
         this.globals.define("end", makeBuiltin("exit"));
         this.globals.define("int", makeBuiltin("int"));
         this.globals.define("float", makeBuiltin("float"));
+        // Wide numeric cast spellings (rs parity): int64/uint dispatch to the
+        // int conversion and float64 to the double conversion — the same
+        // folding parser.rs applies to the Int/Uint/Float token arms.
+        this.globals.define("int64", makeBuiltin("int"));
+        this.globals.define("uint", makeBuiltin("int"));
+        this.globals.define("float64", makeBuiltin("float"));
         this.globals.define("byte", makeBuiltin("byte"));
         this.globals.define("char", makeBuiltin("char"));
         this.globals.define("string", makeBuiltin("string_cast"));
@@ -374,7 +381,11 @@ class Evaluator {
     public string win32DllForFn(string fn) {
         if (fn == "keybd_event" || fn == "mouse_event" || fn == "VkKeyScanA" || fn == "GetKeyState" || fn == "GetAsyncKeyState" || fn == "MapVirtualKeyA" || fn == "GetCursorPos" || fn == "SetCursorPos" || fn == "SendInput" || fn == "SetCursor" || fn == "ClipCursor" || fn == "GetClipCursor" || fn == "GetDoubleClickTime" || fn == "SetDoubleClickTime" || fn == "RegisterHotKey" || fn == "UnregisterHotKey" || fn == "MessageBeep" || fn == "RegisterRawInputDevices" || fn == "GetRawInputData" || fn == "GetRawInputDeviceList") { return "user32.dll"; }
         if (fn == "GetForegroundWindow" || fn == "GetWindowTextA" || fn == "GetWindowThreadProcessId" || fn == "RegisterClassExA" || fn == "CreateWindowExA" || fn == "ShowWindow" || fn == "UpdateWindow" || fn == "SetWindowTextA" || fn == "DestroyWindow" || fn == "GetSystemMetrics" || fn == "LoadImageA" || fn == "SendMessageA") { return "user32.dll"; }
-        if (fn == "OpenProcess" || fn == "QueryFullProcessImageNameA" || fn == "CloseHandle" || fn == "GetModuleHandleA" || fn == "GetSystemInfo" || fn == "GlobalMemoryStatusEx") { return "kernel32.dll"; }
+        if (fn == "OpenProcess" || fn == "QueryFullProcessImageNameA" || fn == "CloseHandle" || fn == "GetModuleHandleA" || fn == "GetSystemInfo" || fn == "GlobalMemoryStatusEx"
+            // std/time.sr's folded WINDOWS now() body calls the QPC pair raw
+            // (the v2 fold removed the time_win indirection); the interpreter
+            // serves them from its own kernel32 grant like the other exports.
+            || fn == "QueryPerformanceCounter" || fn == "QueryPerformanceFrequency") { return "kernel32.dll"; }
         return "";
     }
 
@@ -1371,6 +1382,21 @@ mirrorPut(obj, target.name, val);
         } else if (node.name == "cargs") {
             if (this.scriptCargs != null) { result = this.scriptCargs; }
             else { result = makeArray([]); }
+        } else if ((node.name == "QueryPerformanceFrequency" || node.name == "QueryPerformanceCounter")
+            && this.win32HasExport("kernel32.dll", node.name)) {
+            // std/time.sr's folded WINDOWS now() body calls the QPC pair raw
+            // (the v2 fold removed the time_win indirection the interpreter
+            // used to serve natively via timeWinNow). Answer with the
+            // interpreter's own kernel32-backend leaves and write through the
+            // `&int64` out-param exactly like the compilers' real imports:
+            // the grant gate mirrors rs identifier resolution, the env
+            // write-back mirrors callNodeWithRefs' ref aliasing.
+            if (refNames.length > 0 && refNames[0] != "") {
+                int64 ticks = bwinQpcCount();
+                if (node.name == "QueryPerformanceFrequency") { ticks = bwinQpcFreq(); }
+                env.set(refNames[0], makeInt(ticks));
+            }
+            result = makeBool(true);
         } else if (this.functions.contains(node.name)) {
             // TYPE_EXCEPTIONS.md — chained parameter type mismatches.
             // Overload dispatch by arity (7.4 #2): when the name is declared
