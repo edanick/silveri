@@ -53,10 +53,154 @@ int findCI(string text, string needle, int start) {
     return result;
 }
 
+// Exact char-by-char string equality (same shape as preprocess.sr's ppEq).
+private bool stdRegionEq(string a, string b) {
+    if (a.length != b.length) { return false; }
+    for (int i = 0; i < a.length; i++) {
+        if (a[i] != b[i]) { return false; }
+    }
+    return true;
+}
+
+private string stdRegionSlice(string s, int start, int end) {
+    string r = "";
+    for (int i = start; i < end; i++) { r = r + s[i]; }
+    return r;
+}
+
+// DOCS/260 — the preprocessor filter for prepended std module sources,
+// reduced for the interpreter. The interpreter deliberately does NOT
+// implement the preprocessor as a language feature, but the v2 unified core
+// library folds OS code into `#on WINDOWS ... #off` regions inside
+// silverc\std\*.sr, and those raw directive lines must never reach the
+// parser. This filter runs on std module text BEFORE it is prepended into
+// the aggregate:
+//   - `#on WINDOWS` region bodies are kept (the interpreter runs on the
+//     same host the std was folded for, so WINDOWS is the only target).
+//   - `#on LINUX` / `#on MAC` / `#else` region bodies are stripped — the
+//     interpreter only needs the WINDOWS regions and shared code.
+//   - Directive lines themselves are blank-replaced (CRLF shape preserved)
+//     so line numbers stay stable, mirroring preprocess.sr's line mapping.
+// Lenient by design (this is not the compiler's strict validator): a
+// nested `#on`, an `#else`/`#off` without an open region, an unknown or
+// missing OS name, or an unclosed region at EOF are never fatal — the
+// offending directive line is dropped and the scan continues.
+string filterStdRegions(string src) {
+    if (src.length == 0) { return src; }
+    // Files without a single `#` cannot carry directives: return untouched.
+    bool anyHash = false;
+    for (int h = 0; h < src.length; h++) {
+        if (src[h] == '#') { anyHash = true; break; }
+    }
+    if (!anyHash) { return src; }
+
+    // Pass 1: pure state-machine scan recording the char offsets of every
+    // line to blank (no string building), exactly like preprocess.sr.
+    int[] dropAt = [];
+    int[] dropNl = [];
+    int[] dropCr = [];
+
+    // mode: 0 = outside regions, 1 = inside a region.
+    int mode = 0;
+    bool active = false;
+    int i = 0;
+    while (i < src.length) {
+        int nl = -1;
+        for (int si = i; si < src.length; si++) {
+            if (src[si] == '\n') { nl = si; break; }
+        }
+        int end = src.length;
+        if (nl >= 0) { end = nl; }
+        // Content excludes a trailing CR of CRLF terminators.
+        int contentEnd = end;
+        if (contentEnd > i && src[contentEnd - 1] == '\r') { contentEnd = contentEnd - 1; }
+
+        bool drop = false;
+        // Own-line rule: first non-whitespace token decides (DOCS/260), so
+        // comments mentioning `#on` in prose pass through untouched.
+        int p = i;
+        while (p < contentEnd && (src[p] == ' ' || src[p] == '\t')) { p = p + 1; }
+        if (p < contentEnd && src[p] == '#') {
+            int wordEnd = p + 1;
+            while (wordEnd < contentEnd && src[wordEnd] >= 'a' && src[wordEnd] <= 'z') { wordEnd = wordEnd + 1; }
+            string word = stdRegionSlice(src, p + 1, wordEnd);
+            if (stdRegionEq(word, "on")) {
+                drop = true;
+                // Lenient on nesting: a `#on` inside an open region does not
+                // reset the region state; only a top-level `#on` opens.
+                if (mode == 0) {
+                    int nameStart = wordEnd;
+                    while (nameStart < contentEnd && (src[nameStart] == ' ' || src[nameStart] == '\t')) { nameStart = nameStart + 1; }
+                    int nameEnd = nameStart;
+                    while (nameEnd < contentEnd && src[nameEnd] != ' ' && src[nameEnd] != '\t') { nameEnd = nameEnd + 1; }
+                    string osName = stdRegionSlice(src, nameStart, nameEnd);
+                    mode = 1;
+                    // Unknown or missing OS names strip their body too
+                    // (active stays false); only WINDOWS regions survive.
+                    active = stdRegionEq(osName, "WINDOWS");
+                }
+            } elif (stdRegionEq(word, "else")) {
+                drop = true;
+                // Lenient: `#else` outside a region just drops the line.
+                // Per the design ruling the interpreter only needs the
+                // WINDOWS regions and shared code, so an `#else` body is
+                // always stripped — even after an unmatched region where
+                // the compiler's semantics would activate it.
+                if (mode == 1) { active = false; }
+            } elif (stdRegionEq(word, "off")) {
+                drop = true;
+                // Lenient: `#off` outside a region just drops the line.
+                mode = 0;
+            }
+            // Any other line-leading `#word` is not a directive: pass
+            // through unchanged (normal lexer diagnostics apply).
+        } elif (mode == 1 && !active) {
+            drop = true;
+        }
+
+        if (drop) {
+            dropAt.add(i);
+            dropNl.add(nl);
+            if (contentEnd != end) { dropCr.add(1); } else { dropCr.add(0); }
+        }
+
+        if (nl < 0) { break; }
+        i = nl + 1;
+    }
+    // Lenient: an unclosed region at EOF is not an error — whatever was
+    // recorded above is simply how the text was filtered.
+
+    if (dropAt.length == 0) { return src; }
+
+    // Pass 2: splice — kept runs between dropped lines, one terminator per
+    // blanked line, so the filtered text has exactly as many lines as the
+    // original (diagnostic line numbers stay on the original file).
+    string result = "";
+    int copyStart = 0;
+    for (int d = 0; d < dropAt.length; d++) {
+        if (dropAt[d] > copyStart) {
+            result = result + stdRegionSlice(src, copyStart, dropAt[d]);
+        }
+        if (dropNl[d] >= 0) {
+            if (dropCr[d] == 1) { result = result + "\r\n"; }
+            else { result = result + "\n"; }
+        }
+        if (dropNl[d] >= 0) { copyStart = dropNl[d] + 1; }
+        else { copyStart = src.length; }
+    }
+    if (copyStart < src.length) {
+        result = result + stdRegionSlice(src, copyStart, src.length);
+    }
+    return result;
+}
+
 // Read std/<module>.sr from the standard checkout locations, returning empty
 // string when the file is not found at any candidate path. Candidates that
 // are the input file itself are skipped -- by path spelling and by content --
 // so `import * from <thisfile>` never resolves to the consuming script.
+// Loaded text is passed through filterStdRegions first: the v2 unified std
+// carries `#on WINDOWS ... #off` regions that the interpreter's parser must
+// never see (DOCS/260).
 string readStdModule(string name, string inputFile, string selfSource) {
     string lower = name.lower();
     string[] paths = [];
@@ -93,7 +237,7 @@ string readStdModule(string name, string inputFile, string selfSource) {
         // Skip the input file itself (same content reached through a
         // different path spelling, e.g. bare-name vs absolute).
         if (src.length > 0 && src == selfSource) { continue; }
-        if (src.length > 0) { return src; }
+        if (src.length > 0) { return filterStdRegions(src); }
     }
     return "";
 }
