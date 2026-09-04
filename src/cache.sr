@@ -1,7 +1,13 @@
 mod export cache;
 
 import resource;
-import cache_win;
+
+// Raw OS enablers for the cache writers and stamps (kernel32 handles/writes,
+// msvcrt time) — file-top grant, mirroring the unified std fold shape.
+#on WINDOWS
+import * from win32.kernel32;
+import * from win32.msvcrt;
+#off
 
 // OVERHAUL.md --cache-bytecode — persistent bytecode cache for the
 // interpreter. Same reference binary formats as the compilers:
@@ -465,13 +471,14 @@ class CacheSession {
 //   BcBinWriter  — .srbc/.sbcr bytes: a bounded int[] chunk staged through
 //                  a scratch file (file.writeBytes) and appended to the
 //                  artifact with a direct kernel32 WriteFile of the exact
-//                  byte count (cache_win backend). The full stream never
+//                  byte count (the raw kernel32 calls sit inside the class
+//                  bodies' #on WINDOWS regions). The full stream never
 //                  exists as one string or one whole-file array.
 //   BcTextWriter — NUL-free text (.srbc.t / project.sbcri): a preallocated
 //                  writable string buffer appended in place with lstrcatA
 //                  and flushed with WriteFile, reset in place with
-//                  lstrcpyA("") — the same buffer mechanism the cache_win
-//                  backend provides, so no per-piece allocation at all.
+//                  lstrcpyA("") — the same raw kernel32 mechanism, inside
+//                  #on WINDOWS regions, so no per-piece allocation at all.
 //
 // Buffer sizes are memory-adaptive (see resource.rsCacheChunk): on
 // low-memory hosts they shrink so a cache write never overcommits RAM, on
@@ -497,7 +504,9 @@ class BcBinWriter {
         this.scratch = outPath + ".part";
         icEnsureDirTree(icDirname(outPath));
         // CREATE_ALWAYS: every artifact is rewritten whole on change.
-        this.handle = cwinCreateWrite(outPath);
+        #on WINDOWS
+        this.handle = CreateFileA(outPath, 0x40000000, 0, null, 2, 0x80, 0);
+        #off
         if (this.handle == -1 || this.handle == 0) {
             this.handle = 0;
             this.failed = 1;
@@ -541,7 +550,10 @@ class BcBinWriter {
             file.writeBytes(this.scratch, this.buf);
             if (file.getSize(this.scratch) == n) {
                 string carrier = file.readString(this.scratch);
-                cwinWrite(this.handle, carrier, n);
+                #on WINDOWS
+                int w = 0;
+                WriteFile(this.handle, carrier, n, &w, null);
+                #off
             } else {
                 this.failed = 1;
             }
@@ -554,7 +566,9 @@ class BcBinWriter {
     public void close() {
         this.flush();
         if (this.handle != 0) {
-            cwinClose(this.handle);
+            #on WINDOWS
+            CloseHandle(this.handle);
+            #off
             this.handle = 0;
         }
         if (file.exists(this.scratch)) { file.delete(this.scratch); }
@@ -576,13 +590,19 @@ class BcTextWriter {
         this.thresh = this.cap - 96;
         if (this.thresh < 160) { this.thresh = 160; }
         icEnsureDirTree(icDirname(outPath));
-        int h = cwinCreateWrite(outPath);
+        int h = 0;
+        // CREATE_ALWAYS: the text companion is rewritten whole on change.
+        #on WINDOWS
+        h = CreateFileA(outPath, 0x40000000, 0, null, 2, 0x80, 0);
+        #off
         if (h == -1 || h == 0) { return; }
         this.handle = h;
         // Heap-allocated capacity buffer (never a literal: lstrcatA writes
         // through the pointer), emptied in place so appends stay within it.
         this.buf = icSpaces(this.cap);
-        cwinBufReset(this.buf);
+        #on WINDOWS
+        lstrcpyA(this.buf, "");
+        #off
     }
 
     public bool ok() {
@@ -595,23 +615,33 @@ class BcTextWriter {
         if (s.length == 0 || this.handle == 0) { return; }
         if (s.length >= this.thresh) {
             this.flush();
-            cwinWrite(this.handle, s, s.length);
+            #on WINDOWS
+            int w = 0;
+            WriteFile(this.handle, s, s.length, &w, null);
+            #off
             return;
         }
         if (this.buf.length + s.length > this.thresh) { this.flush(); }
-        cwinBufAppend(this.buf, s);
+        #on WINDOWS
+        lstrcatA(this.buf, s);
+        #off
     }
 
     public void flush() {
         if (this.handle == 0 || this.buf.length == 0) { return; }
-        cwinWrite(this.handle, this.buf, this.buf.length);
-        cwinBufReset(this.buf);
+        #on WINDOWS
+        int w = 0;
+        WriteFile(this.handle, this.buf, this.buf.length, &w, null);
+        lstrcpyA(this.buf, "");
+        #off
     }
 
     public void close() {
         this.flush();
         if (this.handle != 0) {
-            cwinClose(this.handle);
+            #on WINDOWS
+            CloseHandle(this.handle);
+            #off
             this.handle = 0;
         }
     }
@@ -637,7 +667,12 @@ public string icSpaces(int n) {
 }
 
 public int icNowMillis() {
-    return cwinNowMillis();
+    // Seconds-since-epoch * 1000 — msvcrt time, matching silverc's
+    // bcache.sr. Inside the region: no portable epoch builtin exists.
+    #on WINDOWS
+    return time(0) * 1000;
+    #off
+    return 0;
 }
 
 // FNV-1 64-bit hash of the source text. Compiled int64 arithmetic wraps in
@@ -716,13 +751,21 @@ public void icEnsureDirTree(string dir) {
     for (int i = 0; i < dir.length; i++) {
         char c = dir[i];
         if (c == '\\' || c == '/') {
-            if (cur.length >= 2) { cwinCreateDir(cur); }
+            if (cur.length >= 2) {
+                #on WINDOWS
+                CreateDirectoryA(cur, null);
+                #off
+            }
             cur = cur + '\\';
         } else {
             cur = cur + c;
         }
     }
-    if (cur.length >= 2) { cwinCreateDir(cur); }
+    if (cur.length >= 2) {
+        #on WINDOWS
+        CreateDirectoryA(cur, null);
+        #off
+    }
 }
 
 public string icSliceRange(string s, int start, int end) {
