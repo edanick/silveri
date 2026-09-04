@@ -1,6 +1,11 @@
 mod export resource;
 
-import resource_win;
+// Raw OS enablers for the adaptive resource layer (kernel32 struct queries,
+// msvcrt memset) — file-top grant, mirroring the unified std fold shape.
+#on WINDOWS
+import * from win32.kernel32;
+import * from win32.msvcrt;
+#off
 
 // ---------------------------------------------------------------------------
 // Adaptive resource layer — auto-adjust to the host machine.
@@ -18,7 +23,9 @@ import resource_win;
 // dwLength member is primed to sizeof(MEMORYSTATUSEX) == 64 by copying a
 // single "@" (0x40) into the first byte after zeroing the buffer — the same
 // trick the self-hosted compiler's resource.sr relies on. The raw
-// kernel32/msvcrt calls live in the internal resource_win backend.
+// kernel32/msvcrt calls are inline inside their `#on WINDOWS` regions
+// (UNIFIED_CORE_LIBRARY.md §4 rule 6: no _win backend, no wrapper
+// indirection — the public function IS the only function).
 // ---------------------------------------------------------------------------
 
 private int64 LOW_MEMORY_FLOOR = 1073741824; // 1 GiB
@@ -41,9 +48,14 @@ private int rsDword(string buf, int off) {
 }
 
 // Logical processor count from GetSystemInfo (dwNumberOfProcessors).
+// GetSystemInfo fills the SYSTEM_INFO over the caller-owned buffer in
+// place (the managed string lowers to the struct buffer pointer, the same
+// contract the self-hosted resource.sr relies on).
 public int rsCpuThreadCount() {
     string buf = rsBuf(48);
-    rwinSystemInfo(buf);
+    #on WINDOWS
+    GetSystemInfo(buf);
+    #off
     int n = rsDword(buf, 32);
     if (n < 1) { n = 1; }
     return n;
@@ -51,13 +63,17 @@ public int rsCpuThreadCount() {
 
 // One physical-RAM field of MEMORYSTATUSEX at byte offset `startOff`
 // (ullTotalPhys at 8, ullAvailPhys at 16), read as a little-endian QWORD.
-// The dwLength member is primed to sizeof(MEMORYSTATUSEX) == 64 before the
-// call; a failing call yields 0.
+// The 64-byte buffer is zeroed (memset) and its dwLength member primed to
+// sizeof(MEMORYSTATUSEX) == 64 by copying a single "@" (0x40) into the
+// first byte (lstrcpyA) — byte-identical to the pre-split direct calls —
+// before GlobalMemoryStatusEx fills it; a failing call yields 0.
 private int64 rsRamField(int startOff) {
     string buf = rsBuf(64);
-    rwinZeroBuf(buf);
-    rwinPrimeBuf(buf);
-    int ok = rwinMemoryStatusEx(buf);
+    #on WINDOWS
+    memset(buf, 0, 64);
+    lstrcpyA(buf, "@");
+    int ok = GlobalMemoryStatusEx(buf);
+    #off
     if (ok == 0) { return 0; }
     int64 v = 0;
     for (int i = 0; i < 8; i++) {
