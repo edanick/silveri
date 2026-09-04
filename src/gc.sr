@@ -1,7 +1,5 @@
 mod export gc;
 
-import * from win32.kernel32;
-
 import value;
 import env;
 
