@@ -2,7 +2,19 @@ mod export builtins;
 
 import value;
 import eval;
-import builtins_win;
+
+// UNIFIED_CORE_LIBRARY.md v2 canonical fold: the former builtins_win.sr
+// backend is gone -- every raw user32/kernel32 DLL call this module needs
+// lives inline inside an `#on WINDOWS` region at its builtin arm (§4 rule 6:
+// one unified name, no win-prefixed helpers, no wrapper indirection). The
+// plain full-table grants resolve bare names across the aggregate (the
+// compilers register win32 grants globally from program imports), so the
+// interpreter's other sources (e.g. eval.sr's QPC answering arm) reach the
+// same exports without any import of their own.
+#on WINDOWS
+import * from win32.user32;
+import * from win32.kernel32;
+#off
 
 class BuiltinMethods {
 
@@ -860,15 +872,24 @@ class BuiltinMethods {
         }
         if (mod == "process_module" || mod == "process_class") {
             if (method == "getFocusedProcess") {
-                int hwnd = bwinGetForegroundWindow();
+                // Raw DLL ladder inline in the arm (v2 rule 6): foreground
+                // window, its pid (LPDWORD through a &local, the pre-split
+                // shape), and a probe-open whose only job is validating the
+                // pid is addressable. On non-WINDOWS builds the region is
+                // blanked and hwnd/pid stay zero -- the Process object below
+                // is built from those same locals either way.
+                int hwnd = 0;
                 int pid = 0;
+                #on WINDOWS
+                hwnd = GetForegroundWindow();
                 if (hwnd != 0) {
-                    pid = bwinGetWindowThreadProcessIdPid(hwnd);
-                    int hProcess = bwinOpenProcess(0x1000, 0, pid);
+                    GetWindowThreadProcessId(hwnd, &pid);
+                    int hProcess = OpenProcess(0x1000, 0, pid);
                     if (hProcess != 0) {
-                        bwinCloseHandle(hProcess);
+                        CloseHandle(hProcess);
                     }
                 }
+                #off
                 string fullPath = "";
                 string filename = "";
                 string title = "";
@@ -1033,7 +1054,9 @@ class BuiltinMethods {
                 return makeString(envGet(key));
             }
             if (method == "set" && args.length > 1) {
-                bwinSetEnvironmentVariableA(args[0].strVal, args[1].strVal);
+                #on WINDOWS
+                SetEnvironmentVariableA(args[0].strVal, args[1].strVal);
+                #off
                 return makeNull();
             }
             return makeNull();
@@ -1122,25 +1145,62 @@ class BuiltinMethods {
             if (method == "press" || method == "hold" || method == "down") {
                 if (args.length > 0) {
                     int vk = args[0].tag == VAL_INT ? args[0].toInt().toInt() : keyNameToVk(args[0].strVal);
-                    bwinKeybdEvent(vk, 0, 0, 0);
+                    #on WINDOWS
+                    keybd_event(vk, 0, 0, 0);
+                    #off
                 }
                 return makeNull();
             }
             if (method == "release" || method == "up") {
                 if (args.length > 0) {
                     int vk = args[0].tag == VAL_INT ? args[0].toInt().toInt() : keyNameToVk(args[0].strVal);
-                    bwinKeybdEvent(vk, 0, 2, 0);
+                    #on WINDOWS
+                    keybd_event(vk, 0, 2, 0);
+                    #off
                 }
                 return makeNull();
             }
             if (method == "send" || method == "type") {
-                if (args.length > 0) { typeText(args[0].strVal); }
+                // The typed-text loop is inline in the arm (v2 rule 6): the
+                // char decode is pure (keyNameToVk stays), the VkKeyScanA
+                // fallback and the down/up keybd_event pair are the raw
+                // user32 calls inside the region.
+                if (args.length > 0) {
+                    string text = args[0].strVal;
+                    for (int i = 0; i < text.length; i = i + 1) {
+                        string one = "";
+                        one += text[i];
+                        string ch = one;
+                        int vk = keyNameToVk(ch);
+                        if (vk == 0) {
+                            int scan = -1;
+                            #on WINDOWS
+                            scan = VkKeyScanA(ch);
+                            #off
+                            if (scan != -1) {
+                                vk = scan & 0xFF;
+                            } else {
+                                vk = 0;
+                            }
+                        }
+                        if (vk != 0) {
+                            #on WINDOWS
+                            keybd_event(vk, 0, 0, 0);    // down
+                            keybd_event(vk, 0, 2, 0);    // up
+                            #off
+                        }
+                    }
+                }
                 return makeNull();
             }
             if (method == "isDown") {
                 if (args.length > 0) {
                     int vk = args[0].tag == VAL_INT ? args[0].toInt().toInt() : keyNameToVk(args[0].strVal);
-                    return makeBool((bwinGetKeyState(vk) & 0x8000) != 0);
+                    int state = 0;
+                    #on WINDOWS
+                    state = GetKeyState(vk);
+                    #off
+                    return makeBool((state & 0x8000) != 0);
                 }
                 return makeBool(false);
             }
@@ -1153,7 +1213,9 @@ class BuiltinMethods {
                     int mf = 0x0002;
                     if (mb == 2) { mf = 0x0008; }
                     if (mb == 4) { mf = 0x0020; }
-                    bwinMouseEvent(mf, 0, 0, 0, 0);
+                    #on WINDOWS
+                    mouse_event(mf, 0, 0, 0, 0);
+                    #off
                 }
                 return makeNull();
             }
@@ -1163,7 +1225,9 @@ class BuiltinMethods {
                     int mf = 0x0004;
                     if (mb == 2) { mf = 0x0010; }
                     if (mb == 4) { mf = 0x0040; }
-                    bwinMouseEvent(mf, 0, 0, 0, 0);
+                    #on WINDOWS
+                    mouse_event(mf, 0, 0, 0, 0);
+                    #off
                 }
                 return makeNull();
             }
@@ -1174,8 +1238,10 @@ class BuiltinMethods {
                     int up = 0x0004;
                     if (mb == 2) { down = 0x0008; up = 0x0010; }
                     if (mb == 4) { down = 0x0020; up = 0x0040; }
-                    bwinMouseEvent(down, 0, 0, 0, 0);
-                    bwinMouseEvent(up, 0, 0, 0, 0);
+                    #on WINDOWS
+                    mouse_event(down, 0, 0, 0, 0);
+                    mouse_event(up, 0, 0, 0, 0);
+                    #off
                 }
                 return makeNull();
             }
@@ -1192,7 +1258,9 @@ class BuiltinMethods {
                         if (dirDelta < 0) { dirDelta = -dirDelta; }
                     }
                 }
-                bwinMouseEvent(2048, 0, 0, dirDelta, 0);
+                #on WINDOWS
+                mouse_event(2048, 0, 0, dirDelta, 0);
+                #off
                 return makeNull();
             }
             // Cursor appearance: replace the global cursor with a
@@ -1202,7 +1270,11 @@ class BuiltinMethods {
             if (method == "setCursor" || method == "setCursorImage") {
                 if (args.length > 0) {
                     int handle = args[0].toInt().toInt();
-                    return makeInt(bwinSetCursor(handle));
+                    int prior = 0;
+                    #on WINDOWS
+                    prior = SetCursor(handle);
+                    #off
+                    return makeInt(prior);
                 }
                 return makeInt(0);
             }
@@ -1226,19 +1298,35 @@ class BuiltinMethods {
                     // ints; the interpreter does not require by-ref in
                     // Silver syntax, so we just call through.  Caller
                     // expects a bool (BOOL = non-zero = success).
-                    return makeInt(bwinClipCursor(rectAddr));
+                    int clipped = 0;
+                    #on WINDOWS
+                    clipped = ClipCursor(rectAddr);
+                    #off
+                    return makeInt(clipped);
                 }
                 if (args.length >= 1) {
                     rectAddr = args[0].toInt().toInt();
-                    return makeInt(bwinClipCursor(rectAddr));
+                    int clipped = 0;
+                    #on WINDOWS
+                    clipped = ClipCursor(rectAddr);
+                    #off
+                    return makeInt(clipped);
                 }
                 return makeInt(0);
             }
             if (method == "cursorX" || method == "getCursorX") {
-                return makeInt(bwinGetCursorX());
+                int cx = 0;
+                #on WINDOWS
+                cx = GetCursorX();
+                #off
+                return makeInt(cx);
             }
             if (method == "cursorY" || method == "getCursorY") {
-                return makeInt(bwinGetCursorY());
+                int cy = 0;
+                #on WINDOWS
+                cy = GetCursorY();
+                #off
+                return makeInt(cy);
             }
             if (method == "getClipCursor") {
                 int rectAddr = 0;
@@ -1247,7 +1335,11 @@ class BuiltinMethods {
                 } else if (args.length >= 1) {
                     rectAddr = args[0].toInt().toInt();
                 }
-                return makeInt(bwinGetClipCursor(rectAddr));
+                int got = 0;
+                #on WINDOWS
+                got = GetClipCursor(rectAddr);
+                #off
+                return makeInt(got);
             }
             return makeNull();
         }
@@ -1429,27 +1521,6 @@ class BuiltinMethods {
         return 0;
     }
 
-    private static void typeText(string text) {
-        for (int i = 0; i < text.length; i = i + 1) {
-            string one = "";
-            one += text[i];
-            string ch = one;
-            int vk = keyNameToVk(ch);
-            if (vk == 0) {
-                int scan = bwinVkKeyScanA(ch);
-                if (scan != -1) {
-                    vk = scan & 0xFF;
-                } else {
-                    vk = 0;
-                }
-            }
-            if (vk != 0) {
-                bwinKeybdEvent(vk, 0, 0, 0);    // down
-                bwinKeybdEvent(vk, 0, 2, 0);    // up
-            }
-        }
-    }
-
     private static string envGet(string key) {
         // The compiler lowers fs.getenv(name) to a native GetEnvironmentVariableA
         // call that returns "" when the variable is unset. Building the buffer by
@@ -1480,17 +1551,41 @@ Value callBuiltin(string name, Value[] args) {
         return makeNull();
     }
     if (name == "eprintln") {
+        // Raw stderr write inline per arm (v2 rule 6): the former
+        // writeStderrBuiltin -> bwinWriteStderr chain is gone; each arm
+        // holds the GetStdHandle(STD_ERROR_HANDLE) + WriteFile sequence in
+        // its region, the by-ref bytes-written counter staying a local.
+        string msg = "\n";
         if (args.length > 0) {
-            writeStderrBuiltin(args[0].toString() + "\n");
-        } else {
-            writeStderrBuiltin("\n");
+            msg = args[0].toString() + "\n";
         }
+        int eh = 0;
+        int ew = 0;
+        #on WINDOWS
+        if (msg.length > 0) {
+            eh = GetStdHandle(-12);
+            if (eh != -1 && eh != 0) {
+                WriteFile(eh, msg, msg.length, &ew, null);
+            }
+        }
+        #off
         return makeNull();
     }
     if (name == "eprint") {
+        string msg = "";
         if (args.length > 0) {
-            writeStderrBuiltin(args[0].toString());
+            msg = args[0].toString();
         }
+        int eh = 0;
+        int ew = 0;
+        #on WINDOWS
+        if (msg.length > 0) {
+            eh = GetStdHandle(-12);
+            if (eh != -1 && eh != 0) {
+                WriteFile(eh, msg, msg.length, &ew, null);
+            }
+        }
+        #off
         return makeNull();
     }
     if (name == "input") {
@@ -1518,7 +1613,9 @@ Value callBuiltin(string name, Value[] args) {
     }
     if (name == "sleep") {
         if (args.length > 0) {
-            bwinSleep(args[0].toInt());
+            #on WINDOWS
+            Sleep(args[0].toInt());
+            #off
         }
         return makeNull();
     }
@@ -1531,7 +1628,9 @@ Value callBuiltin(string name, Value[] args) {
     }
     if (name == "timeWinSleepInt" || name == "timeWinSleepUint") {
         if (args.length > 0) {
-            bwinSleep(args[0].toInt());
+            #on WINDOWS
+            Sleep(args[0].toInt());
+            #off
         }
         return makeNull();
     }
@@ -1542,9 +1641,15 @@ Value callBuiltin(string name, Value[] args) {
         // formats through %g (six significant digits), which would collapse
         // sub-millisecond stopwatch deltas at boot-scale magnitudes. The
         // int64 math stays far below overflow (rem < freq <= ~1e7 ticks/s).
-        int64 freq = bwinQpcFreq();
+        // The QPC pair is inline in the region (v2 rule 6), the int64
+        // out-params through &locals exactly like std/time.sr's folded now().
+        int64 freq = 0;
+        int64 count = 0;
+        #on WINDOWS
+        QueryPerformanceFrequency(&freq);
+        QueryPerformanceCounter(&count);
+        #off
         if (freq <= 0) { return makeFloatStr("0"); }
-        int64 count = bwinQpcCount();
         int64 secs = count / freq;
         int64 rem = count % freq;
         int64 micros = rem * 1000000 / freq;
@@ -1633,44 +1738,76 @@ Value callBuiltin(string name, Value[] args) {
             int p1 = args[1].toInt().toInt();
             int p2 = args[2].toInt().toInt();
             int p3 = args[3].toInt().toInt();
+            #on WINDOWS
             if (name == "keybd_event") {
-                bwinKeybdEvent(p0, p1, p2, p3);
+                keybd_event(p0, p1, p2, p3);
             } else {
-                bwinMouseEvent(p0, p1, p2, p3, 0);
+                mouse_event(p0, p1, p2, p3, 0);
             }
+            #off
         } else if (args.length > 0 && name == "keybd_event") {
-            bwinKeybdEvent(args[0].toInt().toInt(), 0, 0, 0);
+            #on WINDOWS
+            keybd_event(args[0].toInt().toInt(), 0, 0, 0);
+            #off
         }
         return makeNull();
     }
     if (name == "VkKeyScanA") {
         if (args.length > 0) {
             string s = args[0].strVal;
-            return makeInt(bwinVkKeyScanA(s));
+            int scan = -1;
+            #on WINDOWS
+            scan = VkKeyScanA(s);
+            #off
+            return makeInt(scan);
         }
         return makeInt(-1);
     }
     if (name == "GetKeyState") {
-        if (args.length > 0) { return makeInt(bwinGetKeyState(args[0].toInt().toInt())); }
+        if (args.length > 0) {
+            int state = 0;
+            #on WINDOWS
+            state = GetKeyState(args[0].toInt().toInt());
+            #off
+            return makeInt(state);
+        }
         return makeInt(0);
     }
     if (name == "GetAsyncKeyState") {
-        if (args.length > 0) { return makeInt(bwinGetAsyncKeyState(args[0].toInt().toInt())); }
+        if (args.length > 0) {
+            int state = 0;
+            #on WINDOWS
+            state = GetAsyncKeyState(args[0].toInt().toInt());
+            #off
+            return makeInt(state);
+        }
         return makeInt(0);
     }
     if (name == "MapVirtualKeyA") {
         if (args.length >= 2) {
             int a0 = args[0].toInt().toInt();
             int a1 = args[1].toInt().toInt();
-            return makeInt(bwinMapVirtualKeyA(a0, a1));
+            int mapped = 0;
+            #on WINDOWS
+            mapped = MapVirtualKeyA(a0, a1);
+            #off
+            return makeInt(mapped);
         }
         return makeInt(0);
     }
     if (name == "GetCursorX") {
-        return makeInt(bwinGetCursorX());
+        int cx = 0;
+        #on WINDOWS
+        cx = GetCursorX();
+        #off
+        return makeInt(cx);
     }
     if (name == "GetCursorY") {
-        return makeInt(bwinGetCursorY());
+        int cy = 0;
+        #on WINDOWS
+        cy = GetCursorY();
+        #off
+        return makeInt(cy);
     }
     if (name == "GetCursorPos") {
         // The interpreter cannot write to a managed Value[] from a cross-module
@@ -1680,8 +1817,12 @@ Value callBuiltin(string name, Value[] args) {
         // in the argument expression of the store.
         if (args.length >= 1 && args[0].tag == VAL_ARRAY) {
             if (arrValLen(args[0]) >= 2) {
-                int cx = bwinGetCursorX();
-                int cy = bwinGetCursorY();
+                int cx = 0;
+                int cy = 0;
+                #on WINDOWS
+                cx = GetCursorX();
+                cy = GetCursorY();
+                #off
                 Value vx = makeInt(cx);
                 Value vy = makeInt(cy);
                 arrValSetAt(args[0], 0, vx);
@@ -1694,7 +1835,13 @@ Value callBuiltin(string name, Value[] args) {
     }
     if (name == "SetCursorPos") {
         if (args.length >= 2) {
-            return makeBool(bwinSetCursorPos(args[0].toInt().toInt(), args[1].toInt().toInt()));
+            int ax = args[0].toInt().toInt();
+            int ay = args[1].toInt().toInt();
+            int moved = 0;
+            #on WINDOWS
+            moved = SetCursorPos(ax, ay);
+            #off
+            return makeBool(moved != 0);
         }
         return makeBool(false);
     }
@@ -1702,7 +1849,14 @@ Value callBuiltin(string name, Value[] args) {
         // HCURSOR: accept an int (cursor handle id) and forward. Returns the
         // prior cursor handle so callers can restore it after a temporary
         // change.
-        if (args.length >= 1) { return makeInt(bwinSetCursor(args[0].toInt().toInt())); }
+        if (args.length >= 1) {
+            int handle = args[0].toInt().toInt();
+            int prior = 0;
+            #on WINDOWS
+            prior = SetCursor(handle);
+            #off
+            return makeInt(prior);
+        }
         return makeInt(0);
     }
     if (name == "ClipCursor") {
@@ -1710,7 +1864,11 @@ Value callBuiltin(string name, Value[] args) {
         // forward raw through to Win32; passing 0 disables clipping.
         if (args.length >= 1) {
             int refAddr = args[0].toInt().toInt();
-            return makeInt(bwinClipCursor(refAddr));
+            int clipped = 0;
+            #on WINDOWS
+            clipped = ClipCursor(refAddr);
+            #off
+            return makeInt(clipped);
         }
         return makeInt(0);
     }
@@ -1719,110 +1877,184 @@ Value callBuiltin(string name, Value[] args) {
         // buffer; we mirror Win32's behaviour of accepting a pointer arg.
         if (args.length >= 1) {
             int refAddr = args[0].toInt().toInt();
-            return makeInt(bwinGetClipCursor(refAddr));
+            int got = 0;
+            #on WINDOWS
+            got = GetClipCursor(refAddr);
+            #off
+            return makeInt(got);
         }
         return makeInt(0);
     }
     if (name == "GetDoubleClickTime") {
-        return makeInt(bwinGetDoubleClickTime());
+        int dt = 0;
+        #on WINDOWS
+        dt = GetDoubleClickTime();
+        #off
+        return makeInt(dt);
     }
     if (name == "SetDoubleClickTime") {
         if (args.length >= 1) {
-            return makeBool(bwinSetDoubleClickTime(args[0].toInt().toInt()));
+            int v = args[0].toInt().toInt();
+            int ok = 0;
+            #on WINDOWS
+            ok = SetDoubleClickTime(v);
+            #off
+            return makeBool(ok != 0);
         }
         return makeBool(false);
     }
     if (name == "RegisterHotKey") {
         // RegisterHotKey(HWND, int id, UINT fsModifiers, UINT vk)
         if (args.length >= 4) {
-            return makeBool(bwinRegisterHotKey(
-                args[0].toInt().toInt(),
-                args[1].toInt().toInt(),
-                args[2].toInt().toInt(),
-                args[3].toInt().toInt()
-            ));
+            int a0 = args[0].toInt().toInt();
+            int a1 = args[1].toInt().toInt();
+            int a2 = args[2].toInt().toInt();
+            int a3 = args[3].toInt().toInt();
+            int ok = 0;
+            #on WINDOWS
+            ok = RegisterHotKey(a0, a1, a2, a3);
+            #off
+            return makeBool(ok != 0);
         }
         return makeBool(false);
     }
     if (name == "UnregisterHotKey") {
         if (args.length >= 2) {
-            return makeBool(bwinUnregisterHotKey(
-                args[0].toInt().toInt(),
-                args[1].toInt().toInt()
-            ));
+            int a0 = args[0].toInt().toInt();
+            int a1 = args[1].toInt().toInt();
+            int ok = 0;
+            #on WINDOWS
+            ok = UnregisterHotKey(a0, a1);
+            #off
+            return makeBool(ok != 0);
         }
         return makeBool(false);
     }
     if (name == "MessageBeep") {
         if (args.length >= 1) {
-            return makeBool(bwinMessageBeep(args[0].toInt().toInt()));
+            int t = args[0].toInt().toInt();
+            int ok = 0;
+            #on WINDOWS
+            ok = MessageBeep(t);
+            #off
+            return makeBool(ok != 0);
         }
         return makeBool(false);
     }
     if (name == "RegisterRawInputDevices") {
         // RegisterRawInputDevices(PCRAWINPUTDEVICE[], UINT nDevices, UINT cbSize)
         if (args.length >= 3) {
-            return makeBool(bwinRegisterRawInputDevices(
-                args[0].toInt().toInt(),
-                args[1].toInt().toInt(),
-                args[2].toInt().toInt()
-            ));
+            int a0 = args[0].toInt().toInt();
+            int a1 = args[1].toInt().toInt();
+            int a2 = args[2].toInt().toInt();
+            int ok = 0;
+            #on WINDOWS
+            ok = RegisterRawInputDevices(a0, a1, a2);
+            #off
+            return makeBool(ok != 0);
         }
         return makeBool(false);
     }
     if (name == "GetRawInputData") {
         // GetRawInputData(HRAWINPUT, UINT uiCommand, void* pData, int* pcbSize, UINT cbSizeHeader)
         if (args.length >= 5) {
-            return makeInt(bwinGetRawInputData(
-                args[0].toInt().toInt(),
-                args[1].toInt().toInt(),
-                args[2].toInt().toInt(),
-                args[3].toInt().toInt(),
-                args[4].toInt().toInt()
-            ));
+            int a0 = args[0].toInt().toInt();
+            int a1 = args[1].toInt().toInt();
+            int a2 = args[2].toInt().toInt();
+            int a3 = args[3].toInt().toInt();
+            int a4 = args[4].toInt().toInt();
+            int got = 0;
+            #on WINDOWS
+            got = GetRawInputData(a0, a1, a2, a3, a4);
+            #off
+            return makeInt(got);
         }
         return makeInt(0);
     }
     if (name == "GetRawInputDeviceList") {
         // GetRawInputDeviceList(PRAWINPUTDEVICELIST* pRawInputDeviceList, PUINT puiNumDevices, UINT cbSize)
         if (args.length >= 3) {
-            return makeInt(bwinGetRawInputDeviceList(
-                args[0].toInt().toInt(),
-                args[1].toInt().toInt(),
-                args[2].toInt().toInt()
-            ));
+            int a0 = args[0].toInt().toInt();
+            int a1 = args[1].toInt().toInt();
+            int a2 = args[2].toInt().toInt();
+            int got = 0;
+            #on WINDOWS
+            got = GetRawInputDeviceList(a0, a1, a2);
+            #off
+            return makeInt(got);
         }
         return makeInt(0);
     }
     if (name == "GetForegroundWindow") {
-        return makeInt(bwinGetForegroundWindow());
+        int hwnd = 0;
+        #on WINDOWS
+        hwnd = GetForegroundWindow();
+        #off
+        return makeInt(hwnd);
     }
     if (name == "GetWindowTextA") {
         if (args.length >= 3) {
-            return makeInt(bwinGetWindowTextA(args[0].toInt().toInt(), args[1].toInt().toInt(), args[2].toInt().toInt()));
+            int a0 = args[0].toInt().toInt();
+            int a1 = args[1].toInt().toInt();
+            int a2 = args[2].toInt().toInt();
+            int copied = 0;
+            #on WINDOWS
+            copied = GetWindowTextA(a0, a1, a2);
+            #off
+            return makeInt(copied);
         }
         return makeInt(0);
     }
     if (name == "GetWindowThreadProcessId") {
         if (args.length >= 2) {
-            return makeInt(bwinGetWindowThreadProcessIdPtr(args[0].toInt().toInt(), args[1].toInt().toInt()));
+            // Raw passthrough (v2 rule 6): the caller supplies the LPDWORD
+            // address itself; returns the thread id exactly as the export.
+            int a0 = args[0].toInt().toInt();
+            int a1 = args[1].toInt().toInt();
+            int tid = 0;
+            #on WINDOWS
+            tid = GetWindowThreadProcessId(a0, a1);
+            #off
+            return makeInt(tid);
         }
         return makeInt(0);
     }
     if (name == "OpenProcess") {
         if (args.length >= 3) {
-            return makeInt(bwinOpenProcess(args[0].toInt().toInt(), args[1].toInt().toInt(), args[2].toInt().toInt()));
+            int a0 = args[0].toInt().toInt();
+            int a1 = args[1].toInt().toInt();
+            int a2 = args[2].toInt().toInt();
+            int hProcess = 0;
+            #on WINDOWS
+            hProcess = OpenProcess(a0, a1, a2);
+            #off
+            return makeInt(hProcess);
         }
         return makeInt(0);
     }
     if (name == "QueryFullProcessImageNameA") {
         if (args.length >= 4) {
-            return makeInt(bwinQueryFullProcessImageNameA(args[0].toInt().toInt(), args[1].toInt().toInt(), args[2].toInt().toInt(), args[3].toInt().toInt()));
+            int a0 = args[0].toInt().toInt();
+            int a1 = args[1].toInt().toInt();
+            int a2 = args[2].toInt().toInt();
+            int a3 = args[3].toInt().toInt();
+            int got = 0;
+            #on WINDOWS
+            got = QueryFullProcessImageNameA(a0, a1, a2, a3);
+            #off
+            return makeInt(got);
         }
         return makeInt(0);
     }
     if (name == "CloseHandle") {
-        if (args.length >= 1) { return makeBool(bwinCloseHandle(args[0].toInt().toInt())); }
+        if (args.length >= 1) {
+            int h = args[0].toInt().toInt();
+            int ok = 0;
+            #on WINDOWS
+            ok = CloseHandle(h);
+            #off
+            return makeBool(ok != 0);
+        }
         return makeBool(false);
     }
     // Adaptive resource layer (resource.sr): SYSTEM_INFO/MEMORYSTATUSEX
@@ -1830,12 +2062,20 @@ Value callBuiltin(string name, Value[] args) {
     // buffer pointer, so the native call fills it in place (same buffer
     // contract the self-hosted resource.sr relies on).
     if (name == "GetSystemInfo") {
-        if (args.length >= 1) { bwinSystemInfo(args[0].toString()); }
+        if (args.length >= 1) {
+            #on WINDOWS
+            GetSystemInfo(args[0].toString());
+            #off
+        }
         return makeInt(0);
     }
     if (name == "GlobalMemoryStatusEx") {
         if (args.length >= 1) {
-            int ok = bwinGlobalMemoryStatusEx(args[0].toString());
+            string buf = args[0].toString();
+            int ok = 0;
+            #on WINDOWS
+            ok = GlobalMemoryStatusEx(buf);
+            #off
             return makeInt(ok);
         }
         return makeInt(0);
@@ -1845,31 +2085,71 @@ Value callBuiltin(string name, Value[] args) {
     // kernel32.dll imports; the interpreter just passes the managed args
     // through in the documented Win64 order.
     if (name == "GetModuleHandleA") {
-        if (args.length >= 1) { return makeInt(bwinGetModuleHandleA(args[0].toInt().toInt())); }
-        return makeInt(bwinGetModuleHandleA(0));
+        // Args hoisted into locals ahead of the region so no call expression
+        // sits inside the region itself.
+        int a0 = 0;
+        if (args.length >= 1) { a0 = args[0].toInt().toInt(); }
+        int h = 0;
+        #on WINDOWS
+        h = GetModuleHandleA(a0);
+        #off
+        return makeInt(h);
     }
     if (name == "GetSystemMetrics") {
-        if (args.length >= 1) { return makeInt(bwinGetSystemMetrics(args[0].toInt().toInt())); }
+        if (args.length >= 1) {
+            int idx = args[0].toInt().toInt();
+            int metric = 0;
+            #on WINDOWS
+            metric = GetSystemMetrics(idx);
+            #off
+            return makeInt(metric);
+        }
         return makeInt(0);
     }
     if (name == "ShowWindow") {
         if (args.length >= 2) {
-            return makeInt(bwinShowWindow(args[0].toInt().toInt(), args[1].toInt().toInt()));
+            int a0 = args[0].toInt().toInt();
+            int a1 = args[1].toInt().toInt();
+            int shown = 0;
+            #on WINDOWS
+            shown = ShowWindow(a0, a1);
+            #off
+            return makeInt(shown);
         }
         return makeInt(0);
     }
     if (name == "UpdateWindow") {
-        if (args.length >= 1) { return makeInt(bwinUpdateWindow(args[0].toInt().toInt())); }
+        if (args.length >= 1) {
+            int h = args[0].toInt().toInt();
+            int updated = 0;
+            #on WINDOWS
+            updated = UpdateWindow(h);
+            #off
+            return makeInt(updated);
+        }
         return makeInt(0);
     }
     if (name == "SetWindowTextA") {
         if (args.length >= 2) {
-            return makeInt(bwinSetWindowTextA(args[0].toInt().toInt(), args[1].toString()));
+            int h = args[0].toInt().toInt();
+            string s = args[1].toString();
+            int ok = 0;
+            #on WINDOWS
+            ok = SetWindowTextA(h, s);
+            #off
+            return makeInt(ok);
         }
         return makeInt(0);
     }
     if (name == "DestroyWindow") {
-        if (args.length >= 1) { return makeInt(bwinDestroyWindow(args[0].toInt().toInt())); }
+        if (args.length >= 1) {
+            int h = args[0].toInt().toInt();
+            int destroyed = 0;
+            #on WINDOWS
+            destroyed = DestroyWindow(h);
+            #off
+            return makeInt(destroyed);
+        }
         return makeInt(0);
     }
     if (name == "CreateWindowExA") {
@@ -1886,7 +2166,11 @@ Value callBuiltin(string name, Value[] args) {
             int cw9 = args[9].toInt().toInt();
             int cw10 = args[10].toInt().toInt();
             int cw11 = args[11].toInt().toInt();
-            return makeInt(bwinCreateWindowExA(cw0, cw1, cw2, cw3, cw4, cw5, cw6, cw7, cw8, cw9, cw10, cw11));
+            int hwnd = 0;
+            #on WINDOWS
+            hwnd = CreateWindowExA(cw0, cw1, cw2, cw3, cw4, cw5, cw6, cw7, cw8, cw9, cw10, cw11);
+            #off
+            return makeInt(hwnd);
         }
         return makeInt(0);
     }
@@ -1900,24 +2184,32 @@ Value callBuiltin(string name, Value[] args) {
     // Forward to user32!LoadImageA / SendMessageA through the native bridge.
     if (name == "LoadImageA") {
         if (args.length >= 6) {
-            return makeInt(bwinLoadImageA(
-                args[0].toInt().toInt(),
-                args[1].toString(),
-                args[2].toInt().toInt(),
-                args[3].toInt().toInt(),
-                args[4].toInt().toInt(),
-                args[5].toInt().toInt()));
+            int a0 = args[0].toInt().toInt();
+            string a1 = args[1].toString();
+            int a2 = args[2].toInt().toInt();
+            int a3 = args[3].toInt().toInt();
+            int a4 = args[4].toInt().toInt();
+            int a5 = args[5].toInt().toInt();
+            int loaded = 0;
+            #on WINDOWS
+            loaded = LoadImageA(a0, a1, a2, a3, a4, a5);
+            #off
+            return makeInt(loaded);
         }
         return makeInt(0);
     }
 
     if (name == "SendMessageA") {
         if (args.length >= 4) {
-            return makeInt(bwinSendMessageA(
-                args[0].toInt().toInt(),
-                args[1].toInt().toInt(),
-                args[2].toInt().toInt(),
-                args[3].toInt().toInt()));
+            int a0 = args[0].toInt().toInt();
+            int a1 = args[1].toInt().toInt();
+            int a2 = args[2].toInt().toInt();
+            int a3 = args[3].toInt().toInt();
+            int sent = 0;
+            #on WINDOWS
+            sent = SendMessageA(a0, a1, a2, a3);
+            #off
+            return makeInt(sent);
         }
         return makeInt(0);
     }
@@ -1972,23 +2264,18 @@ Value callBuiltin(string name, Value[] args) {
         // values to user32!SendInput; unlike the old placeholder this returns
         // the actual number of events inserted.
         if (args.length >= 3) {
-            return makeInt(bwinSendInput(
-                args[0].toInt().toInt(),
-                args[1].toInt().toInt(),
-                args[2].toInt().toInt()
-            ));
+            int a0 = args[0].toInt().toInt();
+            int a1 = args[1].toInt().toInt();
+            int a2 = args[2].toInt().toInt();
+            int sent = 0;
+            #on WINDOWS
+            sent = SendInput(a0, a1, a2);
+            #off
+            return makeInt(sent);
         }
         return makeInt(0);
     }
     return makeNull();
-}
-
-// Write a string to STD_ERROR_HANDLE (-12) via the internal Windows backend,
-// used by the eprintln/eprint builtins so diagnostics stay off stdout
-// (matches the compilers' OVERHAUL.md CLI diagnostics overhaul).
-private void writeStderrBuiltin(string msg) {
-    if (msg.length == 0) { return; }
-    bwinWriteStderr(msg, msg.length);
 }
 
 // ---------------------------------------------------------------------------

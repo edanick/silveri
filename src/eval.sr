@@ -4,7 +4,6 @@ import ast;
 import value;
 import env;
 import builtins;
-import builtins_win;
 import fs;
 class ReturnSignal {
     public prop Value val;
@@ -1386,14 +1385,23 @@ mirrorPut(obj, target.name, val);
             && this.win32HasExport("kernel32.dll", node.name)) {
             // std/time.sr's folded WINDOWS now() body calls the QPC pair raw
             // (the v2 fold removed the time_win indirection the interpreter
-            // used to serve natively via timeWinNow). Answer with the
-            // interpreter's own kernel32-backend leaves and write through the
-            // `&int64` out-param exactly like the compilers' real imports:
-            // the grant gate mirrors rs identifier resolution, the env
-            // write-back mirrors callNodeWithRefs' ref aliasing.
+            // used to serve natively via timeWinNow). Answer with the raw
+            // kernel32 calls inline in this arm under the region (v2 rule 6;
+            // the former builtins_win QPC wrappers are gone -- the kernel32
+            // grant comes from builtins.sr's file-top region import) and
+            // write through the `&int64` out-param exactly like the
+            // compilers' real imports: the grant gate mirrors rs identifier
+            // resolution, the env write-back mirrors callNodeWithRefs' ref
+            // aliasing.
             if (refNames.length > 0 && refNames[0] != "") {
-                int64 ticks = bwinQpcCount();
-                if (node.name == "QueryPerformanceFrequency") { ticks = bwinQpcFreq(); }
+                int64 ticks = 0;
+                #on WINDOWS
+                if (node.name == "QueryPerformanceCounter") {
+                    QueryPerformanceCounter(&ticks);
+                } else {
+                    QueryPerformanceFrequency(&ticks);
+                }
+                #off
                 env.set(refNames[0], makeInt(ticks));
             }
             result = makeBool(true);

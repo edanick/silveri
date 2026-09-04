@@ -201,8 +201,7 @@ string filterStdRegions(string src) {
 // Loaded text is passed through filterStdRegions first: the v2 unified std
 // carries `#on WINDOWS ... #off` regions that the interpreter's parser must
 // never see (DOCS/260).
-string readStdModule(string name, string inputFile, string selfSource) {
-    string lower = name.lower();
+string readStdModule(string name, string inputFile, string selfSource) {    string lower = name.lower();
     string[] paths = [];
     // Resolve user modules beside the script before probing the standard
     // library.  `silveri tests/main.sr` must be able to load tests/helper.sr,
@@ -498,12 +497,21 @@ void main() {
 
     string inputSource = "";
     if (isProjectPath(filename)) {
-        inputSource = loadProjectSource(filename);
+        // Own-source load point (v2 fold): the .srp aggregate builder reads
+        // each source file raw, so the region filter runs on the assembled
+        // text here -- silveri's own src files now carry `#on WINDOWS ... #off`
+        // regions (builtins.sr's folded backend), and the interpreter's
+        // parser must never see the directive lines. The filter blanks
+        // directive lines but preserves every other line, so line counts
+        // (and the prepend boundary computed below) stay file-accurate.
+        inputSource = filterStdRegions(loadProjectSource(filename));
     } else {
         // `.col` declarations require a project manifest. Reuse the project
         // loader's validation so standalone scripts report
         // UnknownCollectionException instead of a generic parser error.
-        inputSource = projExpandCollections(fs.readFile(filename), ".", "");
+        // Same filter as the project path: a script (or its .col expansions)
+        // carrying regions is filtered before lexing.
+        inputSource = filterStdRegions(projExpandCollections(fs.readFile(filename), ".", ""));
     }
 
     // Resolve `import * from <module>` statements by prepending the module
