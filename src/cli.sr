@@ -38,11 +38,17 @@ public bool isFlag(string arg, string[] names) {
     return false;
 }
 
-// Returns true if `arg` looks like an option (begins with '-' or '/').
-// Used to distinguish positional arguments from options while scanning.
+// Returns true if `arg` looks like an option. On WINDOWS a leading `-`
+// or `/` marks an option (so `/?`-style spellings keep working); on LINUX
+// only `-` does — absolute paths start with `/` there and must stay
+// positional (mirrors silverc/compiler/cli_flags.sr, which only tests
+// for `-`). Additive: WINDOWS behavior is unchanged.
 public bool isOption(string arg) {
     if (arg.length == 0) { return false; }
     char c = arg[0];
+    #on LINUX
+    return c == '-';
+    #off
     return c == '-' || c == '/';
 }
 
