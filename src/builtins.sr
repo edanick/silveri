@@ -963,8 +963,28 @@ class BuiltinMethods {
             string path = "";
             if (args.length > 0) { path = args[0].strVal; }
             if (method == "exists") { return makeBool(fs.exists(path)); }
-            if (method == "isDir") { return makeBool(fs.isDir(path)); }
-            if (method == "isFile") { return makeBool(fs.isFile(path)); }
+            if (method == "isDir") {
+                #on LINUX
+                int[] stDir = new int[18];
+                int rcDir = stat(path, stDir);
+                if (rcDir != 0) { return makeBool(false); }
+                int modeDir = stDir[3] & 0xFFFF;
+                if ((modeDir & 0xF000) == 0x4000) { return makeBool(true); }
+                return makeBool(false);
+                #off
+                return makeBool(fs.isDir(path));
+            }
+            if (method == "isFile") {
+                #on LINUX
+                int[] stFile = new int[18];
+                int rcFile = stat(path, stFile);
+                if (rcFile != 0) { return makeBool(false); }
+                int modeFile = stFile[3] & 0xFFFF;
+                if ((modeFile & 0xF000) == 0x8000) { return makeBool(true); }
+                return makeBool(false);
+                #off
+                return makeBool(fs.isFile(path));
+            }
             if (method == "isDriveRoot") { return makeBool(fs.isDriveRoot(path)); }
             if (method == "getSize") { return makeInt(fs.getSize(path)); }
             if (method == "delete") { fs.delete(path); return makeNull(); }
