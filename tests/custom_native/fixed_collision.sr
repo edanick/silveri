@@ -1,0 +1,10 @@
+// Precedence fixture: a custom entry colliding with a FIXED module name
+// stays on the fixed path. `win32.kernel32` resolves to the fixed module
+// (no manifest stanza, no single-export hint), and `import * from win32;`
+// grants the fixed family only.
+import * from win32.kernel32;
+import * from win32;
+
+void main() {
+    printline("fixed collision OK");
+}

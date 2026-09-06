@@ -1,0 +1,16 @@
+{
+    name: "qs_consumer_with_native",
+    version: "0.1.0",
+    license: "test",
+    entry: "consumer.sr",
+    sources: ["consumer.sr"],
+    imports: ["qslib/fakelib.qs"],
+    nativeModules: [
+        { "module": "fakebridge", "windows": "fake-win.dll", "linux": "libfake.so.9" },
+        // A custom entry colliding with the bundled Silver module never
+        // hijacks it: `import * from fakelib;` still resolves to the `.qs`
+        // sources (bare-name precedence).
+        { "module": "fakelib", "windows": "fake-lib.dll", "linux": "libfakelib.so.1" }
+    ],
+    output: "consumer_with.exe"
+}

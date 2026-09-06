@@ -1,0 +1,11 @@
+{
+    name: "star_nolist_native",
+    version: "0.1.0",
+    license: "test",
+    entry: "star_nolist.sr",
+    sources: ["star_nolist.sr"],
+    nativeModules: [
+        { "module": "gfx", "windows": "fake-gfx.dll", "linux": "libfakegfx.so.1" }
+    ],
+    output: "star_nolist.exe"
+}

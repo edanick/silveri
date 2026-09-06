@@ -1,0 +1,11 @@
+{
+    name: "undeclared_native",
+    version: "0.1.0",
+    license: "test",
+    entry: "undeclared.sr",
+    sources: ["undeclared.sr"],
+    nativeModules: [
+        { "module": "fakebridge", "windows": "fake-win.dll", "linux": "libfake.so.9" }
+    ],
+    output: "undeclared.exe"
+}

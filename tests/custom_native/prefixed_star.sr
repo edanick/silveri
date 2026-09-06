@@ -1,0 +1,7 @@
+// Negative fixture: star on a prefixed custom module takes single-export
+// grants only, even with no export list involved.
+import * from win32.fakebridge;
+
+void main() {
+    fakeCompute(1);
+}

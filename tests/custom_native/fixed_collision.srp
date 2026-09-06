@@ -1,0 +1,11 @@
+{
+    name: "fixed_collision_native",
+    version: "0.1.0",
+    license: "test",
+    entry: "fixed_collision.sr",
+    sources: ["fixed_collision.sr"],
+    nativeModules: [
+        { "module": "kernel32", "windows": "fake-kernel.dll", "linux": "libfakekernel.so.1" }
+    ],
+    output: "fixed_collision.exe"
+}

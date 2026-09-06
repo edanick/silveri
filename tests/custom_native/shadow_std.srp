@@ -1,0 +1,11 @@
+{
+    name: "shadow_std_native",
+    version: "0.1.0",
+    license: "test",
+    entry: "shadow_std.sr",
+    sources: ["shadow_std.sr"],
+    nativeModules: [
+        { "module": "registry", "windows": "fake-reg.dll", "linux": "libfakereg.so.1" }
+    ],
+    output: "shadow_std.exe"
+}

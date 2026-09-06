@@ -1,0 +1,10 @@
+mod export fakelib;
+
+// A `.qs` library module that needs a custom native: consumers must declare
+// `fakebridge` in their own `nativeModules` (compilers' `.qs` rule).
+import { fakeCompute } from fakebridge;
+
+string fakeStatus(int x) {
+    if (fakeCompute(x) == null) { return "stub"; }
+    return "real";
+}

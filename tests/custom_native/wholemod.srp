@@ -1,0 +1,11 @@
+{
+    name: "wholemod_native",
+    version: "0.1.0",
+    license: "test",
+    entry: "wholemod.sr",
+    sources: ["wholemod.sr"],
+    nativeModules: [
+        { "module": "fakebridge", "windows": "fake-win.dll", "linux": "libfake.so.9" }
+    ],
+    output: "wholemod.exe"
+}

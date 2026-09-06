@@ -1,0 +1,11 @@
+{
+    name: "prefixed_star_native",
+    version: "0.1.0",
+    license: "test",
+    entry: "prefixed_star.sr",
+    sources: ["prefixed_star.sr"],
+    nativeModules: [
+        { "module": "fakebridge", "windows": "fake-win.dll", "linux": "libfake.so.9" }
+    ],
+    output: "prefixed_star.exe"
+}

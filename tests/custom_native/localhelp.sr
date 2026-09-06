@@ -1,0 +1,5 @@
+mod export localhelp;
+
+int localAnswer() {
+    return 42;
+}

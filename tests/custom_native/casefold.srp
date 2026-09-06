@@ -1,0 +1,11 @@
+{
+    name: "casefold_native",
+    version: "0.1.0",
+    license: "test",
+    entry: "casefold.sr",
+    sources: ["casefold.sr"],
+    "NATIVEMODULES": [
+        { "MODULE": "casefake", "WINDOWS": "fake-case.dll", "LINUX": "libfakecase.so.1", "bogusKey": "ignored" }
+    ],
+    output: "casefold.exe"
+}

@@ -1,0 +1,6 @@
+// Negative fixture: prefixed import of a module nobody declared.
+import { nosuchFn } from win32.nosuchmod;
+
+void main() {
+    nosuchFn(1);
+}

@@ -1,0 +1,9 @@
+// Precedence fixture: a custom entry colliding with a Silver std module
+// never hijacks it. `import * from registry;` prepends the real std module
+// and the registry calls run as Silver (no-op stubs on Linux).
+import * from registry;
+
+void main() {
+    int h = regCreate(RegistryHive.CURRENT_USER, "Software\\Silver\\ShadowTest", RegistryAccess.READ_WRITE);
+    printline("shadow std OK");
+}

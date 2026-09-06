@@ -1,0 +1,11 @@
+{
+    name: "shadow_project_native",
+    version: "0.1.0",
+    license: "test",
+    entry: "shadow_entry.sr",
+    sources: ["shadow_entry.sr", "localhelp.sr"],
+    nativeModules: [
+        { "module": "localhelp", "windows": "fake-local.dll", "linux": "libfakelocal.so.1" }
+    ],
+    output: "shadow_project.exe"
+}

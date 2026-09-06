@@ -1,0 +1,8 @@
+// One-OS fixture: `winonly` is declared Windows-only. Bare-importing it
+// on a Linux target fails naming the module and the missing side; on a
+// Windows target (`--os windows`) the grant stubs like any native call.
+import { winonlyFn } from winonly;
+
+void main() {
+    if (winonlyFn(1) == null) { printline("winonly stub OK"); }
+}

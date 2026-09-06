@@ -1,0 +1,9 @@
+{
+    name: "qs_consumer_without_native",
+    version: "0.1.0",
+    license: "test",
+    entry: "consumer.sr",
+    sources: ["consumer.sr"],
+    imports: ["qslib/fakelib.qs"],
+    output: "consumer_without.exe"
+}

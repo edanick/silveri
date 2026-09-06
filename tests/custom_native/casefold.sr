@@ -1,0 +1,7 @@
+// Schema fixture: manifest field names are case-insensitive and unknown
+// keys are ignored. `casefake` grants and stubs like any custom module.
+import { caseCompute } from casefake;
+
+void main() {
+    if (caseCompute(1) == null) { printline("casefold stub OK"); }
+}

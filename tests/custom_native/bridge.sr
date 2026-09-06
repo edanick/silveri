@@ -1,0 +1,17 @@
+// Interpreted-run entry for `.srp` `nativeModules` (DOCS/261). Granted
+// custom calls stub to null through the same builtin path as fixed natives
+// on a host without their backend: never an error, never a crash.
+// `neverCalled` is granted but never called, and `unusedmod`/`winonly` are
+// declared but never imported (lazy: no diagnostics on any OS).
+import bare_imports;
+import star_imports;
+import { fakeCompute, neverCalled } from win32.fakebridge;
+import { fakeComputeLinux } from linux.fakebridge;
+
+void main() {
+    checkBare();
+    checkStar();
+    if (fakeCompute(1) == null) { printline("win32.fakebridge stub OK"); }
+    if (fakeComputeLinux(1) == null) { printline("linux.fakebridge stub OK"); }
+    printline("custom native grants OK");
+}
