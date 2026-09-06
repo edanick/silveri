@@ -31,6 +31,12 @@ class Evaluator {
     // DOCS/213 -- win32 module grants collected from import statements.
     public prop string[] win32Dlls;
     public prop string[] win32Grants;
+    // LINUX (additive, mirrors silverc/compiler/mini_cg.sr linux tables):
+    // linux module grants collected from `import ... from linux...`
+    // statements. Universal data (no OS calls), so no region -- like the
+    // win32 tables above, they compile on both targets.
+    public prop string[] linuxLibs;
+    public prop string[] linuxGrants;
     // DOCS/124 -- the script's command-line arguments, exposed to user code as
     // both the `cargs` array variable and the `cargs()` function.
     public prop string[] scriptArgs;
@@ -92,6 +98,8 @@ class Evaluator {
         this.currentModule = "";
         this.win32Dlls = [];
         this.win32Grants = [];
+        this.linuxLibs = [];
+        this.linuxGrants = [];
         this.scriptArgs = [];
         this.scriptCargs = null;
         this.diagLine = 0;
@@ -247,7 +255,16 @@ class Evaluator {
         this.loopTicks = this.loopTicks + 1;
         if (this.loopTicks >= 256) {
             this.loopTicks = 0;
+            #on WINDOWS
             Sleep(1);
+            #off
+            #on LINUX
+            int[] tsGc = new int[2];
+            tsGc[0] = 0;
+            tsGc[1] = 1000000;
+            int[] remGc = new int[2];
+            nanosleep(tsGc, remGc);
+            #off
         }
         if (GC.shouldCollect()) {
             if (this.returnValue != null) {
@@ -549,6 +566,152 @@ class Evaluator {
         this.defineGrantedExports(dll);
     }
 
+    // LINUX (additive, mirrors silverc/compiler/mini_cg.sr linux tables):
+    // linux module system beside the win32 one above. Raw libc free
+    // identifiers become available only after the script imports the owning
+    // module (`import * from linux.libc;`). Universal string logic (no OS
+    // calls), so no region -- compiles on both targets like the win32
+    // tables. Export strings mirror mini_cg.sr linuxExportTable word for
+    // word so grants resolve identically.
+    public string linuxModuleLib(string module) {
+        if (module == "libc") { return "libc.so.6"; }
+        if (module == "x11") { return "libX11.so.6"; }
+        if (module == "xtst") { return "libXtst.so.6"; }
+        return "";
+    }
+
+    public string linuxExportTable(string lib) {
+        if (lib == "libc.so.6") { return "exit mmap munmap malloc free read write open close lseek stat unlink rename mkdir rmdir opendir readdir closedir getenv setenv clock_gettime nanosleep localtime_r gmtime_r fork execve waitpid kill pipe dup2 _exit execvpe getpid pthread_create pthread_join sysconf uname gethostname getlogin_r statvfs getrandom rand srand getuid printf strlen strcmp strcpy memcpy memset socket connect bind listen accept send recv setsockopt getaddrinfo freeaddrinfo"; }
+        if (lib == "libX11.so.6") { return "XOpenDisplay XCloseDisplay XQueryPointer XWarpPointer XFlush XCreateSimpleWindow XMapWindow XUnmapWindow XDestroyWindow XStoreName XDefaultRootWindow XScreenCount XDisplayWidth XDisplayHeight XStringToKeysym XKeysymToKeycode XQueryKeymap"; }
+        if (lib == "libXtst.so.6") { return "XTestFakeButtonEvent XTestFakeKeyEvent XTestFakeMotionEvent XTestQueryExtension"; }
+        return "";
+    }
+
+    public bool linuxTableHas(string lib, string fn) {
+        string table = this.linuxExportTable(lib);
+        int i = 0;
+        while (i < table.length) {
+            while (i < table.length && table[i] == ' ') { i++; }
+            int start = i;
+            while (i < table.length && table[i] != ' ') { i++; }
+            if (i > start && this.evalSliceStr(table, start, i) == fn) { return true; }
+        }
+        return false;
+    }
+
+    public string linuxLibForFn(string fn) {
+        if (this.linuxTableHas("libc.so.6", fn)) { return "libc.so.6"; }
+        if (this.linuxTableHas("libX11.so.6", fn)) { return "libX11.so.6"; }
+        if (this.linuxTableHas("libXtst.so.6", fn)) { return "libXtst.so.6"; }
+        return "";
+    }
+
+    public void linuxAddLib(string lib) {
+        if (lib.length == 0) { return; }
+        for (int i = 0; i < this.linuxLibs.length; i++) {
+            if (this.linuxLibs[i] == lib) { return; }
+        }
+        this.linuxLibs.add(lib);
+    }
+
+    public void linuxAddGrant(string lib, string fn) {
+        if (lib.length == 0 || fn.length == 0) { return; }
+        string grant = lib + "|" + fn;
+        for (int i = 0; i < this.linuxGrants.length; i++) {
+            if (this.linuxGrants[i] == grant) { return; }
+        }
+        this.linuxGrants.add(grant);
+    }
+
+    public bool linuxHasExport(string lib, string fn) {
+        if (this.linuxLibForFn(fn) != lib) { return false; }
+        for (int i = 0; i < this.linuxLibs.length; i++) {
+            if (this.linuxLibs[i] == lib) { return true; }
+        }
+        string grant = lib + "|" + fn;
+        for (int i = 0; i < this.linuxGrants.length; i++) {
+            if (this.linuxGrants[i] == grant) { return true; }
+        }
+        return false;
+    }
+
+    public string linuxModuleOf(string lib) {
+        if (lib == "libc.so.6") { return "libc"; }
+        if (lib == "libX11.so.6") { return "x11"; }
+        if (lib == "libXtst.so.6") { return "xtst"; }
+        return lib;
+    }
+
+    public void importLinuxModule(string module) {
+        string lib = this.linuxModuleLib(module);
+        if (lib.length == 0) { return; }
+        this.linuxAddLib(lib);
+        this.defineGrantedLinuxExports(lib);
+    }
+
+    public void defineGrantedLinuxExports(string lib) {
+        if (lib == "libc.so.6") {
+            string[] fns = [];
+            fns.add("nanosleep");
+            fns.add("clock_gettime");
+            fns.add("getenv");
+            fns.add("setenv");
+            fns.add("open");
+            fns.add("read");
+            fns.add("write");
+            fns.add("close");
+            fns.add("sysconf");
+            for (int i = 0; i < fns.length; i++) {
+                if (this.linuxHasExport(lib, fns[i])) {
+                    this.globals.define(fns[i], makeBuiltin(fns[i]));
+                }
+            }
+            return;
+        }
+    }
+
+    public void registerLinuxImport(Node node) {
+        string source = node.strVal;
+        bool all = node.name == "*";
+        if (source != "linux" && source.length > 6) {
+            if (this.evalSliceStr(source, 0, 6) != "linux.") { return; }
+        } elif (source != "linux") {
+            return;
+        }
+        if (source == "linux") {
+            if (!all) {
+                int start = 0;
+                for (int i = 0; i <= node.name.length; i++) {
+                    if (i == node.name.length || node.name[i] == ',') {
+                        if (i > start) { this.importLinuxModule(this.evalSliceStr(node.name, start, i)); }
+                        start = i + 1;
+                    }
+                }
+                return;
+            }
+            this.importLinuxModule("libc");
+            this.importLinuxModule("x11");
+            this.importLinuxModule("xtst");
+            return;
+        }
+        string module = this.evalSliceStr(source, 6, source.length);
+        string lib = this.linuxModuleLib(module);
+        if (lib.length == 0) { return; }
+        if (all) {
+            this.linuxAddLib(lib);
+        } else {
+            this.linuxAddGrant(lib, node.name);
+            int start2 = 0;
+            for (int i = 0; i <= node.name.length; i++) {
+                if (i == node.name.length || node.name[i] == ',') {
+                    if (i > start2) { this.linuxAddGrant(lib, this.evalSliceStr(node.name, start2, i)); }
+                    start2 = i + 1;
+                }
+            }
+        }
+        this.defineGrantedLinuxExports(lib);
+    }
+
     public void run(Node[] program) {
         file.writeBytes("build/diag/TR0.txt", [49]);
         this.registerItems(program);
@@ -572,6 +735,8 @@ class Evaluator {
         if (item.kind == ND_IMPORT) {
             // DOCS/213 -- grant access to the imported win32 DLL modules.
             this.registerWin32Import(item);
+            // LINUX (additive): grant access to imported linux shared libs.
+            this.registerLinuxImport(item);
         }
         if (item.kind == ND_FUNC) {
             // Overload dispatch by arity (UNIFIED_CORE_LIBRARY.md 7.4 #2):
@@ -1400,6 +1565,17 @@ mirrorPut(obj, target.name, val);
                     QueryPerformanceCounter(&ticks);
                 } else {
                     QueryPerformanceFrequency(&ticks);
+                }
+                #off
+                #on LINUX
+                if (node.name == "QueryPerformanceFrequency") {
+                    ticks = 1000000000;
+                } else {
+                    int[] tsQpc = new int[2];
+                    clock_gettime(1, tsQpc);
+                    int64 secQpc = tsQpc[0];
+                    int64 nsecQpc = tsQpc[1];
+                    ticks = secQpc * 1000000000 + nsecQpc;
                 }
                 #off
                 env.set(refNames[0], makeInt(ticks));
