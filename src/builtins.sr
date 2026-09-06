@@ -986,7 +986,15 @@ class BuiltinMethods {
                 return makeBool(fs.isFile(path));
             }
             if (method == "isDriveRoot") { return makeBool(fs.isDriveRoot(path)); }
-            if (method == "getSize") { return makeInt(fs.getSize(path)); }
+            if (method == "getSize") {
+                #on LINUX
+                int[] stSzFs = new int[18];
+                int rcSzFs = stat(path, stSzFs);
+                if (rcSzFs != 0) { return makeInt(0); }
+                return makeInt(stSzFs[6]);
+                #off
+                return makeInt(fs.getSize(path));
+            }
             if (method == "delete") { fs.delete(path); return makeNull(); }
             if (method == "copy" && args.length > 1) { fs.copy(args[0].strVal, args[1].strVal); return makeNull(); }
             if (method == "readString") {
@@ -1024,7 +1032,15 @@ class BuiltinMethods {
             string path = "";
             if (args.length > 0) { path = args[0].strVal; }
             if (method == "exists") { return makeBool(file.exists(path)); }
-            if (method == "getSize") { return makeInt(file.getSize(path)); }
+            if (method == "getSize") {
+                #on LINUX
+                int[] stSzFile = new int[18];
+                int rcSzFile = stat(path, stSzFile);
+                if (rcSzFile != 0) { return makeInt(0); }
+                return makeInt(stSzFile[6]);
+                #off
+                return makeInt(file.getSize(path));
+            }
             if (method == "delete") { file.delete(path); return makeNull(); }
             if (method == "copy" && args.length > 1) { file.copy(args[0].strVal, args[1].strVal); return makeNull(); }
             if (method == "readString") {
@@ -1062,7 +1078,15 @@ class BuiltinMethods {
             string path = "";
             if (args.length > 0) { path = args[0].strVal; }
             if (method == "exists") { return makeBool(folder.exists(path)); }
-            if (method == "getSize") { return makeInt(folder.getSize(path)); }
+            if (method == "getSize") {
+                #on LINUX
+                int[] stSzFolder = new int[18];
+                int rcSzFolder = stat(path, stSzFolder);
+                if (rcSzFolder != 0) { return makeInt(0); }
+                return makeInt(stSzFolder[6]);
+                #off
+                return makeInt(folder.getSize(path));
+            }
             if (method == "delete") { folder.delete(path); return makeNull(); }
             if (method == "copy" && args.length > 1) { folder.copy(args[0].strVal, args[1].strVal); return makeNull(); }
             if (method == "getEntries" || method == "entries" || method == "list") { return stringArrayToValue(folder.getEntries(path)); }
