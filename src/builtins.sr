@@ -2370,6 +2370,294 @@ Value callBuiltin(string name, Value[] args) {
         }
         return makeInt(0);
     }
+    // LINUX (additive, mirrors silverc-rs/src/linux.rs LIBC + resource.sr
+    // open/read/close and eprintln write shapes): raw libc execution arms
+    // for interpreted `import * from linux.libc` calls the notifications/net
+    // LINUX regions need. Args arrive as Values; int[] Values copy to Silver
+    // int[] locals for the native call and copy back for filling calls
+    // (read/recv). Universal copy code compiles on both targets; only the
+    // single native call sits inside #on LINUX. On WINDOWS the region blanks
+    // and the arm returns the safe failure default. WINDOWS bytes untouched.
+    if (name == "open") {
+        string oPath = "";
+        int oFlags = 0;
+        int oMode = 0;
+        if (args.length > 0 && args[0].tag == VAL_STRING) { oPath = args[0].strVal; }
+        if (args.length > 1) { oFlags = args[1].toInt().toInt(); }
+        if (args.length > 2) { oMode = args[2].toInt().toInt(); }
+        int oFd = -1;
+        #on LINUX
+        oFd = open(oPath, oFlags, oMode);
+        #off
+        return makeInt(oFd);
+    }
+    if (name == "read") {
+        int rdFd = 0;
+        int rdN = 0;
+        if (args.length > 0) { rdFd = args[0].toInt().toInt(); }
+        if (args.length > 2) { rdN = args[2].toInt().toInt(); }
+        if (args.length >= 2 && args[1].tag == VAL_ARRAY) {
+            int rdLen = arrValLen(args[1]);
+            int[] rdBuf = new int[rdLen];
+            for (int i = 0; i < rdLen; i++) {
+                rdBuf[i] = int(arrValIntAt(args[1], i));
+            }
+            int rdGot = -1;
+            #on LINUX
+            rdGot = read(rdFd, rdBuf, rdN);
+            #off
+            for (int j = 0; j < rdLen; j++) {
+                arrValSetAt(args[1], j, makeInt(rdBuf[j]));
+            }
+            return makeInt(rdGot);
+        }
+        return makeInt(-1);
+    }
+    if (name == "write") {
+        int wFd = 0;
+        int wN = 0;
+        if (args.length > 0) { wFd = args[0].toInt().toInt(); }
+        if (args.length > 2) { wN = args[2].toInt().toInt(); }
+        if (args.length >= 2 && args[1].tag == VAL_ARRAY) {
+            int wLen = arrValLen(args[1]);
+            int[] wBuf = new int[wLen];
+            for (int i = 0; i < wLen; i++) {
+                wBuf[i] = int(arrValIntAt(args[1], i));
+            }
+            int wGot = -1;
+            #on LINUX
+            wGot = write(wFd, wBuf, wN);
+            #off
+            return makeInt(wGot);
+        }
+        return makeInt(-1);
+    }
+    if (name == "close") {
+        int cFd = 0;
+        if (args.length > 0) { cFd = args[0].toInt().toInt(); }
+        int cRes = -1;
+        #on LINUX
+        cRes = close(cFd);
+        #off
+        return makeInt(cRes);
+    }
+    if (name == "socket") {
+        int sDom = 0;
+        int sTyp = 0;
+        int sProto = 0;
+        if (args.length > 0) { sDom = args[0].toInt().toInt(); }
+        if (args.length > 1) { sTyp = args[1].toInt().toInt(); }
+        if (args.length > 2) { sProto = args[2].toInt().toInt(); }
+        int sFd = -1;
+        #on LINUX
+        sFd = socket(sDom, sTyp, sProto);
+        #off
+        return makeInt(sFd);
+    }
+    if (name == "connect") {
+        int cnFd = 0;
+        int cnLen = 0;
+        if (args.length > 0) { cnFd = args[0].toInt().toInt(); }
+        if (args.length > 2) { cnLen = args[2].toInt().toInt(); }
+        if (args.length >= 3 && args[1].tag == VAL_ARRAY) {
+            int cnSaLen = arrValLen(args[1]);
+            int[] cnSa = new int[cnSaLen];
+            for (int i = 0; i < cnSaLen; i++) {
+                cnSa[i] = int(arrValIntAt(args[1], i));
+            }
+            int cnRes = -1;
+            #on LINUX
+            cnRes = connect(cnFd, cnSa, cnLen);
+            #off
+            return makeInt(cnRes);
+        }
+        return makeInt(-1);
+    }
+    if (name == "bind") {
+        int bFd = 0;
+        int bLen = 0;
+        if (args.length > 0) { bFd = args[0].toInt().toInt(); }
+        if (args.length > 2) { bLen = args[2].toInt().toInt(); }
+        if (args.length >= 3 && args[1].tag == VAL_ARRAY) {
+            int bSaLen = arrValLen(args[1]);
+            int[] bSa = new int[bSaLen];
+            for (int i = 0; i < bSaLen; i++) {
+                bSa[i] = int(arrValIntAt(args[1], i));
+            }
+            int bRes = -1;
+            #on LINUX
+            bRes = bind(bFd, bSa, bLen);
+            #off
+            return makeInt(bRes);
+        }
+        return makeInt(-1);
+    }
+    if (name == "listen") {
+        int lFd = 0;
+        int lBack = 0;
+        if (args.length > 0) { lFd = args[0].toInt().toInt(); }
+        if (args.length > 1) { lBack = args[1].toInt().toInt(); }
+        int lRes = -1;
+        #on LINUX
+        lRes = listen(lFd, lBack);
+        #off
+        return makeInt(lRes);
+    }
+    if (name == "accept") {
+        int acFd = 0;
+        if (args.length > 0) { acFd = args[0].toInt().toInt(); }
+        int acRes = -1;
+        #on LINUX
+        acRes = accept(acFd, null, null);
+        #off
+        return makeInt(acRes);
+    }
+    if (name == "send") {
+        int snFd = 0;
+        int snLen = 0;
+        int snFlags = 0;
+        if (args.length > 0) { snFd = args[0].toInt().toInt(); }
+        if (args.length > 2) { snLen = args[2].toInt().toInt(); }
+        if (args.length > 3) { snFlags = args[3].toInt().toInt(); }
+        if (args.length >= 2 && args[1].tag == VAL_ARRAY) {
+            int snBuflen = arrValLen(args[1]);
+            int[] snBuf = new int[snBuflen];
+            for (int i = 0; i < snBuflen; i++) {
+                snBuf[i] = int(arrValIntAt(args[1], i));
+            }
+            int snGot = -1;
+            #on LINUX
+            snGot = send(snFd, snBuf, snLen, snFlags);
+            #off
+            return makeInt(snGot);
+        }
+        return makeInt(-1);
+    }
+    if (name == "recv") {
+        int rvFd = 0;
+        int rvLen = 0;
+        int rvFlags = 0;
+        if (args.length > 0) { rvFd = args[0].toInt().toInt(); }
+        if (args.length > 2) { rvLen = args[2].toInt().toInt(); }
+        if (args.length > 3) { rvFlags = args[3].toInt().toInt(); }
+        if (args.length >= 2 && args[1].tag == VAL_ARRAY) {
+            int rvBuflen = arrValLen(args[1]);
+            int[] rvBuf = new int[rvBuflen];
+            for (int i = 0; i < rvBuflen; i++) {
+                rvBuf[i] = int(arrValIntAt(args[1], i));
+            }
+            int rvGot = -1;
+            #on LINUX
+            rvGot = recv(rvFd, rvBuf, rvLen, rvFlags);
+            #off
+            for (int j = 0; j < rvBuflen; j++) {
+                arrValSetAt(args[1], j, makeInt(rvBuf[j]));
+            }
+            return makeInt(rvGot);
+        }
+        return makeInt(-1);
+    }
+    if (name == "getuid") {
+        int gUid = -1;
+        #on LINUX
+        gUid = getuid();
+        #off
+        return makeInt(gUid);
+    }
+    if (name == "setsockopt") {
+        int soFd = 0;
+        int soLevel = 0;
+        int soName = 0;
+        int soLen = 0;
+        if (args.length > 0) { soFd = args[0].toInt().toInt(); }
+        if (args.length > 1) { soLevel = args[1].toInt().toInt(); }
+        if (args.length > 2) { soName = args[2].toInt().toInt(); }
+        if (args.length > 4) { soLen = args[4].toInt().toInt(); }
+        if (args.length >= 4 && args[3].tag == VAL_ARRAY) {
+            int soOptlen = arrValLen(args[3]);
+            int[] soOpt = new int[soOptlen];
+            for (int i = 0; i < soOptlen; i++) {
+                soOpt[i] = int(arrValIntAt(args[3], i));
+            }
+            int soRes = -1;
+            #on LINUX
+            soRes = setsockopt(soFd, soLevel, soName, soOpt, soLen);
+            #off
+            return makeInt(soRes);
+        }
+        return makeInt(-1);
+    }
+    if (name == "getaddrinfo") {
+        if (args.length >= 4 && args[0].tag == VAL_STRING && args[2].tag == VAL_ARRAY && args[3].tag == VAL_ARRAY) {
+            string gHost = args[0].strVal;
+            int gHintsLen = arrValLen(args[2]);
+            int[] gHints = new int[gHintsLen];
+            for (int i = 0; i < gHintsLen; i++) {
+                gHints[i] = int(arrValIntAt(args[2], i));
+            }
+            int gResLen = arrValLen(args[3]);
+            int[] gRes = new int[gResLen];
+            for (int j = 0; j < gResLen; j++) {
+                gRes[j] = int(arrValIntAt(args[3], j));
+            }
+            int gRet = -1;
+            if (args[1].tag == VAL_STRING) {
+                string gSvc = args[1].strVal;
+                #on LINUX
+                gRet = getaddrinfo(gHost, gSvc, gHints, gRes);
+                #off
+            } else {
+                #on LINUX
+                gRet = getaddrinfo(gHost, null, gHints, gRes);
+                #off
+            }
+            for (int k = 0; k < gResLen; k++) {
+                arrValSetAt(args[3], k, makeInt(gRes[k]));
+            }
+            return makeInt(gRet);
+        }
+        return makeInt(-1);
+    }
+    if (name == "freeaddrinfo") {
+        int fPtr = 0;
+        if (args.length > 0) { fPtr = args[0].toInt().toInt(); }
+        #on LINUX
+        freeaddrinfo(fPtr);
+        #off
+        return makeNull();
+    }
+    if (name == "memcpy") {
+        int mN = 0;
+        if (args.length > 2) { mN = args[2].toInt().toInt(); }
+        if (args.length >= 2 && args[0].tag == VAL_ARRAY) {
+            int mDstLen = arrValLen(args[0]);
+            int[] mDst = new int[mDstLen];
+            for (int i = 0; i < mDstLen; i++) {
+                mDst[i] = int(arrValIntAt(args[0], i));
+            }
+            if (args[1].tag == VAL_ARRAY) {
+                int mSrcLen = arrValLen(args[1]);
+                int[] mSrc = new int[mSrcLen];
+                for (int j = 0; j < mSrcLen; j++) {
+                    mSrc[j] = int(arrValIntAt(args[1], j));
+                }
+                #on LINUX
+                memcpy(mDst, mSrc, mN);
+                #off
+            } else {
+                int mSrcPtr = 0;
+                if (args.length > 1) { mSrcPtr = args[1].toInt().toInt(); }
+                #on LINUX
+                memcpy(mDst, mSrcPtr, mN);
+                #off
+            }
+            for (int k = 0; k < mDstLen; k++) {
+                arrValSetAt(args[0], k, makeInt(mDst[k]));
+            }
+            return makeNull();
+        }
+        return makeNull();
+    }
     return makeNull();
 }
 
