@@ -1002,7 +1002,27 @@ class BuiltinMethods {
                 #off
                 fs.delete(path); return makeNull();
             }
-            if (method == "copy" && args.length > 1) { fs.copy(args[0].strVal, args[1].strVal); return makeNull(); }
+            if (method == "copy" && args.length > 1) {
+                #on LINUX
+                string cSrcFs = args[0].strVal;
+                string cDstFs = args[1].strVal;
+                int srcFdFs = open(cSrcFs, 0, 0);
+                if (srcFdFs < 0) { return makeNull(); }
+                int dstFdFs = open(cDstFs, 0x241, 0x1A4);
+                if (dstFdFs < 0) { close(srcFdFs); return makeNull(); }
+                int[] cBufFs = new int[1024];
+                int nFs = 0;
+                while (true) {
+                    nFs = read(srcFdFs, cBufFs, 8192);
+                    if (nFs <= 0) { break; }
+                    write(dstFdFs, cBufFs, nFs);
+                }
+                close(srcFdFs);
+                close(dstFdFs);
+                return makeNull();
+                #off
+                fs.copy(args[0].strVal, args[1].strVal); return makeNull();
+            }
             if (method == "readString") {
                 if (!fs.exists(path)) { ev.throwException("FileNotFoundException", "file not found"); return makeNull(); }
                 return makeString(file.readString(args[0].strVal));
@@ -1054,7 +1074,27 @@ class BuiltinMethods {
                 #off
                 file.delete(path); return makeNull();
             }
-            if (method == "copy" && args.length > 1) { file.copy(args[0].strVal, args[1].strVal); return makeNull(); }
+            if (method == "copy" && args.length > 1) {
+                #on LINUX
+                string cSrcFile = args[0].strVal;
+                string cDstFile = args[1].strVal;
+                int srcFdFile = open(cSrcFile, 0, 0);
+                if (srcFdFile < 0) { return makeNull(); }
+                int dstFdFile = open(cDstFile, 0x241, 0x1A4);
+                if (dstFdFile < 0) { close(srcFdFile); return makeNull(); }
+                int[] cBufFile = new int[1024];
+                int nFile = 0;
+                while (true) {
+                    nFile = read(srcFdFile, cBufFile, 8192);
+                    if (nFile <= 0) { break; }
+                    write(dstFdFile, cBufFile, nFile);
+                }
+                close(srcFdFile);
+                close(dstFdFile);
+                return makeNull();
+                #off
+                file.copy(args[0].strVal, args[1].strVal); return makeNull();
+            }
             if (method == "readString") {
                 if (!file.exists(path)) { ev.throwException("FileNotFoundException", "file not found"); return makeNull(); }
                 return makeString(file.readString(args[0].strVal));
@@ -1106,7 +1146,27 @@ class BuiltinMethods {
                 #off
                 folder.delete(path); return makeNull();
             }
-            if (method == "copy" && args.length > 1) { folder.copy(args[0].strVal, args[1].strVal); return makeNull(); }
+            if (method == "copy" && args.length > 1) {
+                #on LINUX
+                string cSrcFolder = args[0].strVal;
+                string cDstFolder = args[1].strVal;
+                int srcFdFolder = open(cSrcFolder, 0, 0);
+                if (srcFdFolder < 0) { return makeNull(); }
+                int dstFdFolder = open(cDstFolder, 0x241, 0x1A4);
+                if (dstFdFolder < 0) { close(srcFdFolder); return makeNull(); }
+                int[] cBufFolder = new int[1024];
+                int nFolder = 0;
+                while (true) {
+                    nFolder = read(srcFdFolder, cBufFolder, 8192);
+                    if (nFolder <= 0) { break; }
+                    write(dstFdFolder, cBufFolder, nFolder);
+                }
+                close(srcFdFolder);
+                close(dstFdFolder);
+                return makeNull();
+                #off
+                folder.copy(args[0].strVal, args[1].strVal); return makeNull();
+            }
             if (method == "getEntries" || method == "entries" || method == "list") { return stringArrayToValue(folder.getEntries(path)); }
             if (method == "getFiles" || method == "files") { return stringArrayToValue(folder.getFiles(path)); }
             if (method == "getFolders" || method == "folders") { return stringArrayToValue(folder.getFolders(path)); }
