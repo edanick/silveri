@@ -15,6 +15,9 @@ import eval;
 import * from win32.user32;
 import * from win32.kernel32;
 #off
+#on LINUX
+import * from linux.libc;
+#off
 
 class BuiltinMethods {
 
@@ -1057,6 +1060,9 @@ class BuiltinMethods {
                 #on WINDOWS
                 SetEnvironmentVariableA(args[0].strVal, args[1].strVal);
                 #off
+                #on LINUX
+                setenv(args[0].strVal, args[1].strVal, 1);
+                #off
                 return makeNull();
             }
             return makeNull();
@@ -1569,6 +1575,18 @@ Value callBuiltin(string name, Value[] args) {
             }
         }
         #off
+        #on LINUX
+        if (msg.length > 0) {
+            int lenE = msg.length;
+            int slotsE = (lenE + 7) / 8;
+            int[] packedE = new int[slotsE];
+            for (int i = 0; i < lenE; i++) {
+                int bE = int(msg[i]);
+                packedE[i / 8] = packedE[i / 8] | ((bE & 0xFF) << ((i % 8) * 8));
+            }
+            write(2, packedE, lenE);
+        }
+        #off
         return makeNull();
     }
     if (name == "eprint") {
@@ -1584,6 +1602,18 @@ Value callBuiltin(string name, Value[] args) {
             if (eh != -1 && eh != 0) {
                 WriteFile(eh, msg, msg.length, &ew, null);
             }
+        }
+        #off
+        #on LINUX
+        if (msg.length > 0) {
+            int lenEp = msg.length;
+            int slotsEp = (lenEp + 7) / 8;
+            int[] packedEp = new int[slotsEp];
+            for (int i = 0; i < lenEp; i++) {
+                int bEp = int(msg[i]);
+                packedEp[i / 8] = packedEp[i / 8] | ((bEp & 0xFF) << ((i % 8) * 8));
+            }
+            write(2, packedEp, lenEp);
         }
         #off
         return makeNull();
@@ -1616,6 +1646,15 @@ Value callBuiltin(string name, Value[] args) {
             #on WINDOWS
             Sleep(args[0].toInt());
             #off
+            #on LINUX
+            int msSleep = args[0].toInt().toInt();
+            if (msSleep < 0) { msSleep = 0; }
+            int[] tsSleep = new int[2];
+            tsSleep[0] = msSleep / 1000;
+            tsSleep[1] = (msSleep % 1000) * 1000000;
+            int[] remSleep = new int[2];
+            nanosleep(tsSleep, remSleep);
+            #off
         }
         return makeNull();
     }
@@ -1623,13 +1662,28 @@ Value callBuiltin(string name, Value[] args) {
     // (mirrors the compilers): osType() is the compile-time WINDOWS constant
     // and the time module's win32 backend std/time_win.sr is served
     // directly -- Sleep forwards and QPC milliseconds for timeWinNow.
+    // LINUX (additive): osType answers LINUX (1) under #on LINUX, keeping the
+    // OSTypes contract WINDOWS0/LINUX1/MACOS2/UNKNOWN3; the WINDOWS return
+    // below stays byte-identical.
     if (name == "osType") {
+        #on LINUX
+        return makeInt(1);
+        #off
         return makeInt(0);
     }
     if (name == "timeWinSleepInt" || name == "timeWinSleepUint") {
         if (args.length > 0) {
             #on WINDOWS
             Sleep(args[0].toInt());
+            #off
+            #on LINUX
+            int msWin = args[0].toInt().toInt();
+            if (msWin < 0) { msWin = 0; }
+            int[] tsWin = new int[2];
+            tsWin[0] = msWin / 1000;
+            tsWin[1] = (msWin % 1000) * 1000000;
+            int[] remWin = new int[2];
+            nanosleep(tsWin, remWin);
             #off
         }
         return makeNull();
@@ -1643,11 +1697,25 @@ Value callBuiltin(string name, Value[] args) {
         // int64 math stays far below overflow (rem < freq <= ~1e7 ticks/s).
         // The QPC pair is inline in the region (v2 rule 6), the int64
         // out-params through &locals exactly like std/time.sr's folded now().
+        // LINUX (additive): clock_gettime(CLOCK_MONOTONIC=1) replaces the QPC
+        // pair; milliseconds plus 3-digit fractional part mirror the WINDOWS
+        // formatting so stopwatch deltas compare identically.
         int64 freq = 0;
         int64 count = 0;
         #on WINDOWS
         QueryPerformanceFrequency(&freq);
         QueryPerformanceCounter(&count);
+        #off
+        #on LINUX
+        int[] tsNow = new int[2];
+        clock_gettime(1, tsNow);
+        int64 secNow = tsNow[0];
+        int64 nsecNow = tsNow[1];
+        int64 msNow = secNow * 1000 + nsecNow / 1000000;
+        int64 fracNow = (nsecNow % 1000000) / 1000;
+        string fracNowStr = fracNow.toString();
+        while (fracNowStr.length < 3) { fracNowStr = "0" + fracNowStr; }
+        return makeFloatStr(msNow.toString() + "." + fracNowStr);
         #off
         if (freq <= 0) { return makeFloatStr("0"); }
         int64 secs = count / freq;
