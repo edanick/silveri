@@ -1532,6 +1532,13 @@ class BuiltinMethods {
         // call that returns "" when the variable is unset. Building the buffer by
         // hand (char buf[size] / new char[size]) is not reliably compiled, so rely
         // on the builtin instead.
+        // LINUX (additive): getenv via linux.libc sees setenv changes (unlike
+        // /proc/self/environ which never shows them); NULL (unset) yields "".
+        #on LINUX
+        string gv = getenv(key);
+        if (gv == null) { return ""; }
+        return gv;
+        #off
         return fs.getenv(key);
     }
     private static Value stringArrayToValue(string[] items) {
