@@ -6,6 +6,9 @@ mod export resource;
 import * from win32.kernel32;
 import * from win32.msvcrt;
 #off
+#on LINUX
+import * from linux.libc;
+#off
 
 // ---------------------------------------------------------------------------
 // Adaptive resource layer — auto-adjust to the host machine.
@@ -51,10 +54,20 @@ private int rsDword(string buf, int off) {
 // GetSystemInfo fills the SYSTEM_INFO over the caller-owned buffer in
 // place (the managed string lowers to the struct buffer pointer, the same
 // contract the self-hosted resource.sr relies on).
+// LINUX (additive, mirrors silverc-rs/src/resource.rs non-Windows branch
+// semantics: available_parallelism): sysconf(_SC_NPROCESSORS_ONLN=84),
+// floored at 1. The WINDOWS region above stays byte-identical; the LINUX
+// early return keeps the shared decode below as dead-but-compiling code on
+// Linux so Windows bytes never change.
 public int rsCpuThreadCount() {
     string buf = rsBuf(48);
     #on WINDOWS
     GetSystemInfo(buf);
+    #off
+    #on LINUX
+    int nLin = sysconf(84);
+    if (nLin < 1) { nLin = 1; }
+    return nLin;
     #off
     int n = rsDword(buf, 32);
     if (n < 1) { n = 1; }
@@ -67,12 +80,27 @@ public int rsCpuThreadCount() {
 // sizeof(MEMORYSTATUSEX) == 64 by copying a single "@" (0x40) into the
 // first byte (lstrcpyA) — byte-identical to the pre-split direct calls —
 // before GlobalMemoryStatusEx fills it; a failing call yields 0.
+// LINUX (additive, mirrors silverc-rs/src/resource.rs linux_memory_bytes:
+// /proc/meminfo MemTotal/MemAvailable kB-to-bytes, (0,0) when unreadable):
+// the LINUX early return defines `ok` so the shared `if (ok==0)` below
+// still compiles on Linux (dead code there); helpers below are whole-
+// function #on LINUX so Windows never sees them.
 private int64 rsRamField(int startOff) {
     string buf = rsBuf(64);
     #on WINDOWS
     memset(buf, 0, 64);
     lstrcpyA(buf, "@");
     int ok = GlobalMemoryStatusEx(buf);
+    #off
+    #on LINUX
+    int ok = 1;
+    int64 linKB = 0;
+    if (startOff == 8) {
+        linKB = rsLinuxMemKB("MemTotal");
+    } else {
+        linKB = rsLinuxMemKB("MemAvailable");
+    }
+    return linKB * 1024;
     #off
     if (ok == 0) { return 0; }
     int64 v = 0;
@@ -82,6 +110,43 @@ private int64 rsRamField(int startOff) {
     }
     return v;
 }
+
+#on LINUX
+string rsLinuxReadFile(string path) {
+    int fd = open(path, 0, 0);
+    if (fd < 0) { return ""; }
+    string out = "";
+    while (true) {
+        int[] chunk = new int[512];
+        int n = read(fd, chunk, 4096);
+        if (n <= 0) { break; }
+        for (int i = 0; i < n; i++) {
+            int b = (chunk[i / 8] >> ((i % 8) * 8)) & 0xFF;
+            out += char(b);
+        }
+        if (n < 4096) { break; }
+    }
+    close(fd);
+    return out;
+}
+#off
+
+#on LINUX
+int64 rsLinuxMemKB(string key) {
+    string mem = rsLinuxReadFile("/proc/meminfo");
+    string want = key + ":";
+    int at = mem.indexOf(want);
+    if (at < 0) { return 0; }
+    int p = at + want.length();
+    while (p < mem.length() && (mem[p] == ' ' || mem[p] == '\t')) { p++; }
+    int64 v = 0;
+    while (p < mem.length() && mem[p] >= '0' && mem[p] <= '9') {
+        v = v * 10 + int(mem[p]) - 48;
+        p++;
+    }
+    return v;
+}
+#off
 
 // Bytes of physical RAM currently available (ullAvailPhys).
 public int64 rsAvailableRamBytes() {
