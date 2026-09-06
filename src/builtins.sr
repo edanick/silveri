@@ -1167,9 +1167,90 @@ class BuiltinMethods {
                 #off
                 folder.copy(args[0].strVal, args[1].strVal); return makeNull();
             }
-            if (method == "getEntries" || method == "entries" || method == "list") { return stringArrayToValue(folder.getEntries(path)); }
-            if (method == "getFiles" || method == "files") { return stringArrayToValue(folder.getFiles(path)); }
-            if (method == "getFolders" || method == "folders") { return stringArrayToValue(folder.getFolders(path)); }
+            if (method == "getEntries" || method == "entries" || method == "list") {
+                #on LINUX
+                string ePath = path;
+                int eDir = opendir(ePath);
+                string[] eNames = [];
+                if (eDir == 0) { return stringArrayToValue(eNames); }
+                while (true) {
+                    int eNode = readdir(eDir);
+                    if (eNode == 0) { break; }
+                    int[] eRaw = new int[32];
+                    memcpy(eRaw, eNode + 19, 256);
+                    string eName = "";
+                    for (int i = 0; i < 256; i++) {
+                        int eB = (eRaw[i / 8] >> ((i % 8) * 8)) & 0xFF;
+                        if (eB == 0) { break; }
+                        eName += char(eB);
+                    }
+                    if (eName != "." && eName != "..") { eNames.add(eName); }
+                }
+                closedir(eDir);
+                return stringArrayToValue(eNames);
+                #off
+                return stringArrayToValue(folder.getEntries(path));
+            }
+            if (method == "getFiles" || method == "files") {
+                #on LINUX
+                string fPath = path;
+                int fDir = opendir(fPath);
+                string[] fNames = [];
+                if (fDir == 0) { return stringArrayToValue(fNames); }
+                while (true) {
+                    int fNode = readdir(fDir);
+                    if (fNode == 0) { break; }
+                    int[] fRaw = new int[32];
+                    memcpy(fRaw, fNode + 19, 256);
+                    string fName = "";
+                    for (int i = 0; i < 256; i++) {
+                        int fB = (fRaw[i / 8] >> ((i % 8) * 8)) & 0xFF;
+                        if (fB == 0) { break; }
+                        fName += char(fB);
+                    }
+                    if (fName == "." || fName == "..") { continue; }
+                    string fFull = fPath + "/" + fName;
+                    int[] fSt = new int[18];
+                    int fRc = stat(fFull, fSt);
+                    if (fRc != 0) { continue; }
+                    int fMode = fSt[3] & 0xFFFF;
+                    if ((fMode & 0xF000) == 0x8000) { fNames.add(fName); }
+                }
+                closedir(fDir);
+                return stringArrayToValue(fNames);
+                #off
+                return stringArrayToValue(folder.getFiles(path));
+            }
+            if (method == "getFolders" || method == "folders") {
+                #on LINUX
+                string dPath = path;
+                int dDir = opendir(dPath);
+                string[] dNames = [];
+                if (dDir == 0) { return stringArrayToValue(dNames); }
+                while (true) {
+                    int dNode = readdir(dDir);
+                    if (dNode == 0) { break; }
+                    int[] dRaw = new int[32];
+                    memcpy(dRaw, dNode + 19, 256);
+                    string dName = "";
+                    for (int i = 0; i < 256; i++) {
+                        int dB = (dRaw[i / 8] >> ((i % 8) * 8)) & 0xFF;
+                        if (dB == 0) { break; }
+                        dName += char(dB);
+                    }
+                    if (dName == "." || dName == "..") { continue; }
+                    string dFull = dPath + "/" + dName;
+                    int[] dSt = new int[18];
+                    int dRc = stat(dFull, dSt);
+                    if (dRc != 0) { continue; }
+                    int dMode = dSt[3] & 0xFFFF;
+                    if ((dMode & 0xF000) == 0x4000) { dNames.add(dName); }
+                }
+                closedir(dDir);
+                return stringArrayToValue(dNames);
+                #off
+                return stringArrayToValue(folder.getFolders(path));
+            }
             return makeNull();
         }
         if (mod == "env_module") {
