@@ -995,7 +995,13 @@ class BuiltinMethods {
                 #off
                 return makeInt(fs.getSize(path));
             }
-            if (method == "delete") { fs.delete(path); return makeNull(); }
+            if (method == "delete") {
+                #on LINUX
+                unlink(path);
+                return makeNull();
+                #off
+                fs.delete(path); return makeNull();
+            }
             if (method == "copy" && args.length > 1) { fs.copy(args[0].strVal, args[1].strVal); return makeNull(); }
             if (method == "readString") {
                 if (!fs.exists(path)) { ev.throwException("FileNotFoundException", "file not found"); return makeNull(); }
@@ -1041,7 +1047,13 @@ class BuiltinMethods {
                 #off
                 return makeInt(file.getSize(path));
             }
-            if (method == "delete") { file.delete(path); return makeNull(); }
+            if (method == "delete") {
+                #on LINUX
+                unlink(path);
+                return makeNull();
+                #off
+                file.delete(path); return makeNull();
+            }
             if (method == "copy" && args.length > 1) { file.copy(args[0].strVal, args[1].strVal); return makeNull(); }
             if (method == "readString") {
                 if (!file.exists(path)) { ev.throwException("FileNotFoundException", "file not found"); return makeNull(); }
@@ -1087,7 +1099,13 @@ class BuiltinMethods {
                 #off
                 return makeInt(folder.getSize(path));
             }
-            if (method == "delete") { folder.delete(path); return makeNull(); }
+            if (method == "delete") {
+                #on LINUX
+                rmdir(path);
+                return makeNull();
+                #off
+                folder.delete(path); return makeNull();
+            }
             if (method == "copy" && args.length > 1) { folder.copy(args[0].strVal, args[1].strVal); return makeNull(); }
             if (method == "getEntries" || method == "entries" || method == "list") { return stringArrayToValue(folder.getEntries(path)); }
             if (method == "getFiles" || method == "files") { return stringArrayToValue(folder.getFiles(path)); }
