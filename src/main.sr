@@ -289,6 +289,367 @@ bool moduleAlwaysResolvable(string name) {
         || cli.eq(n, "project") || cli.eq(name, "LLMAI");
 }
 
+// DOCS/261 -- fixed native module tables (mirrors
+// Evaluator.win32ModuleDll / linuxModuleLib and their parser twins): a
+// prefixed source naming one of these stays on the fixed path even when a
+// custom entry collides with the short name.
+bool fixedWin32Module(string source) {
+    if (!source.startsWith("win32.")) { return cli.eq(source, "win32"); }
+    string n = source.substr(6);
+    return cli.eq(n, "kernel32") || cli.eq(n, "ws2_32") || cli.eq(n, "winhttp")
+        || cli.eq(n, "wininet") || cli.eq(n, "shell32") || cli.eq(n, "msvcrt")
+        || cli.eq(n, "user32") || cli.eq(n, "registry") || cli.eq(n, "advapi32")
+        || cli.eq(n, "version");
+}
+
+bool fixedLinuxModule(string source) {
+    if (!source.startsWith("linux.")) { return cli.eq(source, "linux"); }
+    string n = source.substr(6);
+    return cli.eq(n, "libc") || cli.eq(n, "x11") || cli.eq(n, "xtst");
+}
+
+bool isNatWordChar(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+}
+
+// Index of the `from` keyword separating import names and source, or -1.
+// Word-boundary guarded so an export literally named `fromage` never hits.
+int natFromWord(string t) {
+    string lo = t.lower();
+    int i = 0;
+    while (i + 4 <= lo.length) {
+        bool hit = lo[i] == 'f' && lo[i + 1] == 'r' && lo[i + 2] == 'o' && lo[i + 3] == 'm';
+        if (hit) {
+            bool preOk = i == 0 || !isNatWordChar(t[i - 1]);
+            int e = i + 4;
+            bool postOk = e >= lo.length || !isNatWordChar(t[e]);
+            if (preOk && postOk) { return i; }
+        }
+        i++;
+    }
+    return -1;
+}
+
+// Read a dotted module path at/after pos (leading spaces skipped).
+string natReadDottedFrom(string t, int pos) {
+    int s = pos;
+    while (s < t.length && (t[s] == ' ' || t[s] == '\t')) { s++; }
+    int e = s;
+    while (e < t.length && (isNatWordChar(t[e]) || t[e] == '.')) { e++; }
+    string r = "";
+    for (int i = s; i < e; i++) { r += t[i]; }
+    return r;
+}
+
+// The import source of one statement inner (between `import` and `;`):
+// "" for plain module lists (`import a, b;`) and sourceless shapes.
+string natImportSource(string inner) {
+    string t = inner.trim();
+    if (t.startsWith("*")) {
+        int f = natFromWord(t);
+        if (f < 0) { return ""; }
+        return natReadDottedFrom(t, f + 4);
+    }
+    if (t.startsWith("{")) {
+        int close = -1;
+        for (int i = 0; i < t.length; i++) {
+            if (t[i] == '}') { close = i; break; }
+        }
+        if (close < 0) { return ""; }
+        int f = natFromWord(t.substr(close + 1));
+        if (f < 0) { return ""; }
+        return natReadDottedFrom(t, close + 1 + f + 4);
+    }
+    int f2 = natFromWord(t);
+    if (f2 < 0) { return ""; }
+    return natReadDottedFrom(t, f2 + 4);
+}
+
+// True when the inner carries a `from <source>` clause on its shape.
+bool natImportHasFrom(string inner) {
+    string t = inner.trim();
+    if (t.startsWith("*")) { return natFromWord(t) >= 0; }
+    if (t.startsWith("{")) {
+        int close = -1;
+        for (int i = 0; i < t.length; i++) {
+            if (t[i] == '}') { close = i; break; }
+        }
+        if (close < 0) { return false; }
+        return natFromWord(t.substr(close + 1)) >= 0;
+    }
+    return natFromWord(t) >= 0;
+}
+
+// Granted/plain names of one statement inner (empty for star forms).
+string[] natImportNames(string inner) {
+    string[] result = [];
+    string t = inner.trim();
+    if (t.startsWith("*")) { return result; }
+    string head = t;
+    if (t.startsWith("{")) {
+        int close = -1;
+        for (int i = 0; i < t.length; i++) {
+            if (t[i] == '}') { close = i; break; }
+        }
+        if (close < 0) { return result; }
+        head = t.substr(1, close - 1);
+    } else {
+        int f = natFromWord(t);
+        if (f >= 0) { head = t.substr(0, f); }
+    }
+    string[] parts = head.split(",");
+    for (int i = 0; i < parts.length; i++) {
+        string p = parts[i].trim();
+        if (p.length > 0) { result.add(p); }
+    }
+    return result;
+}
+
+bool natImportStar(string inner) {
+    return inner.trim().startsWith("*");
+}
+
+// True when the aggregate program already declares `mod export <name>;`
+// (project-local and `.qs` bundle Silver modules, already concatenated).
+bool aggregateDeclaresModule(string source, string name) {
+    int cursor = 0;
+    while (cursor < source.length) {
+        int pos = findCI(source, "mod export ", cursor);
+        if (pos < 0) { return false; }
+        if (pos > 0) {
+            char prev = source[pos - 1];
+            if (prev != '\n' && prev != '\r' && prev != ';') {
+                cursor = pos + 1;
+                continue;
+            }
+        }
+        int s = pos + 11;
+        while (s < source.length && (source[s] == ' ' || source[s] == '\t')) { s++; }
+        int e = s;
+        while (e < source.length && isNatWordChar(source[e])) { e++; }
+        string got = "";
+        for (int k = s; k < e; k++) { got += source[k]; }
+        if (cli.eqFold(got, name)) { return true; }
+        if (e <= pos + 11) { cursor = pos + 1; } else { cursor = e; }
+    }
+    return false;
+}
+
+// True when a bare name resolves to Silver (never native): interpreter
+// native singletons, embedded modules, project-local or `.qs` stems,
+// `mod export` declarations in the aggregate, or a std/beside-script file.
+bool natSilverResolves(string name, string source, string inputFile, string target) {
+    if (nativeModule(name) || moduleAlwaysResolvable(name)) { return true; }
+    if (customNativeSilverShadow(name)) { return true; }
+    if (aggregateDeclaresModule(source, name)) { return true; }
+    string modSrc = readStdModule(name, inputFile, source, target);
+    return modSrc.length > 0;
+}
+
+// DOCS/261 -- `.qs` bundle spans in flattened text: flat [begin, end]
+// pairs of 1-based line ranges strictly inside a
+// `//__silveri_qs_begin__` / `//__silveri_qs_end__` pair (emitted by the
+// project loader around each bundled module source). Imports there belong
+// to the `.qs` library and always verify custom natives against the
+// consumer's declarations.
+int[] qsBundleSpans(string source) {
+    int[] spans = [];
+    int lineNo = 1;
+    int lineStart = 0;
+    int openBegin = -1;
+    for (int li = 0; li <= source.length; li++) {
+        bool eol = li == source.length || source[li] == '\n';
+        if (!eol) { continue; }
+        string lineText = "";
+        for (int k = lineStart; k < li; k++) { lineText += source[k]; }
+        if (cli.eq(lineText.trim(), "//__silveri_qs_begin__")) { openBegin = lineNo; }
+        elif (cli.eq(lineText.trim(), "//__silveri_qs_end__")) {
+            if (openBegin >= 0) {
+                spans.add(openBegin);
+                spans.add(lineNo);
+                openBegin = -1;
+            }
+        }
+        lineNo++;
+        lineStart = li + 1;
+    }
+    return spans;
+}
+
+int natImportLine(string source, int importPos) {
+    int line = 1;
+    for (int q = 0; q < importPos; q++) {
+        if (source[q] == '\n') { line++; }
+    }
+    return line;
+}
+
+bool natInBundle(int[] spans, int line) {
+    for (int b = 0; b + 1 < spans.length; b += 2) {
+        if (spans[b] < line && line < spans[b + 1]) { return true; }
+    }
+    return false;
+}
+
+// DOCS/261 -- validate one parsed import against the fixed tables plus the
+// manifest's custom declarations. Failures print the contract message and
+// exit, mirroring the compilers' import-site errors in interpreter style.
+void checkOneNativeImport(string origin, string[] names, bool star, bool inBundle, string source, string inputFile, string target) {
+    if (origin == "") {
+        // Plain module lists (`import a, b;`): Silver spellings stay
+        // silent; only declared custom singletons verify (wrong side, then
+        // the single-export hint, mirroring the compilers' module-grant
+        // rejection for bare whole-module imports).
+        for (int i = 0; i < names.length; i++) {
+            string n = names[i];
+            if (natSilverResolves(n, source, inputFile, target)) { continue; }
+            if (!customNativeDeclared(n)) { continue; }
+            if (customNativeFileFor(n, target) == "") {
+                printline(customNativeSideError(n, target));
+                exit(1);
+            }
+            printline(customNativeStarMsg(n));
+            exit(1);
+        }
+        return;
+    }
+    if (origin == "win32" || (origin.length > 6 && origin.substr(0, 6) == "win32.")) {
+        if (origin == "win32") {
+            // `import * from win32;` grants the fixed modules only; custom
+            // modules are never pulled in implicitly.
+            if (star) { return; }
+            for (int i = 0; i < names.length; i++) {
+                string full = "win32." + names[i];
+                if (fixedWin32Module(full)) { continue; }
+                if (customNativeHasWin(names[i])) {
+                    printline(customNativeStarMsg(full));
+                    exit(1);
+                }
+                printline(customNativeUndeclaredMsg(full));
+                exit(1);
+            }
+            return;
+        }
+        string winMod = origin.substr(6);
+        // A custom name colliding with a fixed module resolves to fixed.
+        if (fixedWin32Module(origin)) { return; }
+        if (!customNativeHasWin(winMod)) {
+            printline(customNativeUndeclaredMsg(origin));
+            exit(1);
+        }
+        // Declared custom modules take single-export grants only.
+        if (star) {
+            printline(customNativeStarMsg(origin));
+            exit(1);
+        }
+        return;
+    }
+    if (origin == "linux" || (origin.length > 6 && origin.substr(0, 6) == "linux.")) {
+        if (origin == "linux") {
+            if (star) { return; }
+            for (int j = 0; j < names.length; j++) {
+                string full = "linux." + names[j];
+                if (fixedLinuxModule(full)) { continue; }
+                if (customNativeHasLin(names[j])) {
+                    printline(customNativeStarMsg(full));
+                    exit(1);
+                }
+                printline(customNativeUndeclaredMsg(full));
+                exit(1);
+            }
+            return;
+        }
+        string linMod = origin.substr(6);
+        if (fixedLinuxModule(origin)) { return; }
+        if (!customNativeHasLin(linMod)) {
+            printline(customNativeUndeclaredMsg(origin));
+            exit(1);
+        }
+        if (star) {
+            printline(customNativeStarMsg(origin));
+            exit(1);
+        }
+        return;
+    }
+    if (nativeModule(origin) || moduleAlwaysResolvable(origin)) { return; }
+    // Bare-name precedence: project-local sources, `.qs` bundle modules,
+    // and std modules win over custom native names.
+    if (natSilverResolves(origin, source, inputFile, target)) { return; }
+    if (!customNativeDeclared(origin)) {
+        // Inside a manifest that opts into `nativeModules`, or inside a
+        // consumed `.qs` bundle flattened into the aggregate, an
+        // unresolvable bare source names the declaration to add;
+        // standalone runs keep the driver's historical diagnostics.
+        if (inBundle || customNativeOptIn()) {
+            printline(customNativeUndeclaredMsg(origin));
+            exit(1);
+        }
+        return;
+    }
+    if (customNativeFileFor(origin, target) == "") {
+        printline(customNativeSideError(origin, target));
+        exit(1);
+    }
+    if (star && customNativeStarExports(origin, target).length == 0) {
+        printline(customNativeStarMsg(origin));
+        exit(1);
+    }
+}
+
+// DOCS/261 -- validate every import statement's native source in the
+// flattened program (project sources plus consumed `.qs` bundle sources,
+// so a bundle needing an undeclared custom module fails naming the
+// declaration). Statement-boundary anchored like resolveImports; same-line
+// `//` marks a commented-out import, never a statement.
+void validateNativeImports(string source, string inputFile, string target) {
+    int[] spans = qsBundleSpans(source);
+    int cursor = 0;
+    while (cursor < source.length) {
+        // Word match on `import` (not `"import "`): minified `.qs` bundle
+        // sources spell imports without spaces (`import{f}from m;`), and
+        // the lexer accepts those shapes too.
+        int importPos = -1;
+        int probe = cursor;
+        while (probe < source.length) {
+            int at = findCI(source, "import", probe);
+            if (at < 0) { break; }
+            bool preOk = at == 0 || source[at - 1] == '\n' || source[at - 1] == '\r' || source[at - 1] == ';';
+            int after = at + 6;
+            bool postOk = after >= source.length || !isNatWordChar(source[after]);
+            if (preOk && postOk) { importPos = at; break; }
+            probe = at + 1;
+        }
+        if (importPos < 0) { break; }
+        bool commented = false;
+        int lineStart = importPos;
+        while (lineStart > 0 && source[lineStart - 1] != '\n' && source[lineStart - 1] != '\r') { lineStart--; }
+        for (int ci = lineStart; ci + 1 < importPos; ci++) {
+            if (source[ci] == '/' && source[ci + 1] == '/') { commented = true; }
+        }
+        int semi = -1;
+        for (int si = importPos; si < source.length; si++) {
+            if (source[si] == ';') { semi = si; break; }
+        }
+        if (semi < 0) { break; }
+        if (commented) {
+            cursor = semi + 1;
+            continue;
+        }
+        string inner = "";
+        for (int ii = importPos + 6; ii < semi; ii++) { inner += source[ii]; }
+        bool star = natImportStar(inner);
+        bool brace = inner.trim().startsWith("{");
+        if ((star || brace) && !natImportHasFrom(inner)) {
+            cursor = semi + 1;
+            continue;
+        }
+        string origin = natImportSource(inner);
+        string[] names = natImportNames(inner);
+        checkOneNativeImport(origin, names, star, natInBundle(spans, natImportLine(source, importPos)), source, inputFile, target);
+        cursor = semi + 1;
+    }
+}
+
 // Known built-in module names used for did-you-mean suggestions on imports
 // (SYNTAX_EXCEPTIONS.md).
 string[] knownModuleNames() {
@@ -329,6 +690,7 @@ int[] diagSourceLoc(string src, int off) {
 // begin (the `internal` visibility boundary).
 string resolveImports(string source, string inputFile, int[] prependLen, string target) {
     if (prependLen.length == 0) { prependLen.add(0); } else { prependLen[0] = 0; }
+    int[] qsSpans = qsBundleSpans(source);
     string prepend = "";
     bool badModule = false;
     int cursor = 0;
@@ -364,7 +726,30 @@ string resolveImports(string source, string inputFile, int[] prependLen, string 
             string modSrc = readStdModule(module, inputFile, source, target);
             if (modSrc.length > 0) {
                 prepend = prepend + modSrc + "\n";
-            } elif (!moduleAlwaysResolvable(module)) {
+            } elif (aggregateDeclaresModule(source, module)) {
+                // Satisfied by a project-local or `.qs` bundle module
+                // already in the aggregate: Silver wins over custom names.
+            } elif (moduleAlwaysResolvable(module)) {
+                // Fixed/embedded modules need no source.
+            } elif (customNativeDeclared(module)) {
+                // DOCS/261 -- star import on a declared custom native:
+                // wrong-target side and missing export list fail here with
+                // the contract message; the grant itself registers later.
+                if (customNativeFileFor(module, target) == "") {
+                    printline(customNativeSideError(module, target));
+                    exit(1);
+                }
+                if (customNativeStarExports(module, target).length == 0) {
+                    printline(customNativeStarMsg(module));
+                    exit(1);
+                }
+            } elif (natInBundle(qsSpans, natImportLine(source, importPos)) || customNativeOptIn()) {
+                // The manifest opts into custom natives (or the star comes
+                // from a consumed `.qs` bundle): an unresolvable star
+                // source names the declaration to add.
+                printline(customNativeUndeclaredMsg(module));
+                exit(1);
+            } else {
                 // SYNTAX_EXCEPTIONS.md ? unknown module, with a did-you-mean
                 // suggestion when it resembles a known one.
                 badModule = true;
@@ -582,6 +967,11 @@ void main() {
     int[] prependLen = [];
     inputSource = resolveImports(inputSource, filename, prependLen, target);
 
+    // DOCS/261 -- validate native import sources (fixed plus the manifest's
+    // custom declarations) before lexing, so undeclared names, wrong-target
+    // sides, and list-less star imports fail with the contract message.
+    validateNativeImports(inputSource, filename, target);
+
     // `internal` visibility boundary: the first line of the project's own
     // sources in the flattened program. Everything the driver prepended
     // before it belongs to external modules whose internal items are off
@@ -637,6 +1027,7 @@ void main() {
 
     Parser p = new Parser(tokens);
     p.setLineLengths(lineLens);
+    p.setCustomTarget(target);
     Node[] program = p.parseProgram();
     if (p.errorCount() > 0) {
         exit(1);
@@ -644,6 +1035,7 @@ void main() {
 
     Evaluator evaluator = new Evaluator();
     evaluator.setProjectBoundary(boundaryLine);
+    evaluator.setCustomTarget(target);
     string[] userCargs = [];
     userCargs.add(filename);
     for (int i = 0; i < scriptArgs.length; i++) {

@@ -4,6 +4,7 @@ import ast;
 import value;
 import env;
 import builtins;
+import project;
 import fs;
 class ReturnSignal {
     public prop Value val;
@@ -37,6 +38,13 @@ class Evaluator {
     // win32 tables above, they compile on both targets.
     public prop string[] linuxLibs;
     public prop string[] linuxGrants;
+    // DOCS/261 -- custom native grants from the project's `.srp`
+    // `nativeModules`: granted export names become builtin globals like the
+    // fixed ones (calls fall through callBuiltin to the null stub -- the
+    // interpreter links no project libraries, mirroring how fixed calls
+    // stub on a non-native host). customTarget is set by the driver.
+    public prop string[] customGrants;
+    public prop string customTarget;
     // DOCS/124 -- the script's command-line arguments, exposed to user code as
     // both the `cargs` array variable and the `cargs()` function.
     public prop string[] scriptArgs;
@@ -100,6 +108,8 @@ class Evaluator {
         this.win32Grants = [];
         this.linuxLibs = [];
         this.linuxGrants = [];
+        this.customGrants = [];
+        this.customTarget = "";
         this.scriptArgs = [];
         this.scriptCargs = null;
         this.diagLine = 0;
@@ -144,6 +154,12 @@ class Evaluator {
 
     public void setProjectBoundary(int line) {
         this.projectBoundaryLine = line;
+    }
+
+    // DOCS/261 -- target OS for custom bare-name resolution ("WINDOWS",
+    // "LINUX" or "MAC", set by the driver from `--os` or the host default).
+    public void setCustomTarget(string target) {
+        this.customTarget = target;
     }
 
     // True when the item's declaration sits in an external module's source.
@@ -724,6 +740,76 @@ class Evaluator {
         this.defineGrantedLinuxExports(lib);
     }
 
+    // DOCS/261 -- custom native module system beside the win32/linux ones
+    // above. Granted exports become builtin globals through the same path
+    // as fixed grants; their calls fall through callBuiltin to the null
+    // stub (the interpreter binary links no project libraries, so a custom
+    // call stubs exactly like a fixed call on a host without its backend --
+    // never worse, never a crash). Fixed tables are untouched: a prefixed
+    // source naming a fixed module stays on the fixed path. Bare names
+    // grant against the target OS side of the manifest; star grants expand
+    // the entry's export list while single-export grants need no list.
+    // Custom grants skip the std-internal rule (the manifest is the opt-in).
+    public void customAddGrant(string name) {
+        if (name == "") { return; }
+        for (int i = 0; i < this.customGrants.length; i++) {
+            if (this.customGrants[i] == name) { return; }
+        }
+        this.customGrants.add(name);
+        this.globals.define(name, makeBuiltin(name));
+    }
+
+    public void registerCustomImport(Node node) {
+        string source = node.strVal;
+        bool all = node.name == "*";
+        if (source == "win32" || source == "linux") { return; }
+        if (source.length > 6 && this.evalSliceStr(source, 0, 6) == "win32.") {
+            string winModule = this.evalSliceStr(source, 6, source.length);
+            if (this.win32ModuleDll(winModule) != "") { return; }
+            if (!customNativeHasWin(winModule)) { return; }
+            if (all) { return; }
+            int winStart = 0;
+            for (int i = 0; i <= node.name.length; i++) {
+                if (i == node.name.length || node.name[i] == ',') {
+                    if (i > winStart) { this.customAddGrant(this.evalSliceStr(node.name, winStart, i)); }
+                    winStart = i + 1;
+                }
+            }
+            return;
+        }
+        if (source.length > 6 && this.evalSliceStr(source, 0, 6) == "linux.") {
+            string linModule = this.evalSliceStr(source, 6, source.length);
+            if (this.linuxModuleLib(linModule) != "") { return; }
+            if (!customNativeHasLin(linModule)) { return; }
+            if (all) { return; }
+            int linStart = 0;
+            for (int j = 0; j <= node.name.length; j++) {
+                if (j == node.name.length || node.name[j] == ',') {
+                    if (j > linStart) { this.customAddGrant(this.evalSliceStr(node.name, linStart, j)); }
+                    linStart = j + 1;
+                }
+            }
+            return;
+        }
+        if (source == "") { return; }
+        if (!customNativeDeclared(source)) { return; }
+        if (customNativeFileFor(source, this.customTarget) == "") { return; }
+        if (all) {
+            string[] starList = customNativeStarExports(source, this.customTarget);
+            for (int s = 0; s < starList.length; s++) {
+                this.customAddGrant(starList[s]);
+            }
+            return;
+        }
+        int bareStart = 0;
+        for (int k = 0; k <= node.name.length; k++) {
+            if (k == node.name.length || node.name[k] == ',') {
+                if (k > bareStart) { this.customAddGrant(this.evalSliceStr(node.name, bareStart, k)); }
+                bareStart = k + 1;
+            }
+        }
+    }
+
     public void run(Node[] program) {
         file.writeBytes("build/diag/TR0.txt", [49]);
         this.registerItems(program);
@@ -749,6 +835,8 @@ class Evaluator {
             this.registerWin32Import(item);
             // LINUX (additive): grant access to imported linux shared libs.
             this.registerLinuxImport(item);
+            // DOCS/261: grant access to declared custom native modules.
+            this.registerCustomImport(item);
         }
         if (item.kind == ND_FUNC) {
             // Overload dispatch by arity (UNIFIED_CORE_LIBRARY.md 7.4 #2):

@@ -52,8 +52,66 @@ string projJoin(string root, string path) {
     return root + "\\" + path;
 }
 
+bool natIsQuote(char c) {
+    return c == '"' || c == '\'';
+}
+
+bool natIsIdentChar(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+}
+
+bool natIsSpace(char c) {
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+// Quote-aware search for a manifest object key (quoted or bare,
+// case-insensitive) followed by `:`. Returns the key start or -1. Values
+// mentioning a key word never match: quoted strings are skipped unless
+// they ARE the key, so a `sources` entry like `star_imports.sr` cannot
+// hijack the `imports` lookup into a later array.
+int natScanKey(string text, string key, int start) {
+    string want = key.lower();
+    int i = start;
+    while (i < text.length) {
+        char c = text[i];
+        if (natIsQuote(c)) {
+            char q = c;
+            int s = i + 1;
+            i++;
+            while (i < text.length && text[i] != q) {
+                if (text[i] == '\\') { i++; }
+                i++;
+            }
+            string word = "";
+            if (i > s) { word = projSlice(text, s, i).lower(); }
+            i++;
+            if (word == want) {
+                int j = i;
+                while (j < text.length && natIsSpace(text[j])) { j++; }
+                if (j < text.length && text[j] == ':') { return s - 1; }
+            }
+            continue;
+        }
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_') {
+            int s = i;
+            while (i < text.length && natIsIdentChar(text[i])) { i++; }
+            if (projSlice(text, s, i).lower() == want) {
+                int j = i;
+                while (j < text.length && natIsSpace(text[j])) { j++; }
+                if (j < text.length && text[j] == ':') { return s; }
+            }
+            continue;
+        }
+        i++;
+    }
+    return -1;
+}
+
 string projManifestValue(string manifest, string key) {
-    int keyPos = projFind(manifest, key, 0);
+    // Key-aware lookup (not substring): a source file named e.g.
+    // `star_imports.sr` must never hijack the `imports` key, and manifest
+    // keys may be quoted or bare.
+    int keyPos = natScanKey(manifest, key, 0);
     if (keyPos < 0) { return ""; }
     int colon = keyPos + key.length;
     while (colon < manifest.length && manifest[colon] != ':') {
@@ -74,7 +132,10 @@ string projManifestValue(string manifest, string key) {
 
 string[] projManifestList(string manifest, string key) {
     string[] result = [];
-    int keyPos = projFind(manifest, key, 0);
+    // Key-aware lookup like projManifestValue: values mentioning a key
+    // word (a `sources` entry `star_imports.sr` contains `imports`) must
+    // never redirect the lookup into a later array.
+    int keyPos = natScanKey(manifest, key, 0);
     if (keyPos < 0) { return result; }
     int cursor = keyPos;
     while (cursor < manifest.length && manifest[cursor] != '[') {
@@ -328,6 +389,7 @@ bool isProjectPath(string path) {
 
 string loadProjectSource(string projectPath) {
     string manifest = fs.readFile(projectPath);
+    parseCustomNativeModules(manifest);
     string root = projDirname(projectPath);
     string entry = projManifestValue(manifest, "entry");
     string[] sources = projManifestList(manifest, "sources");
@@ -355,6 +417,7 @@ string loadProjectSource(string projectPath) {
     if (!projVisited(visited, entryPath)) {
         visited.add(entryPath);
         files.add(entryPath);
+        natNoteProjectFile(entryPath);
     }
 
     if (sources.length > 0) {
@@ -365,6 +428,7 @@ string loadProjectSource(string projectPath) {
                 if (!projVisited(visited, p)) {
                     visited.add(p);
                     files.add(p);
+                    natNoteProjectFile(p);
                 }
             }
         }
@@ -375,6 +439,7 @@ string loadProjectSource(string projectPath) {
             if (!projVisited(visited, p)) {
                 visited.add(p);
                 files.add(p);
+                natNoteProjectFile(p);
             }
         }
     }
@@ -396,9 +461,16 @@ string loadProjectSource(string projectPath) {
         string qsPath = projJoin(root, imports[ki]);
         string qsContent = fs.readFile(qsPath);
         if (qsContent.length > 0) {
+            natNoteQsStems(qsContent);
             string[] libSources = qsModuleSources(qsContent);
             for (int si = 0; si < libSources.length; si = si + 1) {
-                body = body + libSources[si] + "\n";
+                // Bundle-origin markers: the driver's import validation
+                // attributes statements between them to the `.qs` library,
+                // whose custom-native imports always verify against the
+                // consumer's declarations (compilers' `.qs` rule). Plain
+                // comment lines, invisible to the lexer; line counts are
+                // preserved by every later stage.
+                body = body + "//__silveri_qs_begin__\n" + libSources[si] + "\n//__silveri_qs_end__\n";
             }
         }
     }
@@ -422,4 +494,398 @@ string loadProjectSource(string projectPath) {
     if (ptype == "" || ptype == "exe") { ptype = "console"; }
     metadata = metadata + "const string APP_TYPE = \"" + ptype + "\";\n";
     return metadata + body;
+}
+
+// ---------------------------------------------------------------------------
+// Custom native modules (`.srp` `nativeModules`, DOCS/261). A project may
+// declare its own OS libraries so interpreted sources can grant their
+// exports without hardcoding anything project-specific in the interpreter:
+//   "nativeModules": [
+//       { "module": "gfx", "windows": "gfx-win.dll", "linux": "libgfx.so.1" }
+//   ]
+// Field names are case-insensitive, unknown fields are ignored, and an
+// absent key leaves every table empty (zero behavior change). The tables
+// below are filled by parseCustomNativeModules during loadProjectSource and
+// read by the driver (main.sr), the parser grant walk, and the evaluator
+// grant registry. Parallel arrays: index i describes natModules[i].
+// ---------------------------------------------------------------------------
+
+string[] natModules = [];
+string[] natWinFiles = [];
+string[] natLinFiles = [];
+string[] natSharedExports = [];
+int[] natHasSharedExports = [];
+string[] natWinExports = [];
+int[] natHasWinExports = [];
+string[] natLinExports = [];
+int[] natHasLinExports = [];
+// Lowercased stems of the project's own source files plus `.qs` bundle
+// module stems: bare imports naming one of these are Silver, never native
+// (bare-name precedence: project-local sources, `.qs` modules, std modules
+// win over custom native names).
+string[] natStems = [];
+
+// Index of the bracket closing text[open] (`[`/`{`), quote-aware, or -1.
+int natMatchClose(string text, int open, char oc, char cc) {
+    int depth = 0;
+    int i = open;
+    while (i < text.length) {
+        char c = text[i];
+        if (natIsQuote(c)) {
+            i++;
+            while (i < text.length && text[i] != c) {
+                if (text[i] == '\\') { i++; }
+                i++;
+            }
+            i++;
+            continue;
+        }
+        if (c == oc) { depth++; }
+        if (c == cc) {
+            depth--;
+            if (depth == 0) { return i; }
+        }
+        i++;
+    }
+    return -1;
+}
+
+// Index of `want` outside string literals, or -1.
+int natFindPlain(string text, char want, int start) {
+    int i = start;
+    while (i < text.length) {
+        char c = text[i];
+        if (natIsQuote(c)) {
+            i++;
+            while (i < text.length && text[i] != c) {
+                if (text[i] == '\\') { i++; }
+                i++;
+            }
+            i++;
+            continue;
+        }
+        if (c == want) { return i; }
+        i++;
+    }
+    return -1;
+}
+
+string natUnquote(string value) {
+    string t = projTrim(value);
+    if (t.length >= 2 && natIsQuote(t[0]) && t[t.length - 1] == t[0]) {
+        string raw = projSlice(t, 1, t.length - 1);
+        string result = "";
+        int i = 0;
+        while (i < raw.length) {
+            if (raw[i] == '\\' && i + 1 < raw.length) {
+                i++;
+                result = result + raw[i];
+            } else {
+                result = result + raw[i];
+            }
+            i++;
+        }
+        return result;
+    }
+    return t;
+}
+
+// Parse a `["a", "b"]` string list into comma-joined form ("" when empty).
+// Bare words are accepted like the manifest's lenient scalar spellings.
+string natParseStrList(string value) {
+    string t = projTrim(value);
+    if (t.length < 2 || t[0] != '[') { return ""; }
+    string inner = projSlice(t, 1, t.length - 1);
+    string result = "";
+    string sep = "";
+    int i = 0;
+    while (i < inner.length) {
+        while (i < inner.length && (natIsSpace(inner[i]) || inner[i] == ',')) { i++; }
+        if (i >= inner.length) { break; }
+        string item = "";
+        if (natIsQuote(inner[i])) {
+            char q = inner[i];
+            i++;
+            while (i < inner.length && inner[i] != q) {
+                if (inner[i] == '\\' && i + 1 < inner.length) {
+                    i++;
+                    item = item + inner[i];
+                } else {
+                    item = item + inner[i];
+                }
+                i++;
+            }
+            i++;
+        } else {
+            while (i < inner.length && inner[i] != ',') {
+                item = item + inner[i];
+                i++;
+            }
+            item = projTrim(item);
+        }
+        if (item.length > 0) {
+            result = result + sep + item;
+            sep = ",";
+        }
+    }
+    return result;
+}
+
+// Index of the next top-level `,` (outside strings and `[]`/`{}` nests),
+// or -1. Array values like `"exports": ["a", "b"]` hold inner commas that
+// must not split entries.
+int natFindEntryComma(string text, int start) {
+    int depth = 0;
+    int i = start;
+    while (i < text.length) {
+        char c = text[i];
+        if (natIsQuote(c)) {
+            i++;
+            while (i < text.length && text[i] != c) {
+                if (text[i] == '\\') { i++; }
+                i++;
+            }
+            i++;
+            continue;
+        }
+        if (c == '[' || c == '{') { depth++; }
+        if (c == ']' || c == '}') { depth--; }
+        if (c == ',' && depth == 0) { return i; }
+        i++;
+    }
+    return -1;
+}
+
+void natAddEntry(string objInner) {
+    string module = "";
+    string windows = "";
+    string linux = "";
+    string exports = "";
+    int hasExports = 0;
+    string windowsExports = "";
+    int hasWindowsExports = 0;
+    string linuxExports = "";
+    int hasLinuxExports = 0;
+    int i = 0;
+    while (i < objInner.length) {
+        int comma = natFindEntryComma(objInner, i);
+        int end = objInner.length;
+        if (comma >= 0) { end = comma; }
+        string pair = projSlice(objInner, i, end);
+        int colon = natFindPlain(pair, ':', 0);
+        if (colon >= 0) {
+            string key = natUnquote(projSlice(pair, 0, colon)).lower();
+            string rawVal = projSlice(pair, colon + 1, pair.length);
+            if (key == "module") { module = natUnquote(rawVal); }
+            elif (key == "windows") { windows = natUnquote(rawVal); }
+            elif (key == "linux") { linux = natUnquote(rawVal); }
+            elif (key == "exports") { exports = natParseStrList(rawVal); hasExports = 1; }
+            elif (key == "windowsexports") { windowsExports = natParseStrList(rawVal); hasWindowsExports = 1; }
+            elif (key == "linuxexports") { linuxExports = natParseStrList(rawVal); hasLinuxExports = 1; }
+        }
+        if (comma < 0) { break; }
+        i = comma + 1;
+    }
+    if (module == "") { return; }
+    natModules.add(module);
+    natWinFiles.add(windows);
+    natLinFiles.add(linux);
+    natSharedExports.add(exports);
+    natHasSharedExports.add(hasExports);
+    natWinExports.add(windowsExports);
+    natHasWinExports.add(hasWindowsExports);
+    natLinExports.add(linuxExports);
+    natHasLinExports.add(hasLinuxExports);
+}
+
+void natNoteStem(string base) {
+    string folded = base.lower();
+    for (int k = 0; k < natStems.length; k++) {
+        if (natStems[k] == folded) { return; }
+    }
+    natStems.add(folded);
+}
+
+void natNoteProjectFile(string path) {
+    int last = -1;
+    for (int i = 0; i < path.length; i++) {
+        if (path[i] == '/' || path[i] == '\\') { last = i; }
+    }
+    string base = projSlice(path, last + 1, path.length);
+    if (projEndsWith(base, ".sr")) { base = projSlice(base, 0, base.length - 3); }
+    natNoteStem(base);
+}
+
+// Record `.qs` bundle module filename stems (basename minus extension) so
+// bare imports naming bundled modules keep their Silver precedence.
+void natNoteQsStems(string content) {
+    if (!qsIsBundle(content)) { return; }
+    int pos = 6;
+    pos = pos + 4;
+    int metaLen = qsU32(content, pos);
+    pos = pos + 4 + metaLen;
+    int count = qsU32(content, pos);
+    pos = pos + 4;
+    for (int i = 0; i < count; i++) {
+        int nameLen = qsU32(content, pos);
+        pos = pos + 4;
+        string filename = projSlice(content, pos, pos + nameLen);
+        pos = pos + nameLen;
+        int srcLen = qsU32(content, pos);
+        pos = pos + 4 + srcLen;
+        int last = -1;
+        for (int k = 0; k < filename.length; k++) {
+            if (filename[k] == '/' || filename[k] == '\\') { last = k; }
+        }
+        string base = projSlice(filename, last + 1, filename.length);
+        int dot = -1;
+        for (int d = 0; d < base.length; d++) {
+            if (base[d] == '.') { dot = d; }
+        }
+        if (dot > 0) { base = projSlice(base, 0, dot); }
+        if (base.length > 0) { natNoteStem(base); }
+    }
+}
+
+// Parse the `.srp` `nativeModules` array into the tables above. Unknown
+// keys are ignored, malformed entries are skipped, and a missing or
+// non-array value declares nothing. Runs once per process (the driver
+// loads a single manifest), so the tables only grow here.
+void parseCustomNativeModules(string manifest) {
+    int keyPos = natScanKey(manifest, "nativemodules", 0);
+    if (keyPos < 0) { return; }
+    int colon = keyPos;
+    while (colon < manifest.length && manifest[colon] != ':') { colon++; }
+    if (colon >= manifest.length) { return; }
+    int open = natFindPlain(manifest, '[', colon + 1);
+    if (open < 0) { return; }
+    int close = natMatchClose(manifest, open, '[', ']');
+    if (close < 0) { return; }
+    string inner = projSlice(manifest, open + 1, close);
+    int i = 0;
+    while (i < inner.length) {
+        int ob = natFindPlain(inner, '{', i);
+        if (ob < 0) { break; }
+        int oend = natMatchClose(inner, ob, '{', '}');
+        if (oend < 0) { break; }
+        natAddEntry(projSlice(inner, ob + 1, oend));
+        i = oend + 1;
+    }
+}
+
+int natIndexOf(string name) {
+    for (int i = 0; i < natModules.length; i++) {
+        if (natModules[i] == name) { return i; }
+    }
+    return -1;
+}
+
+// True when the manifest declares `name` on at least one OS side.
+bool customNativeDeclared(string name) {
+    return natIndexOf(name) >= 0;
+}
+
+// True when the manifest opts into custom natives (at least one entry
+// parsed; an absent key leaves the tables empty and diagnostics legacy).
+// Module-level state is append-only in Silver (global reassignment is
+// rejected), so key presence without entries is indistinguishable from an
+// absent key -- both declare nothing and change no behavior.
+bool customNativeOptIn() {
+    return natModules.length > 0;
+}
+
+bool customNativeHasWin(string name) {
+    int idx = natIndexOf(name);
+    if (idx < 0) { return false; }
+    return natWinFiles[idx] != "";
+}
+
+bool customNativeHasLin(string name) {
+    int idx = natIndexOf(name);
+    if (idx < 0) { return false; }
+    return natLinFiles[idx] != "";
+}
+
+// Library file backing a bare import on `target` ("LINUX" takes the linux
+// file, every other target the windows file, mirroring the compilers where
+// the Mac backend emits the Windows-ABI shape). "" when uncovered.
+string customNativeFileFor(string name, string target) {
+    int idx = natIndexOf(name);
+    if (idx < 0) { return ""; }
+    if (target == "LINUX") { return natLinFiles[idx]; }
+    return natWinFiles[idx];
+}
+
+// Effective star-export list for `import * from <name>;` on `target`: the
+// per-OS override when present, else the shared list. Empty when neither is
+// declared (star stays rejected) or the winner is an empty list.
+string[] customNativeStarExports(string name, string target) {
+    string[] result = [];
+    int idx = natIndexOf(name);
+    if (idx < 0) { return result; }
+    string joined = "";
+    int present = 0;
+    if (target == "LINUX") {
+        if (natHasLinExports[idx] == 1) { joined = natLinExports[idx]; present = 1; }
+        elif (natHasSharedExports[idx] == 1) { joined = natSharedExports[idx]; present = 1; }
+    } else {
+        if (natHasWinExports[idx] == 1) { joined = natWinExports[idx]; present = 1; }
+        elif (natHasSharedExports[idx] == 1) { joined = natSharedExports[idx]; present = 1; }
+    }
+    if (present == 0 || joined == "") { return result; }
+    int start = 0;
+    for (int i = 0; i <= joined.length; i++) {
+        if (i == joined.length || joined[i] == ',') {
+            if (i > start) { result.add(projSlice(joined, start, i)); }
+            start = i + 1;
+        }
+    }
+    return result;
+}
+
+// True when the project's own sources or a consumed `.qs` bundle provide a
+// Silver module with this stem (bare-name precedence over custom natives).
+bool customNativeSilverShadow(string name) {
+    string folded = name.lower();
+    for (int k = 0; k < natStems.length; k++) {
+        if (natStems[k] == folded) { return true; }
+    }
+    return false;
+}
+
+string customNativeShort(string source) {
+    int last = -1;
+    for (int i = 0; i < source.length; i++) {
+        if (source[i] == '.') { last = i; }
+    }
+    if (last < 0) { return source; }
+    return projSlice(source, last + 1, source.length);
+}
+
+string customNativeUndeclaredMsg(string source) {
+    string short = customNativeShort(source);
+    return "unknown native module \"" + source + "\"; declare it in your .srp with \"nativeModules\": [ { \"module\": \"" + short + "\", \"windows\": \"<dll>\", \"linux\": \"<lib>\" } ]";
+}
+
+string customNativeSideError(string module, string target) {
+    if (target == "LINUX") {
+        int idx = natIndexOf(module);
+        string have = "";
+        if (idx >= 0) { have = natWinFiles[idx]; }
+        return "custom native module \"" + module + "\" has no library for LINUX targets (entry declares \"windows\": \"" + have + "\" only); add \"linux\": \"<lib>\" to its \"nativeModules\" entry";
+    }
+    if (target == "MAC") {
+        int idx = natIndexOf(module);
+        string have = "";
+        if (idx >= 0) { have = natLinFiles[idx]; }
+        return "custom native module \"" + module + "\" has no library for MAC (which use the \"windows\" file) targets (entry declares \"linux\": \"" + have + "\" only); add \"windows\": \"<dll>\" to its \"nativeModules\" entry";
+    }
+    int idx2 = natIndexOf(module);
+    string have2 = "";
+    if (idx2 >= 0) { have2 = natLinFiles[idx2]; }
+    return "custom native module \"" + module + "\" has no library for WINDOWS targets (entry declares \"linux\": \"" + have2 + "\" only); add \"windows\": \"<dll>\" to its \"nativeModules\" entry";
+}
+
+string customNativeStarMsg(string source) {
+    return "whole-module import of custom native module \"" + source + "\" is not supported; use single-export grants: import { FuncName } from \"" + source + "\";";
 }

@@ -3,6 +3,7 @@ mod export parser;
 import token;
 import lexer;
 import ast;
+import project;
 class Parser {
     private prop Token[] tokens;
     private prop int pos;
@@ -39,6 +40,11 @@ class Parser {
     private bool linuxAllModules;
     private string[] linuxOpenModules;
     private string[] linuxGrantNames;
+    // DOCS/261 -- custom native grants from the project's `.srp`
+    // `nativeModules`: granted export names resolve like fixed natives, and
+    // the target OS for bare-name resolution is set by the driver.
+    private string[] customGrantNames;
+    private string customTarget;
     // Set when a top-level `internal` modifier was peeled; attached to the
     // next parsed item (functions, var decls, consts, structs, classes,
     // defs, `mod export`).
@@ -85,6 +91,8 @@ class Parser {
         this.linuxAllModules = false;
         this.linuxOpenModules = [];
         this.linuxGrantNames = [];
+        this.customGrantNames = [];
+        this.customTarget = "";
         this.pendingInternal = false;
         this.paramListDamaged = false;
         this.fnPtrCallScope = [];
@@ -101,6 +109,12 @@ class Parser {
     // just past the end of a line (SYNTAX_EXCEPTIONS.md #3).
     public void setLineLengths(int[] lens) {
         this.lineLens = lens;
+    }
+
+    // DOCS/261 -- target OS for custom bare-name resolution ("WINDOWS",
+    // "LINUX" or "MAC", set by the driver from `--os` or the host default).
+    public void setCustomTarget(string target) {
+        this.customTarget = target;
     }
 
     // Record a diagnostic and keep going (one message per line, source order).
@@ -741,6 +755,8 @@ private Node? parseItem() {
         this.recordWin32ImportGrant(source, all, names);
         // LINUX (additive): remember linux grants for the same walk.
         this.recordLinuxImportGrant(source, all, names);
+        // DOCS/261: remember custom native grants the same way.
+        this.recordCustomImportGrant(source, all, names);
         this.expectSemi();
         Node n = new Node(ND_IMPORT, ln, c);
         n.strVal = source;
@@ -3116,6 +3132,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         if (this.builtinCallableName(name)) { return true; }
         if (this.win32Resolvable(name)) { return true; }
         if (this.linuxResolvable(name)) { return true; }
+        if (this.customResolvable(name)) { return true; }
         if (this.isAllCapsName(name)) { return true; }
         if (name.length > 2 && name[0] == '_' && name[1] == '_') { return true; }
         return false;
@@ -3202,6 +3219,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         if (name.length > 4 && name.startsWith("make") && name[4] >= 'A' && name[4] <= 'Z') { return true; }
         if (this.win32Resolvable(name)) { return true; }
         if (this.linuxResolvable(name)) { return true; }
+        if (this.customResolvable(name)) { return true; }
         if (this.isAllCapsName(name)) { return true; }
         return false;
     }
@@ -3425,6 +3443,58 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             for (int m = 0; m < this.linuxOpenModules.length; m++) {
                 if (this.strEq(this.linuxModuleNameLib(this.linuxOpenModules[m]), fnLib)) { return true; }
             }
+        }
+        return false;
+    }
+
+    // DOCS/261 -- remember custom native import grants for the
+    // unknown-method walk. Fixed tables are untouched: a prefixed source
+    // naming a fixed module stays on the fixed path. Bare names grant
+    // against the target OS side of the manifest; star grants expand the
+    // entry's export list (single-export grants need no list). Custom
+    // grants skip the std-internal rule: the manifest is the opt-in.
+    private void recordCustomImportGrant(string src, bool all, string[] names) {
+        if (this.strEq(src, "win32") || this.strEq(src, "linux")) {
+            return;
+        }
+        if (src.length > 6 && this.strEq(src.substr(0, 6), "win32.")) {
+            string module = src.substr(6);
+            if (this.win32ModuleNameDll(module) != "") { return; }
+            if (!customNativeHasWin(module)) { return; }
+            if (all) { return; }
+            for (int j = 0; j < names.length; j++) {
+                this.customGrantNames.add(names[j]);
+            }
+            return;
+        }
+        if (src.length > 6 && this.strEq(src.substr(0, 6), "linux.")) {
+            string module = src.substr(6);
+            if (this.linuxModuleNameLib(module) != "") { return; }
+            if (!customNativeHasLin(module)) { return; }
+            if (all) { return; }
+            for (int j = 0; j < names.length; j++) {
+                this.customGrantNames.add(names[j]);
+            }
+            return;
+        }
+        if (src == "") { return; }
+        if (!customNativeDeclared(src)) { return; }
+        if (customNativeFileFor(src, this.customTarget) == "") { return; }
+        if (all) {
+            string[] starList = customNativeStarExports(src, this.customTarget);
+            for (int s = 0; s < starList.length; s++) {
+                this.customGrantNames.add(starList[s]);
+            }
+            return;
+        }
+        for (int k = 0; k < names.length; k++) {
+            this.customGrantNames.add(names[k]);
+        }
+    }
+
+    private bool customResolvable(string name) {
+        for (int g = 0; g < this.customGrantNames.length; g++) {
+            if (this.strEq(this.customGrantNames[g], name)) { return true; }
         }
         return false;
     }
