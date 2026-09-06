@@ -34,6 +34,11 @@ class Parser {
     private bool win32AllModules;
     private string[] win32OpenModules;
     private string[] win32GrantNames;
+    // LINUX (additive, mirrors Evaluator linux tables): linux grants for
+    // the same walk, so `import * from linux.libc` natives never flag.
+    private bool linuxAllModules;
+    private string[] linuxOpenModules;
+    private string[] linuxGrantNames;
     // Set when a top-level `internal` modifier was peeled; attached to the
     // next parsed item (functions, var decls, consts, structs, classes,
     // defs, `mod export`).
@@ -77,6 +82,9 @@ class Parser {
         this.win32AllModules = false;
         this.win32OpenModules = [];
         this.win32GrantNames = [];
+        this.linuxAllModules = false;
+        this.linuxOpenModules = [];
+        this.linuxGrantNames = [];
         this.pendingInternal = false;
         this.paramListDamaged = false;
         this.fnPtrCallScope = [];
@@ -731,6 +739,8 @@ private Node? parseItem() {
         // Remember win32 grants for the post-parse unknown-method walk
         // (DOCS/213): free Win32 calls resolve only through these imports.
         this.recordWin32ImportGrant(source, all, names);
+        // LINUX (additive): remember linux grants for the same walk.
+        this.recordLinuxImportGrant(source, all, names);
         this.expectSemi();
         Node n = new Node(ND_IMPORT, ln, c);
         n.strVal = source;
@@ -3105,6 +3115,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         if (this.knownIdentName(name)) { return true; }
         if (this.builtinCallableName(name)) { return true; }
         if (this.win32Resolvable(name)) { return true; }
+        if (this.linuxResolvable(name)) { return true; }
         if (this.isAllCapsName(name)) { return true; }
         if (name.length > 2 && name[0] == '_' && name[1] == '_') { return true; }
         return false;
@@ -3190,6 +3201,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         // Value factories and compiler-intrinsic calls stay callable.
         if (name.length > 4 && name.startsWith("make") && name[4] >= 'A' && name[4] <= 'Z') { return true; }
         if (this.win32Resolvable(name)) { return true; }
+        if (this.linuxResolvable(name)) { return true; }
         if (this.isAllCapsName(name)) { return true; }
         return false;
     }
@@ -3354,6 +3366,58 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         if (fnDll.length > 0) {
             for (int m = 0; m < this.win32OpenModules.length; m++) {
                 if (this.strEq(this.win32ModuleNameDll(this.win32OpenModules[m]), fnDll)) { return true; }
+            }
+        }
+        return false;
+    }
+
+    // LINUX (additive, mirrors Evaluator linux tables): small grant entries
+    // only -- the core libc names the interpreter defines builtins for.
+    private void recordLinuxImportGrant(string src, bool all, string[] names) {
+        if (this.strEq(src, "linux")) {
+            if (all || names.length == 0) { this.linuxAllModules = true; return; }
+            for (int j = 0; j < names.length; j++) {
+                this.linuxOpenModules.add(names[j]);
+            }
+            return;
+        }
+        if (src.length > 6 && this.strEq(src.substr(0, 6), "linux.")) {
+            string module = src.substr(6);
+            if (all || names.length == 0) {
+                this.linuxOpenModules.add(module);
+                return;
+            }
+            for (int j2 = 0; j2 < names.length; j2++) {
+                this.linuxGrantNames.add(names[j2]);
+            }
+        }
+    }
+
+    private string linuxModuleNameLib(string module) {
+        if (this.strEq(module, "libc")) { return "libc.so.6"; }
+        if (this.strEq(module, "x11")) { return "libX11.so.6"; }
+        if (this.strEq(module, "xtst")) { return "libXtst.so.6"; }
+        return "";
+    }
+
+    private string linuxLibForFn(string fn) {
+        if (this.strEq(fn, "nanosleep") || this.strEq(fn, "clock_gettime")
+            || this.strEq(fn, "getenv") || this.strEq(fn, "setenv")
+            || this.strEq(fn, "open") || this.strEq(fn, "read")
+            || this.strEq(fn, "write") || this.strEq(fn, "close")
+            || this.strEq(fn, "sysconf")) { return "libc.so.6"; }
+        return "";
+    }
+
+    private bool linuxResolvable(string name) {
+        if (this.linuxAllModules) { return true; }
+        for (int g = 0; g < this.linuxGrantNames.length; g++) {
+            if (this.strEq(this.linuxGrantNames[g], name)) { return true; }
+        }
+        string fnLib = this.linuxLibForFn(name);
+        if (fnLib.length > 0) {
+            for (int m = 0; m < this.linuxOpenModules.length; m++) {
+                if (this.strEq(this.linuxModuleNameLib(this.linuxOpenModules[m]), fnLib)) { return true; }
             }
         }
         return false;
