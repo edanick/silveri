@@ -3405,7 +3405,13 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             || this.strEq(fn, "getenv") || this.strEq(fn, "setenv")
             || this.strEq(fn, "open") || this.strEq(fn, "read")
             || this.strEq(fn, "write") || this.strEq(fn, "close")
-            || this.strEq(fn, "sysconf")) { return "libc.so.6"; }
+            || this.strEq(fn, "sysconf") || this.strEq(fn, "socket")
+            || this.strEq(fn, "connect") || this.strEq(fn, "bind")
+            || this.strEq(fn, "listen") || this.strEq(fn, "accept")
+            || this.strEq(fn, "send") || this.strEq(fn, "recv")
+            || this.strEq(fn, "getuid") || this.strEq(fn, "setsockopt")
+            || this.strEq(fn, "getaddrinfo") || this.strEq(fn, "freeaddrinfo")
+            || this.strEq(fn, "memcpy")) { return "libc.so.6"; }
         return "";
     }
 
