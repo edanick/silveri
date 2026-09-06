@@ -44,6 +44,11 @@ string projJoin(string root, string path) {
     if (path.length > 0 && (path[0] == '/' || path[0] == '\\')) {
         return root + path;
     }
+    // Linux joins with `/` (mirrors silverc/compiler/bcache.sr resolveRel);
+    // dual-separator scanning everywhere else is untouched.
+    #on LINUX
+    return root + "/" + path;
+    #off
     return root + "\\" + path;
 }
 
@@ -185,11 +190,17 @@ string[] projWalk(string root, string relDir, string[] excludes) {
     string[] result = [];
     string dir = root;
     if (relDir.length > 0) { dir = projJoin(root, relDir); }
+    // Native separator per target inside walk-relative joins only;
+    // scanning (projDirname/projIsExcluded) stays dual-separator.
+    string relSep = "\\";
+    #on LINUX
+    relSep = "/";
+    #off
     string[] names = folder.getFiles(dir);
     for (int i = 0; i < names.length; i = i + 1) {
         string name = names[i];
         string rel = name;
-        if (relDir.length > 0) { rel = relDir + "\\" + name; }
+        if (relDir.length > 0) { rel = relDir + relSep + name; }
         if (!projEndsWith(rel, ".sr")) { continue; }
         if (projIsExcluded(rel, excludes)) { continue; }
         result.add(projJoin(root, rel));
@@ -198,7 +209,7 @@ string[] projWalk(string root, string relDir, string[] excludes) {
     for (int k = 0; k < subdirs.length; k = k + 1) {
         string subname = subdirs[k];
         string subrel = subname;
-        if (relDir.length > 0) { subrel = relDir + "\\" + subname; }
+        if (relDir.length > 0) { subrel = relDir + relSep + subname; }
         if (projIsExcluded(subrel, excludes)) { continue; }
         string[] sub = projWalk(root, subrel, excludes);
         for (int m = 0; m < sub.length; m = m + 1) {
@@ -294,7 +305,11 @@ string projExpandCollections(string source, string root, string collections) {
             if (path[0] == '/' || path[0] == '\\') {
                 projCollectionFail(path, line);
             }
-            string fullPath = projJoin(root, collections + "\\" + path);
+            string colSep = "\\";
+            #on LINUX
+            colSep = "/";
+            #off
+            string fullPath = projJoin(root, collections + colSep + path);
             if (!fs.exists(fullPath)) { projCollectionFail(path, line); }
             result = result + prefix + " = " + projCollectionLiteral(fullPath) + projSlice(path, semi, path.length);
         } else {
@@ -320,13 +335,20 @@ string loadProjectSource(string projectPath) {
 
     string[] files = [];
     string[] visited = [];
-    // Normalize the entry to backslash form so dedup matches walk output:
-    // folder entries come back with backslashes while manifests may use
-    // forward slashes, and a mismatched separator would include the entry
-    // twice when it also lives under a walked source directory.
+    // Normalize the entry to the native separator form so dedup matches
+    // walk output: folder entries come back with backslashes on WINDOWS
+    // (slashes on LINUX) while manifests may use either, and a mismatched
+    // separator would include the entry twice when it also lives under a
+    // walked source directory.
     string entryPath = "";
+    char entryFrom = '/';
+    string entrySep = "\\";
+    #on LINUX
+    entryFrom = '\\';
+    entrySep = "/";
+    #off
     for (int ei = 0; ei < entry.length; ei = ei + 1) {
-        if (entry[ei] == '/') { entryPath = entryPath + '\\'; }
+        if (entry[ei] == entryFrom) { entryPath = entryPath + entrySep; }
         else { entryPath = entryPath + entry[ei]; }
     }
     entryPath = projJoin(root, entryPath);
