@@ -1158,9 +1158,20 @@ class BuiltinMethods {
             return makeNull();
         }
         if (mod == "llmai_module") {
+            // LINUX (additive): WinInet has no Linux equivalent — the native
+            // llmai.chat call below lowers to WinInet sentinel calls whose
+            // GOT slots the Linux import block never fills (SIGSEGV). Route
+            // chat to a graceful empty string, same posture as the http
+            // bridge stubs; other methods keep falling through to makeNull.
+            // Full HTTPS bridging is out of scope.
+            #on LINUX
+            if (method == "chat") { return makeString(""); }
+            #off
+            #on WINDOWS
             if (method == "chat" && args.length >= 3) {
                 return makeString(llmai.chat(args[0].strVal, args[1].strVal, args[2].strVal));
             }
+            #off
             return makeNull();
         }
         if (mod == "keyboard_module") {
