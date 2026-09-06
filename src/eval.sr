@@ -661,6 +661,18 @@ class Evaluator {
             fns.add("write");
             fns.add("close");
             fns.add("sysconf");
+            fns.add("socket");
+            fns.add("connect");
+            fns.add("bind");
+            fns.add("listen");
+            fns.add("accept");
+            fns.add("send");
+            fns.add("recv");
+            fns.add("getuid");
+            fns.add("setsockopt");
+            fns.add("getaddrinfo");
+            fns.add("freeaddrinfo");
+            fns.add("memcpy");
             for (int i = 0; i < fns.length; i++) {
                 if (this.linuxHasExport(lib, fns[i])) {
                     this.globals.define(fns[i], makeBuiltin(fns[i]));
@@ -2073,6 +2085,17 @@ mirrorPut(obj, target.name, val);
                 bytes.add(makeByte(0));
             }
             result = makeArray(bytes);
+        } elif ((node.name == "int" || node.name == "int32" || node.name == "int64" || node.name == "uint") && node.childCount() == 1) {
+            int icount = this.evalExpr(node.child(0), env).toInt().toInt();
+            if (icount < 0) {
+                printline("Runtime error: int array size cannot be negative");
+                exit(1);
+            }
+            Value[] ints = [];
+            for (int i = 0; i < icount; i++) {
+                ints.add(makeInt(0));
+            }
+            result = makeArray(ints);
         } elif (this.classes.contains(node.name)) {
             this.checkInternalClassUse(node.name, node);
             result = this.constructClass(node.name, args);
