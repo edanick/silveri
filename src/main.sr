@@ -250,6 +250,18 @@ string readStdModule(string name, string inputFile, string selfSource, string ta
     paths.add("..\\silverc\\std\\" + lower + ".sr");
     paths.add("..\\silveri\\src\\" + lower + ".sr");
     paths.add("silveri\\src\\" + lower + ".sr");
+    // Linux spellings beside the Windows ones (mirrors
+    // silverc/compiler_driver.sr): the backslash candidates never hit on
+    // Linux (backslash is a filename character, not a separator), so the
+    // slash forms are probed too. Additive: WINDOWS builds never see them.
+    #on LINUX
+    paths.add("std/" + lower + ".sr");
+    paths.add("silverc/std/" + lower + ".sr");
+    paths.add("../std/" + lower + ".sr");
+    paths.add("../silverc/std/" + lower + ".sr");
+    paths.add("../silveri/src/" + lower + ".sr");
+    paths.add("silveri/src/" + lower + ".sr");
+    #off
     for (int i = 0; i < paths.length; i++) {
         // Skip the input file itself (same path spelling).
         if (paths[i].lower() == inputFile.lower()) { continue; }
