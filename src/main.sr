@@ -68,6 +68,29 @@ private string stdRegionSlice(string s, int start, int end) {
     return r;
 }
 
+// The interpreter's host OS default, resolved at silveri's own compile
+// time (mirrors preprocess.sr ppTargetOs): a LINUX-built silveri reports
+// LINUX, a WINDOWS-built one WINDOWS. An explicit `--os` override wins via
+// interpTargetOsFor below.
+string interpHostOs() {
+    #on LINUX
+    return "LINUX";
+    #else
+    return "WINDOWS";
+    #off
+}
+
+// Explicit `--os` override (lowercase windows/linux/mac is the documented
+// form; WINDOWS/LINUX/MAC and mixed-case also accepted, mirroring
+// silverc/compiler/cli_flags.sr); "" or anything else falls back to the
+// host default (never fatal).
+string interpTargetOsFor(string overrideOs) {
+    if (cli.eqFold(overrideOs, "WINDOWS")) { return "WINDOWS"; }
+    if (cli.eqFold(overrideOs, "LINUX")) { return "LINUX"; }
+    if (cli.eqFold(overrideOs, "MAC")) { return "MAC"; }
+    return interpHostOs();
+}
+
 // DOCS/260 — the preprocessor filter for prepended std module sources,
 // reduced for the interpreter. The interpreter deliberately does NOT
 // implement the preprocessor as a language feature, but the v2 unified core
@@ -75,17 +98,19 @@ private string stdRegionSlice(string s, int start, int end) {
 // silverc\std\*.sr, and those raw directive lines must never reach the
 // parser. This filter runs on std module text BEFORE it is prepended into
 // the aggregate:
-//   - `#on WINDOWS` region bodies are kept (the interpreter runs on the
-//     same host the std was folded for, so WINDOWS is the only target).
-//   - `#on LINUX` / `#on MAC` / `#else` region bodies are stripped — the
-//     interpreter only needs the WINDOWS regions and shared code.
+//   - `#on <target>` region bodies are kept, where target is the host OS
+//     default (interpHostOs) unless `--os windows|linux` overrides it.
+//   - Other `#on` bodies are stripped; an `#else` body is kept only when
+//     no preceding `#on` of the region matched (compiler semantics).
 //   - Directive lines themselves are blank-replaced (CRLF shape preserved)
 //     so line numbers stay stable, mirroring preprocess.sr's line mapping.
-// Lenient by design (this is not the compiler's strict validator): a
-// nested `#on`, an `#else`/`#off` without an open region, an unknown or
-// missing OS name, or an unclosed region at EOF are never fatal — the
-// offending directive line is dropped and the scan continues.
-string filterStdRegions(string src) {
+// Directive names stay `#on`-UPPERCASE-only (like the compilers); only the
+// `--os` flag values accept lowercase. Lenient by design (this is not the
+// compiler's strict validator): a nested `#on`, an `#else`/`#off` without
+// an open region, an unknown or missing OS name, or an unclosed region at
+// EOF are never fatal — the offending directive line is dropped and the
+// scan continues.
+string filterStdRegions(string src, string target) {
     if (src.length == 0) { return src; }
     // Files without a single `#` cannot carry directives: return untouched.
     bool anyHash = false;
@@ -103,6 +128,7 @@ string filterStdRegions(string src) {
     // mode: 0 = outside regions, 1 = inside a region.
     int mode = 0;
     bool active = false;
+    bool matchedAny = false;
     int i = 0;
     while (i < src.length) {
         int nl = -1;
@@ -136,17 +162,17 @@ string filterStdRegions(string src) {
                     string osName = stdRegionSlice(src, nameStart, nameEnd);
                     mode = 1;
                     // Unknown or missing OS names strip their body too
-                    // (active stays false); only WINDOWS regions survive.
-                    active = stdRegionEq(osName, "WINDOWS");
+                    // (active stays false); only the target's regions
+                    // survive (directive names are UPPERCASE-only).
+                    active = stdRegionEq(osName, target);
+                    matchedAny = active;
                 }
             } elif (stdRegionEq(word, "else")) {
                 drop = true;
                 // Lenient: `#else` outside a region just drops the line.
-                // Per the design ruling the interpreter only needs the
-                // WINDOWS regions and shared code, so an `#else` body is
-                // always stripped — even after an unmatched region where
-                // the compiler's semantics would activate it.
-                if (mode == 1) { active = false; }
+                // Inside a region the `#else` body is kept only when no
+                // preceding `#on` matched (compiler semantics).
+                if (mode == 1) { active = !matchedAny; }
             } elif (stdRegionEq(word, "off")) {
                 drop = true;
                 // Lenient: `#off` outside a region just drops the line.
@@ -201,7 +227,7 @@ string filterStdRegions(string src) {
 // Loaded text is passed through filterStdRegions first: the v2 unified std
 // carries `#on WINDOWS ... #off` regions that the interpreter's parser must
 // never see (DOCS/260).
-string readStdModule(string name, string inputFile, string selfSource) {    string lower = name.lower();
+string readStdModule(string name, string inputFile, string selfSource, string target) {    string lower = name.lower();
     string[] paths = [];
     // Resolve user modules beside the script before probing the standard
     // library.  `silveri tests/main.sr` must be able to load tests/helper.sr,
@@ -236,7 +262,7 @@ string readStdModule(string name, string inputFile, string selfSource) {    stri
         // Skip the input file itself (same content reached through a
         // different path spelling, e.g. bare-name vs absolute).
         if (src.length > 0 && src == selfSource) { continue; }
-        if (src.length > 0) { return filterStdRegions(src); }
+        if (src.length > 0) { return filterStdRegions(src, target); }
     }
     return "";
 }
@@ -289,7 +315,7 @@ int[] diagSourceLoc(string src, int off) {
 // The total length of the prepended region is reported through
 // prependLen[0] so the evaluator knows where the project's own sources
 // begin (the `internal` visibility boundary).
-string resolveImports(string source, string inputFile, int[] prependLen) {
+string resolveImports(string source, string inputFile, int[] prependLen, string target) {
     if (prependLen.length == 0) { prependLen.add(0); } else { prependLen[0] = 0; }
     string prepend = "";
     bool badModule = false;
@@ -323,7 +349,7 @@ string resolveImports(string source, string inputFile, int[] prependLen) {
             module += source[mi];
         }
         if (module.length > 0 && !nativeModule(module)) {
-            string modSrc = readStdModule(module, inputFile, source);
+            string modSrc = readStdModule(module, inputFile, source, target);
             if (modSrc.length > 0) {
                 prepend = prepend + modSrc + "\n";
             } elif (!moduleAlwaysResolvable(module)) {
@@ -384,7 +410,7 @@ string resolveImports(string source, string inputFile, int[] prependLen) {
             string modName = parts[pi].trim();
             if (modName.length == 0) { continue; }
             if (nativeModule(modName) || moduleAlwaysResolvable(modName)) { continue; }
-            string modSrc = readStdModule(modName, inputFile, source);
+            string modSrc = readStdModule(modName, inputFile, source, target);
             if (modSrc.length > 0) {
                 plainPrepend = plainPrepend + modSrc + "\n";
             }
@@ -414,6 +440,7 @@ void printHelp() {
     printline("  -i <file>      Input Silver source file");
     printline("  -o <file>      Output file (ignored in interpreter)");
     printline("  --cache-bytecode  Run bytecode interpretation via the persistent cache");
+    printline("  --os windows|linux  Target OS for std region filtering (default: host)");
     printline("  --help, -h     Show this help message");
     printline("  --version      Show version information");
     printline("");
@@ -440,6 +467,7 @@ void main() {
     string filename = "";
     string[] scriptArgs = [];
     bool cacheBytecode = false;
+    string osOverride = "";
 
     for (int i = 1; i < args.length; i += 1) {
         string arg = args[i];
@@ -456,6 +484,25 @@ void main() {
         }
         if (cli.isFlag(arg, ["--cache-bytecode"])) {
             cacheBytecode = true;
+        } elif (cli.eq(arg, "--os")) {
+            // Preprocessor target override (lowercase windows/linux/mac is
+            // the documented form; UPPERCASE also accepted, mirroring
+            // silverc/compiler/cli_flags.sr). A missing or unknown value
+            // is fatal here, like the compilers' flag validation.
+            string v = cli.valueAfter(args, i);
+            if (cli.eqFold(v, "windows")) {
+                osOverride = "WINDOWS";
+                i += 1;
+            } elif (cli.eqFold(v, "linux")) {
+                osOverride = "LINUX";
+                i += 1;
+            } elif (cli.eqFold(v, "mac")) {
+                osOverride = "MAC";
+                i += 1;
+            } else {
+                printline("Error: --os expects one of windows, linux, mac (WINDOWS, LINUX, MAC also accepted), got '" + v + "'");
+                exit(1);
+            }
         } elif (cli.eq(arg, "-i")) {
             string v = cli.valueAfter(args, i);
             if (v != "") {
@@ -496,6 +543,9 @@ void main() {
     }
 
     string inputSource = "";
+    // Region-filter target: explicit `--os` wins, otherwise the host OS
+    // the interpreter itself was built for (interpHostOs).
+    string target = interpTargetOsFor(osOverride);
     if (isProjectPath(filename)) {
         // Own-source load point (v2 fold): the .srp aggregate builder reads
         // each source file raw, so the region filter runs on the assembled
@@ -504,21 +554,21 @@ void main() {
         // parser must never see the directive lines. The filter blanks
         // directive lines but preserves every other line, so line counts
         // (and the prepend boundary computed below) stay file-accurate.
-        inputSource = filterStdRegions(loadProjectSource(filename));
+        inputSource = filterStdRegions(loadProjectSource(filename), target);
     } else {
         // `.col` declarations require a project manifest. Reuse the project
         // loader's validation so standalone scripts report
         // UnknownCollectionException instead of a generic parser error.
         // Same filter as the project path: a script (or its .col expansions)
         // carrying regions is filtered before lexing.
-        inputSource = filterStdRegions(projExpandCollections(fs.readFile(filename), ".", ""));
+        inputSource = filterStdRegions(projExpandCollections(fs.readFile(filename), ".", ""), target);
     }
 
     // Resolve `import * from <module>` statements by prepending the module
     // source (like the compiler driver does) so its classes, constants and
     // functions are registered before the user source runs.
     int[] prependLen = [];
-    inputSource = resolveImports(inputSource, filename, prependLen);
+    inputSource = resolveImports(inputSource, filename, prependLen, target);
 
     // `internal` visibility boundary: the first line of the project's own
     // sources in the flattened program. Everything the driver prepended
