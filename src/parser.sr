@@ -710,6 +710,13 @@ private Node? parseItem() {
         if (this.check(TK_IDENT) && this.peek().text == "export") {
             this.advance();
             string name = this.expectIdent();
+            // Dotted module declaration (`mod export mini_cg.windows;`):
+            // accept `ident (. ident)*` additively; plain identifiers take
+            // zero iterations and behave byte-identically.
+            while (this.check(TK_DOT)) {
+                this.advance();
+                name += "." + this.expectIdent();
+            }
             this.expectSemi();
             if (!this.isDeclaredTypeName(name)) { this.modExportNames.add(name); }
             Node n = new Node(ND_MODULE, ln, c);

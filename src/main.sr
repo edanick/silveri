@@ -565,6 +565,8 @@ bool natImportStar(string inner) {
 
 // True when the aggregate program already declares `mod export <name>;`
 // (project-local and `.qs` bundle Silver modules, already concatenated).
+// Dotted declarations (`mod export mini_cg.windows;`) read whole, mirroring
+// natReadDottedFrom; plain identifiers contain no dot and behave identically.
 bool aggregateDeclaresModule(string source, string name) {
     int cursor = 0;
     while (cursor < source.length) {
@@ -580,7 +582,7 @@ bool aggregateDeclaresModule(string source, string name) {
         int s = pos + 11;
         while (s < source.length && (source[s] == ' ' || source[s] == '\t')) { s++; }
         int e = s;
-        while (e < source.length && isNatWordChar(source[e])) { e++; }
+        while (e < source.length && (isNatWordChar(source[e]) || source[e] == '.')) { e++; }
         string got = "";
         for (int k = s; k < e; k++) { got += source[k]; }
         if (cli.eqFold(got, name)) { return true; }
