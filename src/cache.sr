@@ -7,9 +7,10 @@ import resource;
 #on WINDOWS
 import * from win32.kernel32;
 import * from win32.msvcrt;
-#off
 #on LINUX
 import * from linux.libc;
+#on MAC
+import * from mac.libsystem;
 #off
 
 // OVERHAUL.md --cache-bytecode — persistent bytecode cache for the
@@ -18,8 +19,18 @@ import * from linux.libc;
 //   %APPDATA%\silver cache\<project>\<file>.srbc   (token stream, WINDOWS)
 //   /var/cache/silver/<project>/project.sbcr  (record file, LINUX)
 //   /var/cache/silver/<project>/<file>.srbc   (token stream, LINUX)
+//   ~/Library/Caches/silver/<project>/project.sbcr  (record file, MAC)
+//   ~/Library/Caches/silver/<project>/<file>.srbc   (token stream, MAC)
 // (mirrors silverc/compiler/bcache.sr: same .sbcr/.srbc formats, only the
 // root and the separators differ).
+//
+// MAC.md section 5b (UNVALIDATED code-only): the MAC root is
+// ~/Library/Caches/silver/<project>/ (the Apple convention -- NOT
+// /var/cache, NOT /tmp), `$HOME` via getenv("HOME"), never a hardcoded
+// /Users/... path. Same layout and same .sbcr/.srbc binary formats, only
+// the root differs; path joins use `/` separators inside the MAC branch
+// only. The WINDOWS APPDATA construction and the LINUX /var/cache branch
+// stay byte-identical.
 //
 // **.sbcr (Silver ByteCode Record) v1** — little-endian:
 //   magic "SBCR" | u16 version=1 | u64 created (ms since epoch)
@@ -78,8 +89,20 @@ class CacheSession {
         // Linux cache root (mirrors silverc/compiler/bcache.sr): same
         // .sbcr/.srbc formats under /var/cache/silver/<project>/ with `/`
         // separators. The WINDOWS APPDATA construction below is untouched.
+        // MAC root (MAC.md section 5b, UNVALIDATED code-only): same formats
+        // under ~/Library/Caches/silver/<project>/ with `/` separators;
+        // without $HOME the session stays closed (ok == false) exactly like
+        // the missing-APPDATA early return below.
         #on LINUX
         this.dir = "/var/cache/silver/" + icSanitize(projName);
+        icEnsureDirTree(this.dir);
+        this.loadRecords();
+        this.ok = true;
+        return;
+        #on MAC
+        string home = icEnvValue("HOME");
+        if (home.length == 0) { return; }
+        this.dir = home + "/Library/Caches/silver/" + icSanitize(projName);
         icEnsureDirTree(this.dir);
         this.loadRecords();
         this.ok = true;
@@ -194,6 +217,8 @@ class CacheSession {
         string sbcriOut = this.dir + "\\project.sbcri";
         #on LINUX
         sbcriOut = this.dir + "/project.sbcri";
+        #on MAC
+        sbcriOut = this.dir + "/project.sbcri";
         #off
         file.writeString(sbcriOut, indexText);
 
@@ -201,6 +226,8 @@ class CacheSession {
         // streamed in adaptive bounded chunks like the .srbc artifacts.
         string sbcrOut = this.dir + "\\project.sbcr";
         #on LINUX
+        sbcrOut = this.dir + "/project.sbcr";
+        #on MAC
         sbcrOut = this.dir + "/project.sbcr";
         #off
         BcBinWriter bw = new BcBinWriter(sbcrOut);
@@ -243,6 +270,8 @@ class CacheSession {
     private void loadRecords() {
         string sbcriPath = this.dir + "\\project.sbcri";
         #on LINUX
+        sbcriPath = this.dir + "/project.sbcri";
+        #on MAC
         sbcriPath = this.dir + "/project.sbcri";
         #off
         string text = icTryReadText(sbcriPath);
@@ -308,8 +337,18 @@ class CacheSession {
 
     private string srbcPathFor(string keyOrAbs) {
         // Linux layout (mirrors silverc/compiler/bcache.sr): `/`
-        // separators kept as-is under the cache root.
+        // separators kept as-is under the cache root. MAC layout is the
+        // same (MAC.md section 5b: `/` separators under ~/Library/Caches).
         #on LINUX
+        string relL = this.relKey(keyOrAbs);
+        if (relL.length == 0) { return ""; }
+        string dottedL = relL;
+        if (dottedL.length >= 3 && dottedL[dottedL.length - 1] == 'r'
+            && dottedL[dottedL.length - 2] == 's' && dottedL[dottedL.length - 3] == '.') {
+            dottedL = icSliceRange(dottedL, 0, dottedL.length - 3);
+        }
+        return this.dir + "/" + dottedL + ".srbc";
+        #on MAC
         string relL = this.relKey(keyOrAbs);
         if (relL.length == 0) { return ""; }
         string dottedL = relL;
@@ -711,11 +750,20 @@ public int icNowMillis() {
     // Seconds-since-epoch * 1000 — msvcrt time, matching silverc's
     // bcache.sr. Inside the region: no portable epoch builtin exists.
     // LINUX branch uses clock_gettime (CLOCK_REALTIME) via linux.libc,
-    // same ms shape (mirrors bcNowMillis exactly).
+    // same ms shape (mirrors bcNowMillis exactly). MAC branch uses
+    // clock_gettime (CLOCK_REALTIME = 0 on Darwin too, <time.h>) via
+    // mac.libsystem (UNVALIDATED code-only, MAC.md section 10).
     #on WINDOWS
     return time(0) * 1000;
     #off
     #on LINUX
+    int[] ts = [];
+    for (int i = 0; i < 16; i++) { ts.add(0); }
+    clock_gettime(0, ts);
+    int secLow = ts[0] + ts[1] * 256 + ts[2] * 65536 + ts[3] * 16777216;
+    int nsecLow = ts[8] + ts[9] * 256 + ts[10] * 65536 + ts[11] * 16777216;
+    return secLow * 1000 + nsecLow / 1000000;
+    #on MAC
     int[] ts = [];
     for (int i = 0; i < 16; i++) { ts.add(0); }
     clock_gettime(0, ts);
@@ -793,7 +841,11 @@ public string icDirname(string path) {
 
 public string icResolveRel(string root, string rel) {
     // Linux joins with `/` (mirrors silverc/compiler/bcache.sr resolveRel).
+    // MAC joins with `/` too (MAC.md section 5b).
     #on LINUX
+    if (root.length == 0 || root == ".") { return rel; }
+    return root + "/" + rel;
+    #on MAC
     if (root.length == 0 || root == ".") { return rel; }
     return root + "/" + rel;
     #off
@@ -810,7 +862,23 @@ public void icEnsureDirTree(string dir) {
     // silverc-rs, silently no-ops under self-hosted stage3), while raw
     // mkdir is proven working. Behavior matches the reference (levels that
     // already exist fail harmlessly). The WINDOWS loop below is untouched.
+    // MAC (additive, code-only -- MAC.md section 10, UNVALIDATED until
+    // probed on Mac hardware): same raw mkdir (mode 0755 = 493) via the
+    // file-top mac.libsystem grant, `/` separators like Linux.
     #on LINUX
+    string curL = "";
+    for (int i = 0; i < dir.length; i++) {
+        char c = dir[i];
+        if (c == '\\' || c == '/') {
+            if (curL.length >= 2) { mkdir(curL, 493); }
+            curL = curL + '/';
+        } else {
+            curL = curL + c;
+        }
+    }
+    if (curL.length >= 2) { mkdir(curL, 493); }
+    return;
+    #on MAC
     string curL = "";
     for (int i = 0; i < dir.length; i++) {
         char c = dir[i];
