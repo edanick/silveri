@@ -106,13 +106,19 @@ private string stdRegionSlice(string s, int start, int end) {
 
 // The interpreter's host OS default, resolved at silveri's own compile
 // time (mirrors preprocess.sr ppTargetOs): a LINUX-built silveri reports
-// LINUX, a WINDOWS-built one WINDOWS. An explicit `--os` override wins via
-// interpTargetOsFor below.
+// LINUX, a WINDOWS-built one WINDOWS, a MAC-built one MAC. An explicit
+// `--os` override wins via interpTargetOsFor below.
 string interpHostOs() {
+    #on WINDOWS
+    return "WINDOWS";
     #on LINUX
     return "LINUX";
-    #else
-    return "WINDOWS";
+    #on MAC
+    // MAC host default (MAC.md section 3b.8). UNVALIDATED code-only
+    // (MAC.md section 10): the default path cannot execution-test without
+    // Mac hardware; the explicit `--os mac` override path is what the
+    // code-only phase executes here.
+    return "MAC";
     #off
 }
 
@@ -135,7 +141,7 @@ string interpTargetOsFor(string overrideOs) {
 // parser. This filter runs on std module text BEFORE it is prepended into
 // the aggregate:
 //   - `#on <target>` region bodies are kept, where target is the host OS
-//     default (interpHostOs) unless `--os windows|linux` overrides it.
+//     default (interpHostOs) unless `--os windows|linux|mac` overrides it.
 //   - A `#on` inside an open region does NOT nest: it closes the previous
 //     branch and opens the next branch of the SAME region (chained-branch
 //     rule, mirroring the compilers). First-match-wins: a branch body feeds
@@ -958,7 +964,7 @@ void printHelp() {
     printline("  -i <file>      Input Silver source file");
     printline("  -o <file>      Output file (ignored in interpreter)");
     printline("  --cache-bytecode  Run bytecode interpretation via the persistent cache");
-    printline("  --os windows|linux  Target OS for std region filtering (default: host)");
+    printline("  --os windows|linux|mac  Target OS for std region filtering (default: host)");
     printline("  --help, -h     Show this help message");
     printline("  --version      Show version information");
     printline("");
