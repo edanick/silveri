@@ -972,6 +972,17 @@ class BuiltinMethods {
                 int modeDir = stDir[3] & 0xFFFF;
                 if ((modeDir & 0xF000) == 0x4000) { return makeBool(true); }
                 return makeBool(false);
+                #on MAC
+                // MAC (additive, code-only -- MAC.md section 10,
+                // UNVALIDATED until probed on Mac hardware): Darwin stat64
+                // via mac.libsystem -- st_mode is the u16 at bytes 4-5
+                // (high half of slot 0), NOT slot 3 like Linux.
+                int[] stDir = new int[18];
+                int rcDir = stat(path, stDir);
+                if (rcDir != 0) { return makeBool(false); }
+                int modeDir = (stDir[0] >> 32) & 0xFFFF;
+                if ((modeDir & 0xF000) == 0x4000) { return makeBool(true); }
+                return makeBool(false);
                 #off
                 return makeBool(fs.isDir(path));
             }
@@ -981,6 +992,16 @@ class BuiltinMethods {
                 int rcFile = stat(path, stFile);
                 if (rcFile != 0) { return makeBool(false); }
                 int modeFile = stFile[3] & 0xFFFF;
+                if ((modeFile & 0xF000) == 0x8000) { return makeBool(true); }
+                return makeBool(false);
+                #on MAC
+                // MAC (additive, code-only -- MAC.md section 10,
+                // UNVALIDATED until probed on Mac hardware): same Darwin
+                // stat64 st_mode decode as isDir above (S_IFREG = 0x8000).
+                int[] stFile = new int[18];
+                int rcFile = stat(path, stFile);
+                if (rcFile != 0) { return makeBool(false); }
+                int modeFile = (stFile[0] >> 32) & 0xFFFF;
                 if ((modeFile & 0xF000) == 0x8000) { return makeBool(true); }
                 return makeBool(false);
                 #off
@@ -993,11 +1014,25 @@ class BuiltinMethods {
                 int rcSzFs = stat(path, stSzFs);
                 if (rcSzFs != 0) { return makeInt(0); }
                 return makeInt(stSzFs[6]);
+                #on MAC
+                // MAC (additive, code-only -- MAC.md section 10,
+                // UNVALIDATED until probed on Mac hardware): Darwin stat64
+                // st_size is the i64 at byte offset 96 (slot 12 of an
+                // int[18]), NOT slot 6 like Linux.
+                int[] stSzFs = new int[18];
+                int rcSzFs = stat(path, stSzFs);
+                if (rcSzFs != 0) { return makeInt(0); }
+                return makeInt(stSzFs[12]);
                 #off
                 return makeInt(fs.getSize(path));
             }
             if (method == "delete") {
                 #on LINUX
+                unlink(path);
+                return makeNull();
+                #on MAC
+                // MAC (additive, code-only -- MAC.md section 10,
+                // UNVALIDATED): unlink via mac.libsystem, same shape.
                 unlink(path);
                 return makeNull();
                 #off
@@ -1010,6 +1045,28 @@ class BuiltinMethods {
                 int srcFdFs = open(cSrcFs, 0, 0);
                 if (srcFdFs < 0) { return makeNull(); }
                 int dstFdFs = open(cDstFs, 0x241, 0x1A4);
+                if (dstFdFs < 0) { close(srcFdFs); return makeNull(); }
+                int[] cBufFs = new int[1024];
+                int nFs = 0;
+                while (true) {
+                    nFs = read(srcFdFs, cBufFs, 8192);
+                    if (nFs <= 0) { break; }
+                    write(dstFdFs, cBufFs, nFs);
+                }
+                close(srcFdFs);
+                close(dstFdFs);
+                return makeNull();
+                #on MAC
+                // MAC (additive, code-only -- MAC.md section 10,
+                // UNVALIDATED): same open/read/write loop via
+                // mac.libsystem, but O_WRONLY|O_CREAT|O_TRUNC = 0x601 on
+                // Darwin (0x1|0x200|0x400, <fcntl.h>), NOT 0x241 like
+                // Linux; mode 0644 = 0x1A4 is the same on both.
+                string cSrcFs = args[0].strVal;
+                string cDstFs = args[1].strVal;
+                int srcFdFs = open(cSrcFs, 0, 0);
+                if (srcFdFs < 0) { return makeNull(); }
+                int dstFdFs = open(cDstFs, 0x601, 0x1A4);
                 if (dstFdFs < 0) { close(srcFdFs); return makeNull(); }
                 int[] cBufFs = new int[1024];
                 int nFs = 0;
@@ -1065,11 +1122,23 @@ class BuiltinMethods {
                 int rcSzFile = stat(path, stSzFile);
                 if (rcSzFile != 0) { return makeInt(0); }
                 return makeInt(stSzFile[6]);
+                #on MAC
+                // MAC (additive, code-only -- MAC.md section 10,
+                // UNVALIDATED): Darwin stat64 st_size at slot 12.
+                int[] stSzFile = new int[18];
+                int rcSzFile = stat(path, stSzFile);
+                if (rcSzFile != 0) { return makeInt(0); }
+                return makeInt(stSzFile[12]);
                 #off
                 return makeInt(file.getSize(path));
             }
             if (method == "delete") {
                 #on LINUX
+                unlink(path);
+                return makeNull();
+                #on MAC
+                // MAC (additive, code-only -- MAC.md section 10,
+                // UNVALIDATED): unlink via mac.libsystem, same shape.
                 unlink(path);
                 return makeNull();
                 #off
@@ -1082,6 +1151,26 @@ class BuiltinMethods {
                 int srcFdFile = open(cSrcFile, 0, 0);
                 if (srcFdFile < 0) { return makeNull(); }
                 int dstFdFile = open(cDstFile, 0x241, 0x1A4);
+                if (dstFdFile < 0) { close(srcFdFile); return makeNull(); }
+                int[] cBufFile = new int[1024];
+                int nFile = 0;
+                while (true) {
+                    nFile = read(srcFdFile, cBufFile, 8192);
+                    if (nFile <= 0) { break; }
+                    write(dstFdFile, cBufFile, nFile);
+                }
+                close(srcFdFile);
+                close(dstFdFile);
+                return makeNull();
+                #on MAC
+                // MAC (additive, code-only -- MAC.md section 10,
+                // UNVALIDATED): same loop via mac.libsystem with Darwin
+                // open flags 0x601 (NOT Linux 0x241).
+                string cSrcFile = args[0].strVal;
+                string cDstFile = args[1].strVal;
+                int srcFdFile = open(cSrcFile, 0, 0);
+                if (srcFdFile < 0) { return makeNull(); }
+                int dstFdFile = open(cDstFile, 0x601, 0x1A4);
                 if (dstFdFile < 0) { close(srcFdFile); return makeNull(); }
                 int[] cBufFile = new int[1024];
                 int nFile = 0;
@@ -1137,11 +1226,23 @@ class BuiltinMethods {
                 int rcSzFolder = stat(path, stSzFolder);
                 if (rcSzFolder != 0) { return makeInt(0); }
                 return makeInt(stSzFolder[6]);
+                #on MAC
+                // MAC (additive, code-only -- MAC.md section 10,
+                // UNVALIDATED): Darwin stat64 st_size at slot 12.
+                int[] stSzFolder = new int[18];
+                int rcSzFolder = stat(path, stSzFolder);
+                if (rcSzFolder != 0) { return makeInt(0); }
+                return makeInt(stSzFolder[12]);
                 #off
                 return makeInt(folder.getSize(path));
             }
             if (method == "delete") {
                 #on LINUX
+                rmdir(path);
+                return makeNull();
+                #on MAC
+                // MAC (additive, code-only -- MAC.md section 10,
+                // UNVALIDATED): rmdir via mac.libsystem, same shape.
                 rmdir(path);
                 return makeNull();
                 #off
@@ -1154,6 +1255,26 @@ class BuiltinMethods {
                 int srcFdFolder = open(cSrcFolder, 0, 0);
                 if (srcFdFolder < 0) { return makeNull(); }
                 int dstFdFolder = open(cDstFolder, 0x241, 0x1A4);
+                if (dstFdFolder < 0) { close(srcFdFolder); return makeNull(); }
+                int[] cBufFolder = new int[1024];
+                int nFolder = 0;
+                while (true) {
+                    nFolder = read(srcFdFolder, cBufFolder, 8192);
+                    if (nFolder <= 0) { break; }
+                    write(dstFdFolder, cBufFolder, nFolder);
+                }
+                close(srcFdFolder);
+                close(dstFdFolder);
+                return makeNull();
+                #on MAC
+                // MAC (additive, code-only -- MAC.md section 10,
+                // UNVALIDATED): same loop via mac.libsystem with Darwin
+                // open flags 0x601 (NOT Linux 0x241).
+                string cSrcFolder = args[0].strVal;
+                string cDstFolder = args[1].strVal;
+                int srcFdFolder = open(cSrcFolder, 0, 0);
+                if (srcFdFolder < 0) { return makeNull(); }
+                int dstFdFolder = open(cDstFolder, 0x601, 0x1A4);
                 if (dstFdFolder < 0) { close(srcFdFolder); return makeNull(); }
                 int[] cBufFolder = new int[1024];
                 int nFolder = 0;
@@ -1179,6 +1300,31 @@ class BuiltinMethods {
                     if (eNode == 0) { break; }
                     int[] eRaw = new int[32];
                     memcpy(eRaw, eNode + 19, 256);
+                    string eName = "";
+                    for (int i = 0; i < 256; i++) {
+                        int eB = (eRaw[i / 8] >> ((i % 8) * 8)) & 0xFF;
+                        if (eB == 0) { break; }
+                        eName += char(eB);
+                    }
+                    if (eName != "." && eName != "..") { eNames.add(eName); }
+                }
+                closedir(eDir);
+                return stringArrayToValue(eNames);
+                #on MAC
+                // MAC (additive, code-only -- MAC.md section 10,
+                // UNVALIDATED until probed on Mac hardware): Darwin struct
+                // dirent's d_name starts at offset 21 (d_ino 8 + d_seekoff
+                // 8 + d_reclen 2 + d_namlen 2 + d_type 1, <dirent.h>), NOT
+                // 19 like Linux; copied bounded (256) the same way.
+                string ePath = path;
+                int eDir = opendir(ePath);
+                string[] eNames = [];
+                if (eDir == 0) { return stringArrayToValue(eNames); }
+                while (true) {
+                    int eNode = readdir(eDir);
+                    if (eNode == 0) { break; }
+                    int[] eRaw = new int[32];
+                    memcpy(eRaw, eNode + 21, 256);
                     string eName = "";
                     for (int i = 0; i < 256; i++) {
                         int eB = (eRaw[i / 8] >> ((i % 8) * 8)) & 0xFF;
@@ -1219,6 +1365,35 @@ class BuiltinMethods {
                 }
                 closedir(fDir);
                 return stringArrayToValue(fNames);
+                #on MAC
+                // MAC (additive, code-only -- MAC.md section 10,
+                // UNVALIDATED): d_name at offset 21 and Darwin stat64
+                // st_mode decode (slot 0 high half), S_IFREG = 0x8000.
+                string fPath = path;
+                int fDir = opendir(fPath);
+                string[] fNames = [];
+                if (fDir == 0) { return stringArrayToValue(fNames); }
+                while (true) {
+                    int fNode = readdir(fDir);
+                    if (fNode == 0) { break; }
+                    int[] fRaw = new int[32];
+                    memcpy(fRaw, fNode + 21, 256);
+                    string fName = "";
+                    for (int i = 0; i < 256; i++) {
+                        int fB = (fRaw[i / 8] >> ((i % 8) * 8)) & 0xFF;
+                        if (fB == 0) { break; }
+                        fName += char(fB);
+                    }
+                    if (fName == "." || fName == "..") { continue; }
+                    string fFull = fPath + "/" + fName;
+                    int[] fSt = new int[18];
+                    int fRc = stat(fFull, fSt);
+                    if (fRc != 0) { continue; }
+                    int fMode = (fSt[0] >> 32) & 0xFFFF;
+                    if ((fMode & 0xF000) == 0x8000) { fNames.add(fName); }
+                }
+                closedir(fDir);
+                return stringArrayToValue(fNames);
                 #off
                 return stringArrayToValue(folder.getFiles(path));
             }
@@ -1249,6 +1424,35 @@ class BuiltinMethods {
                 }
                 closedir(dDir);
                 return stringArrayToValue(dNames);
+                #on MAC
+                // MAC (additive, code-only -- MAC.md section 10,
+                // UNVALIDATED): d_name at offset 21 and Darwin stat64
+                // st_mode decode (slot 0 high half), S_IFDIR = 0x4000.
+                string dPath = path;
+                int dDir = opendir(dPath);
+                string[] dNames = [];
+                if (dDir == 0) { return stringArrayToValue(dNames); }
+                while (true) {
+                    int dNode = readdir(dDir);
+                    if (dNode == 0) { break; }
+                    int[] dRaw = new int[32];
+                    memcpy(dRaw, dNode + 21, 256);
+                    string dName = "";
+                    for (int i = 0; i < 256; i++) {
+                        int dB = (dRaw[i / 8] >> ((i % 8) * 8)) & 0xFF;
+                        if (dB == 0) { break; }
+                        dName += char(dB);
+                    }
+                    if (dName == "." || dName == "..") { continue; }
+                    string dFull = dPath + "/" + dName;
+                    int[] dSt = new int[18];
+                    int dRc = stat(dFull, dSt);
+                    if (dRc != 0) { continue; }
+                    int dMode = (dSt[0] >> 32) & 0xFFFF;
+                    if ((dMode & 0xF000) == 0x4000) { dNames.add(dName); }
+                }
+                closedir(dDir);
+                return stringArrayToValue(dNames);
                 #off
                 return stringArrayToValue(folder.getFolders(path));
             }
@@ -1265,6 +1469,11 @@ class BuiltinMethods {
                 SetEnvironmentVariableA(args[0].strVal, args[1].strVal);
                 #off
                 #on LINUX
+                setenv(args[0].strVal, args[1].strVal, 1);
+                #on MAC
+                // MAC (additive, code-only -- MAC.md section 10,
+                // UNVALIDATED until probed on Mac hardware): setenv via
+                // mac.libsystem, same overwrite=1 posture as LINUX.
                 setenv(args[0].strVal, args[1].strVal, 1);
                 #off
                 return makeNull();
@@ -1349,6 +1558,11 @@ class BuiltinMethods {
             // bridge stubs; other methods keep falling through to makeNull.
             // Full HTTPS bridging is out of scope.
             #on LINUX
+            if (method == "chat") { return makeString(""); }
+            #on MAC
+            // MAC (additive, code-only -- MAC.md section 10, UNVALIDATED):
+            // same graceful empty-string posture as LINUX (no libSystem
+            // HTTPS bridge in scope).
             if (method == "chat") { return makeString(""); }
             #off
             #on WINDOWS
@@ -1749,7 +1963,14 @@ class BuiltinMethods {
         // on the builtin instead.
         // LINUX (additive): getenv via linux.libc sees setenv changes (unlike
         // /proc/self/environ which never shows them); NULL (unset) yields "".
+        // MAC (additive, code-only -- MAC.md section 10, UNVALIDATED until
+        // probed on Mac hardware): getenv via mac.libsystem, same NULL
+        // posture (there is NO /proc on macOS).
         #on LINUX
+        string gv = getenv(key);
+        if (gv == null) { return ""; }
+        return gv;
+        #on MAC
         string gv = getenv(key);
         if (gv == null) { return ""; }
         return gv;
@@ -1808,6 +2029,20 @@ Value callBuiltin(string name, Value[] args) {
             }
             write(2, packedE, lenE);
         }
+        #on MAC
+        // MAC (additive, code-only -- MAC.md section 10, UNVALIDATED until
+        // probed on Mac hardware): fd 2 + write via mac.libsystem, same
+        // shape as the LINUX arm (POSIX Write is identical on Darwin).
+        if (msg.length > 0) {
+            int lenE = msg.length;
+            int slotsE = (lenE + 7) / 8;
+            int[] packedE = new int[slotsE];
+            for (int i = 0; i < lenE; i++) {
+                int bE = int(msg[i]);
+                packedE[i / 8] = packedE[i / 8] | ((bE & 0xFF) << ((i % 8) * 8));
+            }
+            write(2, packedE, lenE);
+        }
         #off
         return makeNull();
     }
@@ -1837,6 +2072,19 @@ Value callBuiltin(string name, Value[] args) {
             }
             write(2, packedEp, lenEp);
         }
+        #on MAC
+        // MAC (additive, code-only -- MAC.md section 10, UNVALIDATED until
+        // probed on Mac hardware): same fd-2 write shape as LINUX.
+        if (msg.length > 0) {
+            int lenEp = msg.length;
+            int slotsEp = (lenEp + 7) / 8;
+            int[] packedEp = new int[slotsEp];
+            for (int i = 0; i < lenEp; i++) {
+                int bEp = int(msg[i]);
+                packedEp[i / 8] = packedEp[i / 8] | ((bEp & 0xFF) << ((i % 8) * 8));
+            }
+            write(2, packedEp, lenEp);
+        }
         #off
         return makeNull();
     }
@@ -1854,12 +2102,16 @@ Value callBuiltin(string name, Value[] args) {
     // DOCS/247 -- nativeToastShow is a synthetic bridge (silverc-rs emits real
     // Win32 DLL calls for it). The interpreter cannot pop a tray balloon, so it
     // is a no-op: notifications.sr `show` already printed the NOTIFY: line.
+    // MAC parity (MAC.md section 7D): headless/SSH sessions degrade to this
+    // same documented no-op (UNUserNotificationCenter needs a GUI session +
+    // user grant); the arm stays target-independent by design.
     if (name == "nativeToastShow") {
         return makeNull();
     }
     // UNIFIED_CORE_LIBRARY.md phase 3 -- the notifications wrapper's internal
     // backend leaf (notifWinShow(title, body, appUserModelId)): no-op like
     // nativeToastShow; the toast balloon is best-effort on the interpreter.
+    // MAC parity: same no-op as the degraded-headless std (see above).
     if (name == "notifWinShow") {
         return makeNull();
     }
@@ -1876,6 +2128,18 @@ Value callBuiltin(string name, Value[] args) {
             tsSleep[1] = (msSleep % 1000) * 1000000;
             int[] remSleep = new int[2];
             nanosleep(tsSleep, remSleep);
+            #on MAC
+            // MAC (additive, code-only -- MAC.md section 10, UNVALIDATED
+            // until probed on Mac hardware): nanosleep via mac.libsystem,
+            // same timespec int[2] shape as LINUX (Darwin timespec is
+            // tv_sec + tv_nsec = 16 bytes, like Linux x86-64).
+            int msSleep = args[0].toInt().toInt();
+            if (msSleep < 0) { msSleep = 0; }
+            int[] tsSleep = new int[2];
+            tsSleep[0] = msSleep / 1000;
+            tsSleep[1] = (msSleep % 1000) * 1000000;
+            int[] remSleep = new int[2];
+            nanosleep(tsSleep, remSleep);
             #off
         }
         return makeNull();
@@ -1885,11 +2149,16 @@ Value callBuiltin(string name, Value[] args) {
     // and the time module's win32 backend std/time_win.sr is served
     // directly -- Sleep forwards and QPC milliseconds for timeWinNow.
     // LINUX (additive): osType answers LINUX (1) under #on LINUX, keeping the
-    // OSTypes contract WINDOWS0/LINUX1/MACOS2/UNKNOWN3; the WINDOWS return
+    // OSTypes contract WINDOWS0/LINUX1/DARWIN2/UNKNOWN3; the WINDOWS return
     // below stays byte-identical.
+    // MAC (additive, code-only -- MAC.md sections 1b/3b.8 and 10,
+    // UNVALIDATED until probed on Mac hardware): osType answers DARWIN (2)
+    // under #on MAC, the enum variant name per the naming rule (never MACOS).
     if (name == "osType") {
         #on LINUX
         return makeInt(1);
+        #on MAC
+        return makeInt(2);
         #off
         return makeInt(0);
     }
@@ -1899,6 +2168,16 @@ Value callBuiltin(string name, Value[] args) {
             Sleep(args[0].toInt());
             #off
             #on LINUX
+            int msWin = args[0].toInt().toInt();
+            if (msWin < 0) { msWin = 0; }
+            int[] tsWin = new int[2];
+            tsWin[0] = msWin / 1000;
+            tsWin[1] = (msWin % 1000) * 1000000;
+            int[] remWin = new int[2];
+            nanosleep(tsWin, remWin);
+            #on MAC
+            // MAC (additive, code-only -- MAC.md section 10, UNVALIDATED
+            // until probed on Mac hardware): same nanosleep shape as LINUX.
             int msWin = args[0].toInt().toInt();
             if (msWin < 0) { msWin = 0; }
             int[] tsWin = new int[2];
@@ -1922,6 +2201,10 @@ Value callBuiltin(string name, Value[] args) {
         // LINUX (additive): clock_gettime(CLOCK_MONOTONIC=1) replaces the QPC
         // pair; milliseconds plus 3-digit fractional part mirror the WINDOWS
         // formatting so stopwatch deltas compare identically.
+        // MAC (additive, code-only -- MAC.md section 10, UNVALIDATED until
+        // probed on Mac hardware): clock_gettime(CLOCK_MONOTONIC = 6 on
+        // Darwin, NOT 1 -- <time.h>, re-derived, never copied) via
+        // mac.libsystem; same millisecond formatting as the LINUX arm.
         int64 freq = 0;
         int64 count = 0;
         #on WINDOWS
@@ -1931,6 +2214,16 @@ Value callBuiltin(string name, Value[] args) {
         #on LINUX
         int[] tsNow = new int[2];
         clock_gettime(1, tsNow);
+        int64 secNow = tsNow[0];
+        int64 nsecNow = tsNow[1];
+        int64 msNow = secNow * 1000 + nsecNow / 1000000;
+        int64 fracNow = (nsecNow % 1000000) / 1000;
+        string fracNowStr = fracNow.toString();
+        while (fracNowStr.length < 3) { fracNowStr = "0" + fracNowStr; }
+        return makeFloatStr(msNow.toString() + "." + fracNowStr);
+        #on MAC
+        int[] tsNow = new int[2];
+        clock_gettime(6, tsNow);
         int64 secNow = tsNow[0];
         int64 nsecNow = tsNow[1];
         int64 msNow = secNow * 1000 + nsecNow / 1000000;
@@ -2506,6 +2799,9 @@ Value callBuiltin(string name, Value[] args) {
     // DOCS/249 -- system tray icon bridges. Forward to the native bridge
     // (compiled by silverc.exe), which is a no-op returning 0 in this
     // backend; silverc-rs emits the real Shell_NotifyIconA path.
+    // MAC parity (MAC.md section 7D): headless sessions degrade to the same
+    // documented no-op (NSStatusItem needs a WindowServer session); the
+    // poll arms below already report "no event" on every target.
     if (name == "trayAdd") {
         if (args.length >= 2) { return makeInt(trayAdd(args[0].toString(), args[1].toString())); }
         if (args.length >= 1) { return makeInt(trayAdd(args[0].toString())); }
@@ -2583,6 +2879,9 @@ Value callBuiltin(string name, Value[] args) {
         int oFd = -1;
         #on LINUX
         oFd = open(oPath, oFlags, oMode);
+        #on MAC
+        // MAC (code-only, UNVALIDATED): same POSIX open via mac.libsystem.
+        oFd = open(oPath, oFlags, oMode);
         #off
         return makeInt(oFd);
     }
@@ -2599,6 +2898,9 @@ Value callBuiltin(string name, Value[] args) {
             }
             int rdGot = -1;
             #on LINUX
+            rdGot = read(rdFd, rdBuf, rdN);
+            #on MAC
+            // MAC (code-only, UNVALIDATED): same POSIX read.
             rdGot = read(rdFd, rdBuf, rdN);
             #off
             for (int j = 0; j < rdLen; j++) {
@@ -2622,6 +2924,9 @@ Value callBuiltin(string name, Value[] args) {
             int wGot = -1;
             #on LINUX
             wGot = write(wFd, wBuf, wN);
+            #on MAC
+            // MAC (code-only, UNVALIDATED): same POSIX write.
+            wGot = write(wFd, wBuf, wN);
             #off
             return makeInt(wGot);
         }
@@ -2632,6 +2937,9 @@ Value callBuiltin(string name, Value[] args) {
         if (args.length > 0) { cFd = args[0].toInt().toInt(); }
         int cRes = -1;
         #on LINUX
+        cRes = close(cFd);
+        #on MAC
+        // MAC (code-only, UNVALIDATED): same POSIX close.
         cRes = close(cFd);
         #off
         return makeInt(cRes);
@@ -2645,6 +2953,9 @@ Value callBuiltin(string name, Value[] args) {
         if (args.length > 2) { sProto = args[2].toInt().toInt(); }
         int sFd = -1;
         #on LINUX
+        sFd = socket(sDom, sTyp, sProto);
+        #on MAC
+        // MAC (code-only, UNVALIDATED): same BSD sockets via mac.libsystem.
         sFd = socket(sDom, sTyp, sProto);
         #off
         return makeInt(sFd);
@@ -2662,6 +2973,9 @@ Value callBuiltin(string name, Value[] args) {
             }
             int cnRes = -1;
             #on LINUX
+            cnRes = connect(cnFd, cnSa, cnLen);
+            #on MAC
+            // MAC (code-only, UNVALIDATED): same BSD connect.
             cnRes = connect(cnFd, cnSa, cnLen);
             #off
             return makeInt(cnRes);
@@ -2682,6 +2996,9 @@ Value callBuiltin(string name, Value[] args) {
             int bRes = -1;
             #on LINUX
             bRes = bind(bFd, bSa, bLen);
+            #on MAC
+            // MAC (code-only, UNVALIDATED): same BSD bind.
+            bRes = bind(bFd, bSa, bLen);
             #off
             return makeInt(bRes);
         }
@@ -2695,6 +3012,9 @@ Value callBuiltin(string name, Value[] args) {
         int lRes = -1;
         #on LINUX
         lRes = listen(lFd, lBack);
+        #on MAC
+        // MAC (code-only, UNVALIDATED): same BSD listen.
+        lRes = listen(lFd, lBack);
         #off
         return makeInt(lRes);
     }
@@ -2703,6 +3023,9 @@ Value callBuiltin(string name, Value[] args) {
         if (args.length > 0) { acFd = args[0].toInt().toInt(); }
         int acRes = -1;
         #on LINUX
+        acRes = accept(acFd, null, null);
+        #on MAC
+        // MAC (code-only, UNVALIDATED): same BSD accept.
         acRes = accept(acFd, null, null);
         #off
         return makeInt(acRes);
@@ -2722,6 +3045,9 @@ Value callBuiltin(string name, Value[] args) {
             }
             int snGot = -1;
             #on LINUX
+            snGot = send(snFd, snBuf, snLen, snFlags);
+            #on MAC
+            // MAC (code-only, UNVALIDATED): same BSD send.
             snGot = send(snFd, snBuf, snLen, snFlags);
             #off
             return makeInt(snGot);
@@ -2744,6 +3070,9 @@ Value callBuiltin(string name, Value[] args) {
             int rvGot = -1;
             #on LINUX
             rvGot = recv(rvFd, rvBuf, rvLen, rvFlags);
+            #on MAC
+            // MAC (code-only, UNVALIDATED): same BSD recv.
+            rvGot = recv(rvFd, rvBuf, rvLen, rvFlags);
             #off
             for (int j = 0; j < rvBuflen; j++) {
                 arrValSetAt(args[1], j, makeInt(rvBuf[j]));
@@ -2755,6 +3084,9 @@ Value callBuiltin(string name, Value[] args) {
     if (name == "getuid") {
         int gUid = -1;
         #on LINUX
+        gUid = getuid();
+        #on MAC
+        // MAC (code-only, UNVALIDATED): getuid exists on Darwin too.
         gUid = getuid();
         #off
         return makeInt(gUid);
@@ -2776,6 +3108,11 @@ Value callBuiltin(string name, Value[] args) {
             }
             int soRes = -1;
             #on LINUX
+            soRes = setsockopt(soFd, soLevel, soName, soOpt, soLen);
+            #on MAC
+            // MAC (code-only, UNVALIDATED): same BSD setsockopt (SO_*
+            // values are re-derived per Darwin in the std MAC bodies; the
+            // call shape here is identical).
             soRes = setsockopt(soFd, soLevel, soName, soOpt, soLen);
             #off
             return makeInt(soRes);
@@ -2800,9 +3137,15 @@ Value callBuiltin(string name, Value[] args) {
                 string gSvc = args[1].strVal;
                 #on LINUX
                 gRet = getaddrinfo(gHost, gSvc, gHints, gRes);
+                #on MAC
+                // MAC (code-only, UNVALIDATED): same getaddrinfo shape.
+                gRet = getaddrinfo(gHost, gSvc, gHints, gRes);
                 #off
             } else {
                 #on LINUX
+                gRet = getaddrinfo(gHost, null, gHints, gRes);
+                #on MAC
+                // MAC (code-only, UNVALIDATED): same getaddrinfo shape.
                 gRet = getaddrinfo(gHost, null, gHints, gRes);
                 #off
             }
@@ -2817,6 +3160,9 @@ Value callBuiltin(string name, Value[] args) {
         int fPtr = 0;
         if (args.length > 0) { fPtr = args[0].toInt().toInt(); }
         #on LINUX
+        freeaddrinfo(fPtr);
+        #on MAC
+        // MAC (code-only, UNVALIDATED): same freeaddrinfo shape.
         freeaddrinfo(fPtr);
         #off
         return makeNull();
@@ -2838,11 +3184,17 @@ Value callBuiltin(string name, Value[] args) {
                 }
                 #on LINUX
                 memcpy(mDst, mSrc, mN);
+                #on MAC
+                // MAC (code-only, UNVALIDATED): same memcpy shape.
+                memcpy(mDst, mSrc, mN);
                 #off
             } else {
                 int mSrcPtr = 0;
                 if (args.length > 1) { mSrcPtr = args[1].toInt().toInt(); }
                 #on LINUX
+                memcpy(mDst, mSrcPtr, mN);
+                #on MAC
+                // MAC (code-only, UNVALIDATED): same memcpy shape.
                 memcpy(mDst, mSrcPtr, mN);
                 #off
             }
@@ -2852,6 +3204,86 @@ Value callBuiltin(string name, Value[] args) {
             return makeNull();
         }
         return makeNull();
+    }
+    // MAC (additive, code-only -- MAC.md sections 6/10, UNVALIDATED until
+    // probed on Mac hardware): Darwin entropy for interpreted crypto.sr /
+    // uuid.sr MAC bodies, which call arc4random_buf bare. getrandom(2) is
+    // Linux-only and does not exist on macOS -- it is never called here.
+    // int[] copy shape like read/recv above.
+    if (name == "arc4random_buf") {
+        if (args.length >= 2 && args[0].tag == VAL_ARRAY) {
+            int abLen = arrValLen(args[0]);
+            int[] abBuf = new int[abLen];
+            for (int i = 0; i < abLen; i++) {
+                abBuf[i] = int(arrValIntAt(args[0], i));
+            }
+            int abN = args[1].toInt().toInt();
+            #on MAC
+            arc4random_buf(abBuf, abN);
+            #off
+            for (int j = 0; j < abLen; j++) {
+                arrValSetAt(args[0], j, makeInt(abBuf[j]));
+            }
+            return makeNull();
+        }
+        return makeNull();
+    }
+    if (name == "getentropy") {
+        if (args.length >= 2 && args[0].tag == VAL_ARRAY) {
+            int geLen = arrValLen(args[0]);
+            int[] geBuf = new int[geLen];
+            for (int i = 0; i < geLen; i++) {
+                geBuf[i] = int(arrValIntAt(args[0], i));
+            }
+            int geN = args[1].toInt().toInt();
+            int geRet = -1;
+            #on MAC
+            geRet = getentropy(geBuf, geN);
+            #off
+            for (int j = 0; j < geLen; j++) {
+                arrValSetAt(args[0], j, makeInt(geBuf[j]));
+            }
+            return makeInt(geRet);
+        }
+        return makeInt(-1);
+    }
+    // MAC (additive, code-only -- MAC.md sections 6/10, UNVALIDATED until
+    // probed on Mac hardware): sysctlbyname(name, oldp, oldlenp, newp,
+    // newlen) for interpreted sysinfo.sr macSysctlString/macSysctlU64 (the
+    // macOS replacement for Linux /proc reads -- there is NO /proc on
+    // macOS, so no /proc-shaped arm exists here). int[] buffers copy back
+    // like recv; string buffers ride the native call in place (the same
+    // in-place string-buffer contract resource.sr relies on); the size_t
+    // out-param has no builtin write-back path, so callers keep their
+    // passed-in length and scan to NUL (exactly what macSysctlString does).
+    if (name == "sysctlbyname") {
+        if (args.length >= 2) {
+            string scName = "";
+            if (args[0].tag == VAL_STRING) { scName = args[0].strVal; }
+            int scLen = 0;
+            if (args.length >= 3) { scLen = args[2].toInt().toInt(); }
+            int scRet = -1;
+            if (args[1].tag == VAL_ARRAY) {
+                int scBuflen = arrValLen(args[1]);
+                int[] scBuf = new int[scBuflen];
+                for (int i = 0; i < scBuflen; i++) {
+                    scBuf[i] = int(arrValIntAt(args[1], i));
+                }
+                #on MAC
+                scRet = sysctlbyname(scName, scBuf, &scLen, null, 0);
+                #off
+                for (int j = 0; j < scBuflen; j++) {
+                    arrValSetAt(args[1], j, makeInt(scBuf[j]));
+                }
+            } elif (args[1].tag == VAL_STRING) {
+                string scStr = args[1].strVal;
+                #on MAC
+                scRet = sysctlbyname(scName, scStr, &scLen, null, 0);
+                #off
+            }
+            return makeInt(scRet);
+        }
+        return makeInt(-1);
     }
     return makeNull();
 }

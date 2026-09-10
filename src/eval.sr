@@ -288,6 +288,14 @@ class Evaluator {
             tsGc[1] = 1000000;
             int[] remGc = new int[2];
             nanosleep(tsGc, remGc);
+            #on MAC
+            // MAC (additive, code-only -- MAC.md section 10, UNVALIDATED):
+            // same 1 ms nanosleep yield via mac.libsystem.
+            int[] tsGc = new int[2];
+            tsGc[0] = 0;
+            tsGc[1] = 1000000;
+            int[] remGc = new int[2];
+            nanosleep(tsGc, remGc);
             #off
         }
         if (GC.shouldCollect()) {
@@ -361,8 +369,9 @@ class Evaluator {
         // UNIFIED_CORE_LIBRARY.md phase 3 -- os/time native intercepts. The
         // backend answers the OS gate leaves natively (mirrors silverc-rs
         // stdlib/os.rs and the self-hosted mini_cg intercepts): osType() is
-        // the compile-time WINDOWS constant, OSTypes members yield the
-        // contract ints (WINDOWS=0, LINUX=1, MACOS=2, UNKNOWN=3), and the
+        // the compile-time WINDOWS constant (LINUX 1 / DARWIN 2 under their
+        // `#on` arms), OSTypes members yield the
+        // contract ints (WINDOWS=0, LINUX=1, DARWIN=2, UNKNOWN=3), and the
         // time module's win32 backend std/time_win.sr is served directly:
         // Sleep forwards plus QueryPerformanceCounter milliseconds.
         this.globals.define("osType", makeBuiltin("osType"));
@@ -1859,6 +1868,20 @@ mirrorPut(obj, target.name, val);
                     int64 nsecQpc = tsQpc[1];
                     ticks = secQpc * 1000000000 + nsecQpc;
                 }
+                #on MAC
+                // MAC (additive, code-only -- MAC.md section 10,
+                // UNVALIDATED until probed on Mac hardware):
+                // clock_gettime(CLOCK_MONOTONIC = 6 on Darwin, NOT 1)
+                // via mac.libsystem; same nanosecond frequency shape.
+                if (node.name == "QueryPerformanceFrequency") {
+                    ticks = 1000000000;
+                } else {
+                    int[] tsQpc = new int[2];
+                    clock_gettime(6, tsQpc);
+                    int64 secQpc = tsQpc[0];
+                    int64 nsecQpc = tsQpc[1];
+                    ticks = secQpc * 1000000000 + nsecQpc;
+                }
                 #off
                 env.set(refNames[0], makeInt(ticks));
             }
@@ -2325,8 +2348,12 @@ mirrorPut(obj, target.name, val);
                 // OSTypes member access yields the contract int like the
                 // compilers' compile-time constant (os.sr variant order),
                 // so `osType() == OSTypes.WINDOWS` compares int to int.
+                // MAC.md section 1b: the macOS variant is DARWIN (never
+                // MACOS); the legacy MACOS spelling stays answered so
+                // existing code keeps comparing.
                 if (member == "WINDOWS") { return makeInt(0); }
                 if (member == "LINUX") { return makeInt(1); }
+                if (member == "DARWIN") { return makeInt(2); }
                 if (member == "MACOS") { return makeInt(2); }
                 if (member == "UNKNOWN") { return makeInt(3); }
             }

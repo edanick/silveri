@@ -5,9 +5,10 @@ mod export resource;
 #on WINDOWS
 import * from win32.kernel32;
 import * from win32.msvcrt;
-#off
 #on LINUX
 import * from linux.libc;
+#on MAC
+import * from mac.libsystem;
 #off
 
 // ---------------------------------------------------------------------------
@@ -59,6 +60,9 @@ private int rsDword(string buf, int off) {
 // floored at 1. The WINDOWS region above stays byte-identical; the LINUX
 // early return keeps the shared decode below as dead-but-compiling code on
 // Linux so Windows bytes never change.
+// MAC (additive, code-only -- MAC.md sections 6/10, UNVALIDATED until
+// probed on Mac hardware): sysctlbyname hw.ncpu (the MAC.md-blessed shape;
+// there is NO /proc on macOS), floored at 1 the same way.
 public int rsCpuThreadCount() {
     string buf = rsBuf(48);
     #on WINDOWS
@@ -68,6 +72,13 @@ public int rsCpuThreadCount() {
     int nLin = sysconf(84);
     if (nLin < 1) { nLin = 1; }
     return nLin;
+    #on MAC
+    int[] ncpuBuf = new int[1];
+    int ncpuLen = 4;
+    int ncpuRc = sysctlbyname("hw.ncpu", ncpuBuf, &ncpuLen, null, 0);
+    int nMac = ncpuBuf[0];
+    if (ncpuRc != 0 || nMac < 1) { nMac = 1; }
+    return nMac;
     #off
     int n = rsDword(buf, 32);
     if (n < 1) { n = 1; }
@@ -85,6 +96,12 @@ public int rsCpuThreadCount() {
 // the LINUX early return defines `ok` so the shared `if (ok==0)` below
 // still compiles on Linux (dead code there); helpers below are whole-
 // function #on LINUX so Windows never sees them.
+// MAC (additive, code-only -- MAC.md sections 5b-table/6/10, UNVALIDATED
+// until probed on Mac hardware): sysctlbyname hw.memsize (total bytes) /
+// hw.usermem (user-available bytes, the closest "free" analog without mach
+// vm_statistics plumbing) via mac.libsystem -- there is NO /proc on macOS,
+// so the /proc helpers below stay LINUX-only. The MAC early return defines
+// `ok` exactly like the LINUX one so the shared tail still compiles.
 private int64 rsRamField(int startOff) {
     string buf = rsBuf(64);
     #on WINDOWS
@@ -101,6 +118,19 @@ private int64 rsRamField(int startOff) {
         linKB = rsLinuxMemKB("MemAvailable");
     }
     return linKB * 1024;
+    #on MAC
+    int ok = 1;
+    int[] memBuf = new int[1];
+    int memLen = 8;
+    if (startOff == 8) {
+        int rcTotal = sysctlbyname("hw.memsize", memBuf, &memLen, null, 0);
+        if (rcTotal != 0) { ok = 0; }
+    } else {
+        int rcAvail = sysctlbyname("hw.usermem", memBuf, &memLen, null, 0);
+        if (rcAvail != 0) { ok = 0; }
+    }
+    if (ok == 0) { return 0; }
+    return memBuf[0];
     #off
     if (ok == 0) { return 0; }
     int64 v = 0;
