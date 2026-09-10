@@ -19,14 +19,15 @@ import * from mac.libsystem;
 //   %APPDATA%\silver cache\<project>\<file>.srbc   (token stream, WINDOWS)
 //   /var/cache/silver/<project>/project.sbcr  (record file, LINUX)
 //   /var/cache/silver/<project>/<file>.srbc   (token stream, LINUX)
-//   ~/Library/Caches/silver/<project>/project.sbcr  (record file, MAC)
-//   ~/Library/Caches/silver/<project>/<file>.srbc   (token stream, MAC)
+//   /Library/Caches/Silver/<project>/project.sbcr  (record file, MAC)
+//   /Library/Caches/Silver/<project>/<file>.srbc   (token stream, MAC)
 // (mirrors silverc/compiler/bcache.sr: same .sbcr/.srbc formats, only the
 // root and the separators differ).
 //
 // MAC.md section 5b (UNVALIDATED code-only): the MAC root is
-// ~/Library/Caches/silver/<project>/ (the Apple convention -- NOT
-// /var/cache, NOT /tmp), `$HOME` via getenv("HOME"), never a hardcoded
+// /Library/Caches/Silver/<project>/ (machine-wide Library/Caches,
+// capital Silver -- NOT /var/cache, NOT /tmp, NOT the per-user
+// ~/Library), fixed root with no `$HOME` lookup, never a hardcoded
 // /Users/... path. Same layout and same .sbcr/.srbc binary formats, only
 // the root differs; path joins use `/` separators inside the MAC branch
 // only. The WINDOWS APPDATA construction and the LINUX /var/cache branch
@@ -90,9 +91,10 @@ class CacheSession {
         // .sbcr/.srbc formats under /var/cache/silver/<project>/ with `/`
         // separators. The WINDOWS APPDATA construction below is untouched.
         // MAC root (MAC.md section 5b, UNVALIDATED code-only): same formats
-        // under ~/Library/Caches/silver/<project>/ with `/` separators;
-        // without $HOME the session stays closed (ok == false) exactly like
-        // the missing-APPDATA early return below.
+        // under /Library/Caches/Silver/<project>/ (machine-wide, capital
+        // Silver) with `/` separators and a fixed root (no $HOME lookup);
+        // an unwritable root degrades gracefully downstream like the Linux
+        // branch.
         #on LINUX
         this.dir = "/var/cache/silver/" + icSanitize(projName);
         icEnsureDirTree(this.dir);
@@ -100,9 +102,7 @@ class CacheSession {
         this.ok = true;
         return;
         #on MAC
-        string home = icEnvValue("HOME");
-        if (home.length == 0) { return; }
-        this.dir = home + "/Library/Caches/silver/" + icSanitize(projName);
+        this.dir = "/Library/Caches/Silver/" + icSanitize(projName);
         icEnsureDirTree(this.dir);
         this.loadRecords();
         this.ok = true;
@@ -338,7 +338,7 @@ class CacheSession {
     private string srbcPathFor(string keyOrAbs) {
         // Linux layout (mirrors silverc/compiler/bcache.sr): `/`
         // separators kept as-is under the cache root. MAC layout is the
-        // same (MAC.md section 5b: `/` separators under ~/Library/Caches).
+        // same (MAC.md section 5b: `/` separators under /Library/Caches/Silver).
         #on LINUX
         string relL = this.relKey(keyOrAbs);
         if (relL.length == 0) { return ""; }
