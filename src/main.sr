@@ -136,16 +136,26 @@ string interpTargetOsFor(string overrideOs) {
 // the aggregate:
 //   - `#on <target>` region bodies are kept, where target is the host OS
 //     default (interpHostOs) unless `--os windows|linux` overrides it.
+//   - A `#on` inside an open region does NOT nest: it closes the previous
+//     branch and opens the next branch of the SAME region (chained-branch
+//     rule, mirroring the compilers). First-match-wins: a branch body feeds
+//     iff its OS equals the target AND no earlier branch of the same region
+//     matched (`active = eq(osName, target) && !matchedAny`, then
+//     `matchedAny ||= eq(osName, target)` — the same `matchedAny` rule
+//     `#else` already uses).
 //   - Other `#on` bodies are stripped; an `#else` body is kept only when
 //     no preceding `#on` of the region matched (compiler semantics).
 //   - Directive lines themselves are blank-replaced (CRLF shape preserved)
 //     so line numbers stay stable, mirroring preprocess.sr's line mapping.
 // Directive names stay `#on`-UPPERCASE-only (like the compilers); only the
 // `--os` flag values accept lowercase. Lenient by design (this is not the
-// compiler's strict validator): a nested `#on`, an `#else`/`#off` without
-// an open region, an unknown or missing OS name, or an unclosed region at
-// EOF are never fatal — the offending directive line is dropped and the
-// scan continues.
+// compiler's strict validator): the filter NEVER errors. An `#else`/`#off`
+// without an open region, an unknown or missing OS name, an unclosed region
+// at EOF, or a `#on` after `#else` just drops the directive line and the
+// scan continues — with one deliberate leniency gap vs the compilers (which
+// error on `#on` after `#else`, since `#else` must be last): here the same
+// branch-switch math applies without erroring, and `sawElse` (set by `#else`,
+// reset on region open and on `#off`) is tracked but never fatal.
 string filterStdRegions(string src, string target) {
     if (src.length == 0) { return src; }
     // Files without a single `#` cannot carry directives: return untouched.
@@ -165,6 +175,10 @@ string filterStdRegions(string src, string target) {
     int mode = 0;
     bool active = false;
     bool matchedAny = false;
+    // Set by `#else`, reset on region open and on `#off`. Tracked only:
+    // the filter never errors, so a `#on` after `#else` still applies the
+    // chained branch-switch math below (the compilers reject that shape).
+    bool sawElse = false;
     int i = 0;
     while (i < src.length) {
         int nl = -1;
@@ -188,31 +202,44 @@ string filterStdRegions(string src, string target) {
             string word = stdRegionSlice(src, p + 1, wordEnd);
             if (stdRegionEq(word, "on")) {
                 drop = true;
-                // Lenient on nesting: a `#on` inside an open region does not
-                // reset the region state; only a top-level `#on` opens.
+                int nameStart = wordEnd;
+                while (nameStart < contentEnd && (src[nameStart] == ' ' || src[nameStart] == '\t')) { nameStart = nameStart + 1; }
+                int nameEnd = nameStart;
+                while (nameEnd < contentEnd && src[nameEnd] != ' ' && src[nameEnd] != '\t') { nameEnd = nameEnd + 1; }
+                string osName = stdRegionSlice(src, nameStart, nameEnd);
                 if (mode == 0) {
-                    int nameStart = wordEnd;
-                    while (nameStart < contentEnd && (src[nameStart] == ' ' || src[nameStart] == '\t')) { nameStart = nameStart + 1; }
-                    int nameEnd = nameStart;
-                    while (nameEnd < contentEnd && src[nameEnd] != ' ' && src[nameEnd] != '\t') { nameEnd = nameEnd + 1; }
-                    string osName = stdRegionSlice(src, nameStart, nameEnd);
                     mode = 1;
                     // Unknown or missing OS names strip their body too
                     // (active stays false); only the target's regions
                     // survive (directive names are UPPERCASE-only).
                     active = stdRegionEq(osName, target);
                     matchedAny = active;
+                    sawElse = false;
+                } else {
+                    // Chained branch: a `#on` inside an open region closes
+                    // the previous branch and opens the next one of the SAME
+                    // region (never nests). First-match-wins — the same
+                    // `matchedAny` math `#else` uses — so only the first
+                    // matching branch feeds. Unknown or missing OS names keep
+                    // stripping (the match stays false), exactly like a
+                    // top-level `#on`.
+                    active = stdRegionEq(osName, target) && !matchedAny;
+                    matchedAny = matchedAny || stdRegionEq(osName, target);
                 }
             } elif (stdRegionEq(word, "else")) {
                 drop = true;
                 // Lenient: `#else` outside a region just drops the line.
                 // Inside a region the `#else` body is kept only when no
                 // preceding `#on` matched (compiler semantics).
-                if (mode == 1) { active = !matchedAny; }
+                if (mode == 1) {
+                    active = !matchedAny;
+                    sawElse = true;
+                }
             } elif (stdRegionEq(word, "off")) {
                 drop = true;
                 // Lenient: `#off` outside a region just drops the line.
                 mode = 0;
+                sawElse = false;
             }
             // Any other line-leading `#word` is not a directive: pass
             // through unchanged (normal lexer diagnostics apply).
