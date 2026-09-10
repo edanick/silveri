@@ -48,6 +48,11 @@ public bool isOption(string arg) {
     char c = arg[0];
     #on LINUX
     return c == '-';
+    #on MAC
+    // MAC (additive): absolute paths start with `/` like Linux, so only
+    // `-` marks an option (mirrors the LINUX arm; WINDOWS fallthrough
+    // below is untouched).
+    return c == '-';
     #off
     return c == '-' || c == '/';
 }

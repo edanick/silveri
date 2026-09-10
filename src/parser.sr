@@ -40,6 +40,11 @@ class Parser {
     private bool linuxAllModules;
     private string[] linuxOpenModules;
     private string[] linuxGrantNames;
+    // MAC (additive, mirrors Evaluator mac tables): mac grants for the same
+    // walk, so `import * from mac.libsystem` natives never flag.
+    private bool macAllModules;
+    private string[] macOpenModules;
+    private string[] macGrantNames;
     // DOCS/261 -- custom native grants from the project's `.srp`
     // `nativeModules`: granted export names resolve like fixed natives, and
     // the target OS for bare-name resolution is set by the driver.
@@ -91,6 +96,9 @@ class Parser {
         this.linuxAllModules = false;
         this.linuxOpenModules = [];
         this.linuxGrantNames = [];
+        this.macAllModules = false;
+        this.macOpenModules = [];
+        this.macGrantNames = [];
         this.customGrantNames = [];
         this.customTarget = "";
         this.pendingInternal = false;
@@ -755,6 +763,8 @@ private Node? parseItem() {
         this.recordWin32ImportGrant(source, all, names);
         // LINUX (additive): remember linux grants for the same walk.
         this.recordLinuxImportGrant(source, all, names);
+        // MAC (additive): remember mac grants for the same walk.
+        this.recordMacImportGrant(source, all, names);
         // DOCS/261: remember custom native grants the same way.
         this.recordCustomImportGrant(source, all, names);
         this.expectSemi();
@@ -3132,6 +3142,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         if (this.builtinCallableName(name)) { return true; }
         if (this.win32Resolvable(name)) { return true; }
         if (this.linuxResolvable(name)) { return true; }
+        if (this.macResolvable(name)) { return true; }
         if (this.customResolvable(name)) { return true; }
         if (this.isAllCapsName(name)) { return true; }
         if (name.length > 2 && name[0] == '_' && name[1] == '_') { return true; }
@@ -3219,6 +3230,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         if (name.length > 4 && name.startsWith("make") && name[4] >= 'A' && name[4] <= 'Z') { return true; }
         if (this.win32Resolvable(name)) { return true; }
         if (this.linuxResolvable(name)) { return true; }
+        if (this.macResolvable(name)) { return true; }
         if (this.customResolvable(name)) { return true; }
         if (this.isAllCapsName(name)) { return true; }
         return false;
@@ -3447,6 +3459,69 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         return false;
     }
 
+    // MAC (additive, mirrors Evaluator mac tables): small grant entries
+    // only -- the core libSystem names the interpreter defines builtins
+    // for, plus the Darwin-only sysctl/entropy shapes.
+    private void recordMacImportGrant(string src, bool all, string[] names) {
+        if (this.strEq(src, "mac")) {
+            if (all || names.length == 0) { this.macAllModules = true; return; }
+            for (int j = 0; j < names.length; j++) {
+                this.macOpenModules.add(names[j]);
+            }
+            return;
+        }
+        if (src.length > 4 && this.strEq(src.substr(0, 4), "mac.")) {
+            string module = src.substr(4);
+            if (all || names.length == 0) {
+                this.macOpenModules.add(module);
+                return;
+            }
+            for (int j2 = 0; j2 < names.length; j2++) {
+                this.macGrantNames.add(names[j2]);
+            }
+        }
+    }
+
+    private string macModuleNameLib(string module) {
+        if (this.strEq(module, "libsystem")) { return "/usr/lib/libSystem.B.dylib"; }
+        if (this.strEq(module, "objc")) { return "/usr/lib/libobjc.A.dylib"; }
+        if (this.strEq(module, "appkit")) { return "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit"; }
+        if (this.strEq(module, "quartz")) { return "/System/Library/Frameworks/QuartzCore.framework/Versions/A/QuartzCore"; }
+        return "";
+    }
+
+    private string macLibForFn(string fn) {
+        if (this.strEq(fn, "nanosleep") || this.strEq(fn, "clock_gettime")
+            || this.strEq(fn, "getenv") || this.strEq(fn, "setenv")
+            || this.strEq(fn, "open") || this.strEq(fn, "read")
+            || this.strEq(fn, "write") || this.strEq(fn, "close")
+            || this.strEq(fn, "sysconf") || this.strEq(fn, "sysctlbyname")
+            || this.strEq(fn, "getentropy") || this.strEq(fn, "arc4random_buf")
+            || this.strEq(fn, "socket") || this.strEq(fn, "connect")
+            || this.strEq(fn, "bind") || this.strEq(fn, "listen")
+            || this.strEq(fn, "accept") || this.strEq(fn, "send")
+            || this.strEq(fn, "recv") || this.strEq(fn, "getuid")
+            || this.strEq(fn, "setsockopt") || this.strEq(fn, "getaddrinfo")
+            || this.strEq(fn, "freeaddrinfo") || this.strEq(fn, "memcpy")) { return "/usr/lib/libSystem.B.dylib"; }
+        if (this.strEq(fn, "objc_getClass") || this.strEq(fn, "sel_registerName")
+            || this.strEq(fn, "objc_msgSend")) { return "/usr/lib/libobjc.A.dylib"; }
+        return "";
+    }
+
+    private bool macResolvable(string name) {
+        if (this.macAllModules) { return true; }
+        for (int g = 0; g < this.macGrantNames.length; g++) {
+            if (this.strEq(this.macGrantNames[g], name)) { return true; }
+        }
+        string fnLib = this.macLibForFn(name);
+        if (fnLib.length > 0) {
+            for (int m = 0; m < this.macOpenModules.length; m++) {
+                if (this.strEq(this.macModuleNameLib(this.macOpenModules[m]), fnLib)) { return true; }
+            }
+        }
+        return false;
+    }
+
     // DOCS/261 -- remember custom native import grants for the
     // unknown-method walk. Fixed tables are untouched: a prefixed source
     // naming a fixed module stays on the fixed path. Bare names grant
@@ -3454,7 +3529,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
     // entry's export list (single-export grants need no list). Custom
     // grants skip the std-internal rule: the manifest is the opt-in.
     private void recordCustomImportGrant(string src, bool all, string[] names) {
-        if (this.strEq(src, "win32") || this.strEq(src, "linux")) {
+        if (this.strEq(src, "win32") || this.strEq(src, "linux") || this.strEq(src, "mac")) {
             return;
         }
         if (src.length > 6 && this.strEq(src.substr(0, 6), "win32.")) {

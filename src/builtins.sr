@@ -14,9 +14,10 @@ import eval;
 #on WINDOWS
 import * from win32.user32;
 import * from win32.kernel32;
-#off
 #on LINUX
 import * from linux.libc;
+#on MAC
+import * from mac.libsystem;
 #off
 
 class BuiltinMethods {

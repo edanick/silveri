@@ -45,8 +45,11 @@ string projJoin(string root, string path) {
         return root + path;
     }
     // Linux joins with `/` (mirrors silverc/compiler/bcache.sr resolveRel);
-    // dual-separator scanning everywhere else is untouched.
+    // dual-separator scanning everywhere else is untouched. MAC joins with
+    // `/` too (MAC.md section 5b).
     #on LINUX
+    return root + "/" + path;
+    #on MAC
     return root + "/" + path;
     #off
     return root + "\\" + path;
@@ -256,6 +259,8 @@ string[] projWalk(string root, string relDir, string[] excludes) {
     string relSep = "\\";
     #on LINUX
     relSep = "/";
+    #on MAC
+    relSep = "/";
     #off
     string[] names = folder.getFiles(dir);
     for (int i = 0; i < names.length; i = i + 1) {
@@ -369,6 +374,8 @@ string projExpandCollections(string source, string root, string collections) {
             string colSep = "\\";
             #on LINUX
             colSep = "/";
+            #on MAC
+            colSep = "/";
             #off
             string fullPath = projJoin(root, collections + colSep + path);
             if (!fs.exists(fullPath)) { projCollectionFail(path, line); }
@@ -406,6 +413,9 @@ string loadProjectSource(string projectPath) {
     char entryFrom = '/';
     string entrySep = "\\";
     #on LINUX
+    entryFrom = '\\';
+    entrySep = "/";
+    #on MAC
     entryFrom = '\\';
     entrySep = "/";
     #off

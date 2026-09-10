@@ -355,7 +355,30 @@ string readStdModule(string name, string inputFile, string selfSource, string ta
     // silverc/compiler_driver.sr): the backslash candidates never hit on
     // Linux (backslash is a filename character, not a separator), so the
     // slash forms are probed too. Additive: WINDOWS builds never see them.
+    // MAC (additive): macOS uses `/` separators like Linux, so a Mac-built
+    // silveri probes the same slash forms (mirrors the LINUX block
+    // statement-for-statement; the WINDOWS backslash candidates above are
+    // untouched).
     #on LINUX
+    paths.add("std/" + lower + ".sr");
+    if (hasDot) { paths.add("std/" + dottedSlash + ".sr"); }
+    paths.add("std/" + lower + "/" + lower + ".sr");
+    paths.add("silverc/std/" + lower + ".sr");
+    if (hasDot) { paths.add("silverc/std/" + dottedSlash + ".sr"); }
+    paths.add("silverc/std/" + lower + "/" + lower + ".sr");
+    paths.add("../std/" + lower + ".sr");
+    if (hasDot) { paths.add("../std/" + dottedSlash + ".sr"); }
+    paths.add("../std/" + lower + "/" + lower + ".sr");
+    paths.add("../silverc/std/" + lower + ".sr");
+    if (hasDot) { paths.add("../silverc/std/" + dottedSlash + ".sr"); }
+    paths.add("../silverc/std/" + lower + "/" + lower + ".sr");
+    paths.add("../silveri/src/" + lower + ".sr");
+    if (hasDot) { paths.add("../silveri/src/" + dottedSlash + ".sr"); }
+    paths.add("../silveri/src/" + lower + "/" + lower + ".sr");
+    paths.add("silveri/src/" + lower + ".sr");
+    if (hasDot) { paths.add("silveri/src/" + dottedSlash + ".sr"); }
+    paths.add("silveri/src/" + lower + "/" + lower + ".sr");
+    #on MAC
     paths.add("std/" + lower + ".sr");
     if (hasDot) { paths.add("std/" + dottedSlash + ".sr"); }
     paths.add("std/" + lower + "/" + lower + ".sr");
@@ -426,6 +449,17 @@ bool fixedLinuxModule(string source) {
     if (!source.startsWith("linux.")) { return cli.eq(source, "linux"); }
     string n = source.substr(6);
     return cli.eq(n, "libc") || cli.eq(n, "x11") || cli.eq(n, "xtst");
+}
+
+// MAC (additive, mirrors silverc-rs/src/macos.rs module_to_lib): a
+// prefixed source naming one of these stays on the fixed path even when a
+// custom entry collides with the short name. `mac` itself grants the fixed
+// modules only; custom modules are never pulled in implicitly.
+bool fixedMacModule(string source) {
+    if (!source.startsWith("mac.")) { return cli.eq(source, "mac"); }
+    string n = source.substr(4);
+    return cli.eq(n, "libsystem") || cli.eq(n, "objc") || cli.eq(n, "appkit")
+        || cli.eq(n, "quartz");
 }
 
 bool isNatWordChar(char c) {
@@ -691,6 +725,26 @@ void checkOneNativeImport(string origin, string[] names, bool star, bool inBundl
         }
         return;
     }
+    // MAC (additive, mirrors the linux arm): fixed mac modules resolve on
+    // the fixed path. Prefixed custom mac modules are not supported (the
+    // manifest declares windows/linux files only; eval.sr and parser.sr
+    // grant custom names without a mac prefix), so a non-fixed `mac.X`
+    // names the declaration to add.
+    if (origin == "mac" || (origin.length > 4 && origin.substr(0, 4) == "mac.")) {
+        if (origin == "mac") {
+            if (star) { return; }
+            for (int k = 0; k < names.length; k++) {
+                string full = "mac." + names[k];
+                if (fixedMacModule(full)) { continue; }
+                printline(customNativeUndeclaredMsg(full));
+                exit(1);
+            }
+            return;
+        }
+        if (fixedMacModule(origin)) { return; }
+        printline(customNativeUndeclaredMsg(origin));
+        exit(1);
+    }
     if (nativeModule(origin) || moduleAlwaysResolvable(origin)) { return; }
     // Bare-name precedence: project-local sources, `.qs` bundle modules,
     // and std modules win over custom native names.
@@ -845,11 +899,13 @@ string resolveImports(string source, string inputFile, int[] prependLen, string 
         for (int mi = nameStart; mi < nameEnd; mi++) {
             module += source[mi];
         }
-        // Fixed win32/linux natives (and bare `win32`/`linux`) never come
-        // from disk: native prefix handling stays before file probing, and
-        // validateNativeImports owns their diagnostics and grants.
+        // Fixed win32/linux/mac natives (and bare `win32`/`linux`/`mac`)
+        // never come from disk: native prefix handling stays before file
+        // probing, and validateNativeImports owns their diagnostics and
+        // grants.
         if (module.length > 0 && !nativeModule(module)
-            && !fixedWin32Module(module) && !fixedLinuxModule(module)) {
+            && !fixedWin32Module(module) && !fixedLinuxModule(module)
+            && !fixedMacModule(module)) {
             string modSrc = readStdModule(module, inputFile, source, target);
             if (modSrc.length > 0) {
                 prepend = prepend + modSrc + "\n";

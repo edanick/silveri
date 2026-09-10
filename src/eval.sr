@@ -38,6 +38,12 @@ class Evaluator {
     // win32 tables above, they compile on both targets.
     public prop string[] linuxLibs;
     public prop string[] linuxGrants;
+    // MAC (additive, mirrors silverc-rs/src/macos.rs tables): mac module
+    // grants collected from `import ... from mac...` statements. Universal
+    // data (no OS calls), so no region -- like the win32/linux tables above,
+    // they compile on every target.
+    public prop string[] macLibs;
+    public prop string[] macGrants;
     // DOCS/261 -- custom native grants from the project's `.srp`
     // `nativeModules`: granted export names become builtin globals like the
     // fixed ones (calls fall through callBuiltin to the null stub -- the
@@ -108,6 +114,8 @@ class Evaluator {
         this.win32Grants = [];
         this.linuxLibs = [];
         this.linuxGrants = [];
+        this.macLibs = [];
+        this.macGrants = [];
         this.customGrants = [];
         this.customTarget = "";
         this.scriptArgs = [];
@@ -740,7 +748,179 @@ class Evaluator {
         this.defineGrantedLinuxExports(lib);
     }
 
-    // DOCS/261 -- custom native module system beside the win32/linux ones
+    // MAC (additive, mirrors silverc-rs/src/macos.rs module_to_lib and the
+    // LIBSYSTEM/OBJC tables): mac module system beside the win32/linux ones
+    // above. Raw libSystem free identifiers become available only after the
+    // script imports the owning module (`import * from mac.libsystem;`).
+    // Export strings mirror macos.rs LIBSYSTEM/OBJC word for word so grants
+    // resolve identically. AppKit/Quartz carry no direct C grants (Aqua APIs
+    // route through the mac.objc bridge; see MAC.md section 7), so their
+    // tables stay empty while the module entries still resolve. Universal
+    // string logic (no OS calls), so no region -- compiles on every target
+    // like the win32/linux tables.
+    public string macModuleLib(string module) {
+        if (module == "libsystem") { return "/usr/lib/libSystem.B.dylib"; }
+        if (module == "objc") { return "/usr/lib/libobjc.A.dylib"; }
+        if (module == "appkit") { return "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit"; }
+        if (module == "quartz") { return "/System/Library/Frameworks/QuartzCore.framework/Versions/A/QuartzCore"; }
+        return "";
+    }
+
+    public string macExportTable(string lib) {
+        if (lib == "/usr/lib/libSystem.B.dylib") { return "exit _exit mmap munmap malloc free read write open close lseek stat fstat unlink rename mkdir rmdir opendir readdir closedir getenv setenv clock_gettime nanosleep localtime_r gmtime_r posix_spawn posix_spawnp posix_spawn_file_actions_init posix_spawn_file_actions_adddup2 posix_spawn_file_actions_destroy waitpid kill pipe dup2 getpid pthread_create pthread_join pthread_mach_thread_np sysconf sysctlbyname uname gethostname getlogin_r statvfs getentropy arc4random_buf dlopen dlsym rand srand getuid printf strlen strcmp strcpy memcpy memset socket connect bind listen accept send recv setsockopt getaddrinfo freeaddrinfo"; }
+        if (lib == "/usr/lib/libobjc.A.dylib") { return "objc_getClass sel_registerName objc_msgSend"; }
+        return "";
+    }
+
+    public bool macTableHas(string lib, string fn) {
+        string table = this.macExportTable(lib);
+        int i = 0;
+        while (i < table.length) {
+            while (i < table.length && table[i] == ' ') { i++; }
+            int start = i;
+            while (i < table.length && table[i] != ' ') { i++; }
+            if (i > start && this.evalSliceStr(table, start, i) == fn) { return true; }
+        }
+        return false;
+    }
+
+    public string macLibForFn(string fn) {
+        if (this.macTableHas("/usr/lib/libSystem.B.dylib", fn)) { return "/usr/lib/libSystem.B.dylib"; }
+        if (this.macTableHas("/usr/lib/libobjc.A.dylib", fn)) { return "/usr/lib/libobjc.A.dylib"; }
+        return "";
+    }
+
+    public void macAddLib(string lib) {
+        if (lib.length == 0) { return; }
+        for (int i = 0; i < this.macLibs.length; i++) {
+            if (this.macLibs[i] == lib) { return; }
+        }
+        this.macLibs.add(lib);
+    }
+
+    public void macAddGrant(string lib, string fn) {
+        if (lib.length == 0 || fn.length == 0) { return; }
+        string grant = lib + "|" + fn;
+        for (int i = 0; i < this.macGrants.length; i++) {
+            if (this.macGrants[i] == grant) { return; }
+        }
+        this.macGrants.add(grant);
+    }
+
+    public bool macHasExport(string lib, string fn) {
+        if (this.macLibForFn(fn) != lib) { return false; }
+        for (int i = 0; i < this.macLibs.length; i++) {
+            if (this.macLibs[i] == lib) { return true; }
+        }
+        string grant = lib + "|" + fn;
+        for (int i = 0; i < this.macGrants.length; i++) {
+            if (this.macGrants[i] == grant) { return true; }
+        }
+        return false;
+    }
+
+    public string macModuleOf(string lib) {
+        if (lib == "/usr/lib/libSystem.B.dylib") { return "libsystem"; }
+        if (lib == "/usr/lib/libobjc.A.dylib") { return "objc"; }
+        if (lib == "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit") { return "appkit"; }
+        if (lib == "/System/Library/Frameworks/QuartzCore.framework/Versions/A/QuartzCore") { return "quartz"; }
+        return lib;
+    }
+
+    public void importMacModule(string module) {
+        string lib = this.macModuleLib(module);
+        if (lib.length == 0) { return; }
+        this.macAddLib(lib);
+        this.defineGrantedMacExports(lib);
+    }
+
+    // The libSystem names the interpreter serves with real execution arms
+    // (builtins.sr callBuiltin `#on MAC` bodies), mirroring the linux subset
+    // above plus the Darwin-only shapes the contract names explicitly:
+    // sysctlbyname (sysinfo, never /proc) and getentropy/arc4random_buf
+    // (crypto, never getrandom(2)). Every other table name stays granted-
+    // but-null at runtime, exactly the LINUX posture for clock_gettime and
+    // friends (parse-OK, safe default).
+    public void defineGrantedMacExports(string lib) {
+        if (lib == "/usr/lib/libSystem.B.dylib") {
+            string[] fns = [];
+            fns.add("nanosleep");
+            fns.add("clock_gettime");
+            fns.add("getenv");
+            fns.add("setenv");
+            fns.add("open");
+            fns.add("read");
+            fns.add("write");
+            fns.add("close");
+            fns.add("sysconf");
+            fns.add("sysctlbyname");
+            fns.add("getentropy");
+            fns.add("arc4random_buf");
+            fns.add("socket");
+            fns.add("connect");
+            fns.add("bind");
+            fns.add("listen");
+            fns.add("accept");
+            fns.add("send");
+            fns.add("recv");
+            fns.add("getuid");
+            fns.add("setsockopt");
+            fns.add("getaddrinfo");
+            fns.add("freeaddrinfo");
+            fns.add("memcpy");
+            for (int i = 0; i < fns.length; i++) {
+                if (this.macHasExport(lib, fns[i])) {
+                    this.globals.define(fns[i], makeBuiltin(fns[i]));
+                }
+            }
+            return;
+        }
+    }
+
+    public void registerMacImport(Node node) {
+        string source = node.strVal;
+        bool all = node.name == "*";
+        if (source != "mac" && source.length > 4) {
+            if (this.evalSliceStr(source, 0, 4) != "mac.") { return; }
+        } elif (source != "mac") {
+            return;
+        }
+        if (source == "mac") {
+            if (!all) {
+                int start = 0;
+                for (int i = 0; i <= node.name.length; i++) {
+                    if (i == node.name.length || node.name[i] == ',') {
+                        if (i > start) { this.importMacModule(this.evalSliceStr(node.name, start, i)); }
+                        start = i + 1;
+                    }
+                }
+                return;
+            }
+            this.importMacModule("libsystem");
+            this.importMacModule("objc");
+            this.importMacModule("appkit");
+            this.importMacModule("quartz");
+            return;
+        }
+        string module = this.evalSliceStr(source, 4, source.length);
+        string lib = this.macModuleLib(module);
+        if (lib.length == 0) { return; }
+        if (all) {
+            this.macAddLib(lib);
+        } else {
+            this.macAddGrant(lib, node.name);
+            int start2 = 0;
+            for (int i = 0; i <= node.name.length; i++) {
+                if (i == node.name.length || node.name[i] == ',') {
+                    if (i > start2) { this.macAddGrant(lib, this.evalSliceStr(node.name, start2, i)); }
+                    start2 = i + 1;
+                }
+            }
+        }
+        this.defineGrantedMacExports(lib);
+    }
+
+    // DOCS/261 -- custom native module system beside the win32/linux/mac ones
     // above. Granted exports become builtin globals through the same path
     // as fixed grants; their calls fall through callBuiltin to the null
     // stub (the interpreter binary links no project libraries, so a custom
@@ -762,7 +942,7 @@ class Evaluator {
     public void registerCustomImport(Node node) {
         string source = node.strVal;
         bool all = node.name == "*";
-        if (source == "win32" || source == "linux") { return; }
+        if (source == "win32" || source == "linux" || source == "mac") { return; }
         if (source.length > 6 && this.evalSliceStr(source, 0, 6) == "win32.") {
             string winModule = this.evalSliceStr(source, 6, source.length);
             if (this.win32ModuleDll(winModule) != "") { return; }
@@ -835,6 +1015,8 @@ class Evaluator {
             this.registerWin32Import(item);
             // LINUX (additive): grant access to imported linux shared libs.
             this.registerLinuxImport(item);
+            // MAC (additive): grant access to imported macOS dynamic libs.
+            this.registerMacImport(item);
             // DOCS/261: grant access to declared custom native modules.
             this.registerCustomImport(item);
         }
