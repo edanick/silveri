@@ -16,10 +16,36 @@ import project;
 import guard;
 import cache;
 
+// Nested module resolution (flat-first), mirroring silverc-rs
+// push_module_candidates (c7744ac) and the self-host drvDottedPath port:
+// per base directory `<name>.sr` first, then dotted `a.b` -> `a/b.sr`,
+// then the `<name>/<name>.sr` package convention. Flat hits always win;
+// the nested layouts are pure fallbacks.
+
+// Map dots in `name` to `sep` (`mylib.sub` -> `mylib/sub.sr` with sep "/").
+string dottedModulePath(string name, string sep) {
+    string out = "";
+    for (int i = 0; i < name.length; i++) {
+        if (name[i] == '.') { out = out + sep; }
+        else { out = out + name[i]; }
+    }
+    return out;
+}
+
+// True when `name` is `root` itself or a dotted child of it
+// (`fs.extra` under `fs`), case-insensitively. Dotted children of
+// baked-in modules behave like their parents (never from disk).
+bool dottedChildOrSelf(string name, string root) {
+    string n = name.lower();
+    string r = root.lower();
+    if (cli.eq(n, r)) { return true; }
+    return n.startsWith(r + ".");
+}
+
 // Native modules the interpreter provides without needing a source file.
 bool nativeModule(string name) {
     string n = name.lower();
-    return cli.eq(n, "fs") || cli.eq(n, "json") || cli.eq(n, "yaml")
+    if (cli.eq(n, "fs") || cli.eq(n, "json") || cli.eq(n, "yaml")
         || cli.eq(n, "env") || cli.eq(n, "url") || cli.eq(n, "hash")
         || cli.eq(n, "path") || cli.eq(n, "bom") || cli.eq(n, "console")
         || cli.eq(n, "math") || cli.eq(n, "llmai") || cli.eq(n, "os")
@@ -30,7 +56,17 @@ bool nativeModule(string name) {
         // in the builtins.sr native dispatch. Prepending the wrapper would
         // also drag in process_win, whose aliased win32 grants the parser
         // cannot spell (`X as Y`), so the source path is not viable.
-        || cli.eq(n, "process");
+        || cli.eq(n, "process")) { return true; }
+    // Dotted children of native singletons behave like their parents:
+    // `fs.extra` never resolves from disk, exactly like `fs`.
+    return dottedChildOrSelf(name, "fs") || dottedChildOrSelf(name, "json")
+        || dottedChildOrSelf(name, "yaml") || dottedChildOrSelf(name, "env")
+        || dottedChildOrSelf(name, "url") || dottedChildOrSelf(name, "hash")
+        || dottedChildOrSelf(name, "path") || dottedChildOrSelf(name, "bom")
+        || dottedChildOrSelf(name, "console") || dottedChildOrSelf(name, "math")
+        || dottedChildOrSelf(name, "llmai") || dottedChildOrSelf(name, "os")
+        || dottedChildOrSelf(name, "keyboard") || dottedChildOrSelf(name, "mouse")
+        || dottedChildOrSelf(name, "process");
 }
 
 // Case-insensitive substring search.
@@ -228,6 +264,12 @@ string filterStdRegions(string src, string target) {
 // carries `#on WINDOWS ... #off` regions that the interpreter's parser must
 // never see (DOCS/260).
 string readStdModule(string name, string inputFile, string selfSource, string target) {    string lower = name.lower();
+    // Flat-first nested layouts: dotted `a.b` -> `a/b.sr` is probed only
+    // when the flat `<name>.sr` misses, and `<name>/<name>.sr` last, so
+    // every existing import resolves byte-identically.
+    bool hasDot = findCI(lower, ".", 0) >= 0;
+    string dottedSlash = dottedModulePath(lower, "/");
+    string dottedBack = dottedModulePath(lower, "\\");
     string[] paths = [];
     // Resolve user modules beside the script before probing the standard
     // library.  `silveri tests/main.sr` must be able to load tests/helper.sr,
@@ -241,26 +283,64 @@ string readStdModule(string name, string inputFile, string selfSource, string ta
         for (int pi = 0; pi <= lastSep; pi++) {
             prefix += inputFile[pi];
         }
+        // The sibling prefix carries the input file's own separator, so
+        // both flavors are probed for the nested layouts; flat stays first.
         paths.add(prefix + lower + ".sr");
+        if (hasDot) {
+            paths.add(prefix + dottedBack + ".sr");
+            paths.add(prefix + dottedSlash + ".sr");
+        }
+        paths.add(prefix + lower + "\\" + lower + ".sr");
+        paths.add(prefix + lower + "/" + lower + ".sr");
     }
     paths.add(lower + ".sr");
+    if (hasDot) {
+        paths.add(dottedBack + ".sr");
+        paths.add(dottedSlash + ".sr");
+    }
+    paths.add(lower + "\\" + lower + ".sr");
+    paths.add(lower + "/" + lower + ".sr");
     paths.add("std\\" + lower + ".sr");
+    if (hasDot) { paths.add("std\\" + dottedBack + ".sr"); }
+    paths.add("std\\" + lower + "\\" + lower + ".sr");
     paths.add("silverc\\std\\" + lower + ".sr");
+    if (hasDot) { paths.add("silverc\\std\\" + dottedBack + ".sr"); }
+    paths.add("silverc\\std\\" + lower + "\\" + lower + ".sr");
     paths.add("..\\std\\" + lower + ".sr");
+    if (hasDot) { paths.add("..\\std\\" + dottedBack + ".sr"); }
+    paths.add("..\\std\\" + lower + "\\" + lower + ".sr");
     paths.add("..\\silverc\\std\\" + lower + ".sr");
+    if (hasDot) { paths.add("..\\silverc\\std\\" + dottedBack + ".sr"); }
+    paths.add("..\\silverc\\std\\" + lower + "\\" + lower + ".sr");
     paths.add("..\\silveri\\src\\" + lower + ".sr");
+    if (hasDot) { paths.add("..\\silveri\\src\\" + dottedBack + ".sr"); }
+    paths.add("..\\silveri\\src\\" + lower + "\\" + lower + ".sr");
     paths.add("silveri\\src\\" + lower + ".sr");
+    if (hasDot) { paths.add("silveri\\src\\" + dottedBack + ".sr"); }
+    paths.add("silveri\\src\\" + lower + "\\" + lower + ".sr");
     // Linux spellings beside the Windows ones (mirrors
     // silverc/compiler_driver.sr): the backslash candidates never hit on
     // Linux (backslash is a filename character, not a separator), so the
     // slash forms are probed too. Additive: WINDOWS builds never see them.
     #on LINUX
     paths.add("std/" + lower + ".sr");
+    if (hasDot) { paths.add("std/" + dottedSlash + ".sr"); }
+    paths.add("std/" + lower + "/" + lower + ".sr");
     paths.add("silverc/std/" + lower + ".sr");
+    if (hasDot) { paths.add("silverc/std/" + dottedSlash + ".sr"); }
+    paths.add("silverc/std/" + lower + "/" + lower + ".sr");
     paths.add("../std/" + lower + ".sr");
+    if (hasDot) { paths.add("../std/" + dottedSlash + ".sr"); }
+    paths.add("../std/" + lower + "/" + lower + ".sr");
     paths.add("../silverc/std/" + lower + ".sr");
+    if (hasDot) { paths.add("../silverc/std/" + dottedSlash + ".sr"); }
+    paths.add("../silverc/std/" + lower + "/" + lower + ".sr");
     paths.add("../silveri/src/" + lower + ".sr");
+    if (hasDot) { paths.add("../silveri/src/" + dottedSlash + ".sr"); }
+    paths.add("../silveri/src/" + lower + "/" + lower + ".sr");
     paths.add("silveri/src/" + lower + ".sr");
+    if (hasDot) { paths.add("silveri/src/" + dottedSlash + ".sr"); }
+    paths.add("silveri/src/" + lower + "/" + lower + ".sr");
     #off
     for (int i = 0; i < paths.length; i++) {
         // Skip the input file itself (same path spelling).
@@ -284,9 +364,16 @@ string readStdModule(string name, string inputFile, string selfSource, string ta
 // itself (mirrors the compiler driver's always-resolvable list).
 bool moduleAlwaysResolvable(string name) {
     string n = name.lower();
-    return nativeModule(name) || cli.eq(n, "exception") || cli.eq(n, "llmai")
+    if (nativeModule(name) || cli.eq(n, "exception") || cli.eq(n, "llmai")
         || cli.eq(n, "win32") || cli.eq(n, "http") || cli.eq(n, "os")
-        || cli.eq(n, "project") || cli.eq(name, "LLMAI");
+        || cli.eq(n, "project") || cli.eq(name, "LLMAI")) { return true; }
+    // Dotted children of the embedded/fixed modules behave like their
+    // parents (`win32.anything` needs no source, exactly like `win32`;
+    // `llmai`/`os` children are already covered by nativeModule above).
+    // validateNativeImports still owns the precise win32/linux/custom
+    // diagnostics for these names; this only skips the disk probe.
+    return dottedChildOrSelf(name, "exception") || dottedChildOrSelf(name, "win32")
+        || dottedChildOrSelf(name, "http") || dottedChildOrSelf(name, "project");
 }
 
 // DOCS/261 -- fixed native module tables (mirrors
@@ -715,14 +802,21 @@ string resolveImports(string source, string inputFile, int[] prependLen, string 
         int nameStart = importPos + 13;
         while (nameStart < semi && source[nameStart] == ' ') { nameStart = nameStart + 1; }
         int nameEnd = nameStart;
-        while (nameEnd < semi && ((source[nameEnd] >= 'a' && source[nameEnd] <= 'z') || (source[nameEnd] >= 'A' && source[nameEnd] <= 'Z') || (source[nameEnd] >= '0' && source[nameEnd] <= '9') || source[nameEnd] == '_')) {
+        // Dotted module names (`mylib.sub`) read whole, mirroring the
+        // compilers' projectImportModule; native dotted sources are skipped
+        // below before any file probe.
+        while (nameEnd < semi && ((source[nameEnd] >= 'a' && source[nameEnd] <= 'z') || (source[nameEnd] >= 'A' && source[nameEnd] <= 'Z') || (source[nameEnd] >= '0' && source[nameEnd] <= '9') || source[nameEnd] == '_' || source[nameEnd] == '.')) {
             nameEnd = nameEnd + 1;
         }
         string module = "";
         for (int mi = nameStart; mi < nameEnd; mi++) {
             module += source[mi];
         }
-        if (module.length > 0 && !nativeModule(module)) {
+        // Fixed win32/linux natives (and bare `win32`/`linux`) never come
+        // from disk: native prefix handling stays before file probing, and
+        // validateNativeImports owns their diagnostics and grants.
+        if (module.length > 0 && !nativeModule(module)
+            && !fixedWin32Module(module) && !fixedLinuxModule(module)) {
             string modSrc = readStdModule(module, inputFile, source, target);
             if (modSrc.length > 0) {
                 prepend = prepend + modSrc + "\n";
