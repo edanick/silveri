@@ -8,7 +8,7 @@ import project;
 import fs;
 class ReturnSignal {
     public prop Value val;
-    construct () { this.val = null; }
+    construct { this.val = null; }
     construct (Value v) { this.val = v; }
 }
 
@@ -92,7 +92,7 @@ class Evaluator {
     // `key#k`; dispatch scans these symbols for the arity match.
     public prop dict<string, int> fnDeclSeen;
 
-    construct () {
+    construct {
         file.writeBytes("build/diag/TE0_ctor.txt", [49]);
         this.globals = GC.acquireEnv(null);
         this.functions = {};

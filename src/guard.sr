@@ -18,7 +18,7 @@ class GuardVar {
     public prop int line;
     public prop int col;
 
-    construct () {
+    construct {
         this.name = "";
         this.typeHint = "";
         this.isInit = false;
@@ -41,7 +41,7 @@ class MemoryGuard {
     private prop string[] constNames;
     private prop int nullSafeDepth;
 
-    construct () {
+    construct {
         this.vars = [];
         this.scopeEnds = [];
         this.constNames = [];

@@ -63,17 +63,17 @@ class LlmHeaders {
 
 class ChatResponseMessage {
     public prop string content;
-    construct() { this.content = \"\"; }
+    construct { this.content = \"\"; }
 }
 
 class ChatChoice {
     public prop ChatResponseMessage message;
-    construct() { this.message = new ChatResponseMessage(); }
+    construct { this.message = new ChatResponseMessage(); }
 }
 
 class ChatCompletionResponse {
     public prop ChatChoice[] choices;
-    construct() {
+    construct {
         this.choices = [];
         this.choices.push(new ChatChoice());
     }

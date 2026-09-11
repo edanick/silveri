@@ -45,7 +45,7 @@ class GCState {
     public prop int64 liveBytes;
     public prop int64 peakBytes;
 
-    construct () {
+    construct {
         this.registry = [];
         this.registryCount = 0;
         this.pool = [];

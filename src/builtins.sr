@@ -3347,7 +3347,7 @@ int64 fnv1Hash(string data) {
 // used because the native compiler rejects assignment to global scalars.
 class MathRandState {
     public prop int64 seed;
-    construct () { this.seed = 42; }
+    construct { this.seed = 42; }
 }
 
 MathRandState mathRandState = new MathRandState();

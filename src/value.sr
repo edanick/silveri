@@ -40,7 +40,7 @@ class Value {
     public prop Value[] objVals;
     public prop string[] objKeys;
 
-    construct () {
+    construct {
         this.tag = VAL_NULL;
         this.intVal = 0;
         this.floatVal = 0.0;
