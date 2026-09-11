@@ -277,7 +277,7 @@ class CacheSession {
             pos = eol + 1;
             if (icStartsWith(line, "created ")) {
                 this.createdStamp = icDecToI64(icSliceRange(line, 8, line.length));
-            } elif (icStartsWith(line, "f ")) {
+            } else if (icStartsWith(line, "f ")) {
                 string rest = icSliceRange(line, 2, line.length);
                 string f1 = icWordAtSep(rest, 0, '|');
                 string f2 = icWordAtSep(rest, 1, '|');
@@ -387,10 +387,10 @@ class CacheSession {
                 bw.b16(tag);
                 if (tag == 200) {
                     bw.b64(tb.intVal);
-                } elif (tag == 203) {
+                } else if (tag == 203) {
                     int ccv = tb.charVal;
                     bw.b32(ccv);
-                } elif (tag == 202 || tag == 204 || tag == 205) {
+                } else if (tag == 202 || tag == 204 || tag == 205) {
                     string sv2 = tb.strVal;
                     bw.b32(sv2.length);
                     for (int si3 = 0; si3 < sv2.length; si3++) {
@@ -1230,10 +1230,10 @@ private Token? icTokenFromLine(string line) {
     int cv = 32;
     if (tag == 200) {
         iv = icDecToI64(t4);
-    } elif (tag == 203) {
+    } else if (tag == 203) {
         cv = icStrToInt(t4);
         if (cv < 0) { return null; }
-    } elif (tag == 202 || tag == 204 || tag == 205) {
+    } else if (tag == 202 || tag == 204 || tag == 205) {
         int colon = 0;
         while (colon < t4.length && t4[colon] != ':') { colon++; }
         if (colon >= t4.length) { return null; }

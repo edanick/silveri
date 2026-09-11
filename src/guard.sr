@@ -452,7 +452,7 @@ class MemoryGuard {
             if (cond.op == OP_NEQ) {
                 if (cond.child(0).kind == ND_IDENT && cond.child(1).kind == ND_NULL_LIT) { thenNonNull = cond.child(0).name; }
                 if (cond.child(1).kind == ND_IDENT && cond.child(0).kind == ND_NULL_LIT) { thenNonNull = cond.child(1).name; }
-            } elif (cond.op == OP_EQ) {
+            } else if (cond.op == OP_EQ) {
                 if (cond.child(0).kind == ND_IDENT && cond.child(1).kind == ND_NULL_LIT) { elseNonNull = cond.child(0).name; }
                 if (cond.child(1).kind == ND_IDENT && cond.child(0).kind == ND_NULL_LIT) { elseNonNull = cond.child(1).name; }
             }
@@ -799,25 +799,25 @@ class MemoryGuard {
     private void checkTop(Node n) {
         if (n.kind == ND_FUNC) {
             this.checkFunction(n);
-        } elif (n.kind == ND_CONST) {
+        } else if (n.kind == ND_CONST) {
             this.checkConst(n);
-        } elif (n.kind == ND_CLASS_DEF) {
+        } else if (n.kind == ND_CLASS_DEF) {
             for (int j = 0; j < n.childCount(); j++) {
                 Node m = n.child(j);
                 if (m.kind == ND_FUNC) { this.checkFunction(m); }
-                elif (m.kind == ND_CONST) { this.checkConst(m); }
+                else if (m.kind == ND_CONST) { this.checkConst(m); }
             }
-        } elif (n.kind == ND_MODULE) {
+        } else if (n.kind == ND_MODULE) {
             for (int j = 0; j < n.childCount(); j++) {
                 this.checkTop(n.child(j));
             }
-        } elif (n.kind == ND_VAR_DECL) {
+        } else if (n.kind == ND_VAR_DECL) {
             this.checkVarDecl(n);
-        } elif (n.kind == ND_ALIAS_DECL) {
+        } else if (n.kind == ND_ALIAS_DECL) {
             this.checkAlias(n);
-        } elif (n.kind == ND_EXPR_STMT) {
+        } else if (n.kind == ND_EXPR_STMT) {
             if (n.childCount() > 0) { this.checkExpr(n.child(0)); }
-        } elif (n.kind == ND_RETURN || n.kind == ND_RETURN_SHORT || n.kind == ND_IF_STMT || n.kind == ND_WHILE
+        } else if (n.kind == ND_RETURN || n.kind == ND_RETURN_SHORT || n.kind == ND_IF_STMT || n.kind == ND_WHILE
             || n.kind == ND_LOOP || n.kind == ND_FOR_C || n.kind == ND_FOR_RANGE || n.kind == ND_FOREACH || n.kind == ND_MATCH_STMT || n.kind == ND_TRY_CATCH
             || n.kind == ND_UNSET || n.kind == ND_SWITCH || n.kind == ND_THROW) {
             this.checkStmt(n);
@@ -830,12 +830,12 @@ class MemoryGuard {
             Node n = program[i];
             if (n.kind == ND_CONST) {
                 this.constNames.add(n.name);
-            } elif (n.kind == ND_CLASS_DEF) {
+            } else if (n.kind == ND_CLASS_DEF) {
                 for (int j = 0; j < n.childCount(); j++) {
                     Node m = n.child(j);
                     if (m.kind == ND_CONST) { this.constNames.add(m.name); }
                 }
-            } elif (n.kind == ND_MODULE) {
+            } else if (n.kind == ND_MODULE) {
                 for (int j = 0; j < n.childCount(); j++) {
                     Node m = n.child(j);
                     if (m.kind == ND_CONST) { this.constNames.add(m.name); }

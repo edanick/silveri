@@ -46,7 +46,7 @@ class LlmHeaders {
 
     public void set(string name, string value) {
         if (this.same(name, \"Content-Type\")) { this.contentType = value; }
-        elif (this.same(name, \"Authorization\")) { this.authorization = value; }
+        else if (this.same(name, \"Authorization\")) { this.authorization = value; }
         else { this.extraName = name; this.extraValue = value; }
     }
 

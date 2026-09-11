@@ -27,7 +27,7 @@ class Lexer {
             if (c == '\n') {
                 this.lineLens.add(current);
                 current = 0;
-            } elif (c != '\r') {
+            } else if (c != '\r') {
                 current++;
             }
         }
@@ -150,8 +150,8 @@ class Lexer {
                             char hc = this.src[this.pos];
                             int dv = -1;
                             if (hc >= '0' && hc <= '9') { dv = hc - '0'; }
-                            elif (hc >= 'a' && hc <= 'f') { dv = hc - 'a' + 10; }
-                            elif (hc >= 'A' && hc <= 'F') { dv = hc - 'A' + 10; }
+                            else if (hc >= 'a' && hc <= 'f') { dv = hc - 'a' + 10; }
+                            else if (hc >= 'A' && hc <= 'F') { dv = hc - 'A' + 10; }
                             if (dv < 0) { break; }
                             this.advance();
                             hv = hv * 16 + dv;
@@ -207,8 +207,8 @@ class Lexer {
                             char hc = this.src[this.pos];
                             int dv = -1;
                             if (hc >= '0' && hc <= '9') { dv = hc - '0'; }
-                            elif (hc >= 'a' && hc <= 'f') { dv = hc - 'a' + 10; }
-                            elif (hc >= 'A' && hc <= 'F') { dv = hc - 'A' + 10; }
+                            else if (hc >= 'a' && hc <= 'f') { dv = hc - 'a' + 10; }
+                            else if (hc >= 'A' && hc <= 'F') { dv = hc - 'A' + 10; }
                             if (dv < 0) { break; }
                             this.advance();
                             hv = hv * 16 + dv;

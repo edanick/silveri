@@ -223,7 +223,7 @@ string filterStdRegions(string src, string target) {
                     active = osName == target && !matchedAny;
                     matchedAny = matchedAny || osName == target;
                 }
-            } elif (word == "else") {
+            } else if (word == "else") {
                 drop = true;
                 // Lenient: `#else` outside a region just drops the line.
                 // Inside a region the `#else` body is kept only when no
@@ -232,7 +232,7 @@ string filterStdRegions(string src, string target) {
                     active = !matchedAny;
                     sawElse = true;
                 }
-            } elif (word == "off") {
+            } else if (word == "off") {
                 drop = true;
                 // Lenient: `#off` outside a region just drops the line.
                 mode = 0;
@@ -240,7 +240,7 @@ string filterStdRegions(string src, string target) {
             }
             // Any other line-leading `#word` is not a directive: pass
             // through unchanged (normal lexer diagnostics apply).
-        } elif (mode == 1 && !active) {
+        } else if (mode == 1 && !active) {
             drop = true;
         }
 
@@ -610,7 +610,7 @@ int[] qsBundleSpans(string source) {
         string lineText = "";
         for (int k = lineStart; k < li; k++) { lineText += source[k]; }
         if (lineText.trim() == "//__silveri_qs_begin__") { openBegin = lineNo; }
-        elif (lineText.trim() == "//__silveri_qs_end__") {
+        else if (lineText.trim() == "//__silveri_qs_end__") {
             if (openBegin >= 0) {
                 spans.add(openBegin);
                 spans.add(lineNo);
@@ -902,12 +902,12 @@ string resolveImports(string source, string inputFile, int[] prependLen, string 
             string modSrc = readStdModule(module, inputFile, source, target);
             if (modSrc.length > 0) {
                 prepend = prepend + modSrc + "\n";
-            } elif (aggregateDeclaresModule(source, module)) {
+            } else if (aggregateDeclaresModule(source, module)) {
                 // Satisfied by a project-local or `.qs` bundle module
                 // already in the aggregate: Silver wins over custom names.
-            } elif (moduleAlwaysResolvable(module)) {
+            } else if (moduleAlwaysResolvable(module)) {
                 // Fixed/embedded modules need no source.
-            } elif (customNativeDeclared(module)) {
+            } else if (customNativeDeclared(module)) {
                 // DOCS/261 -- star import on a declared custom native:
                 // wrong-target side and missing export list fail here with
                 // the contract message; the grant itself registers later.
@@ -919,7 +919,7 @@ string resolveImports(string source, string inputFile, int[] prependLen, string 
                     printline(customNativeStarMsg(module));
                     exit(1);
                 }
-            } elif (natInBundle(qsSpans, natImportLine(source, importPos)) || customNativeOptIn()) {
+            } else if (natInBundle(qsSpans, natImportLine(source, importPos)) || customNativeOptIn()) {
                 // The manifest opts into custom natives (or the star comes
                 // from a consumed `.qs` bundle): an unresolvable star
                 // source names the declaration to add.
@@ -1057,7 +1057,7 @@ void main() {
         }
         if (cli.isFlag(arg, ["--cache-bytecode"])) {
             cacheBytecode = true;
-        } elif (arg == "--os") {
+        } else if (arg == "--os") {
             // Preprocessor target override (lowercase windows/linux/mac is
             // the documented form; UPPERCASE also accepted, mirroring
             // silverc/compiler/cli_flags.sr). A missing or unknown value
@@ -1066,17 +1066,17 @@ void main() {
             if (v.toLower() == "windows") {
                 osOverride = "WINDOWS";
                 i++;
-            } elif (v.toLower() == "linux") {
+            } else if (v.toLower() == "linux") {
                 osOverride = "LINUX";
                 i++;
-            } elif (v.toLower() == "mac") {
+            } else if (v.toLower() == "mac") {
                 osOverride = "MAC";
                 i++;
             } else {
                 printline("Error: --os expects one of windows, linux, mac (WINDOWS, LINUX, MAC also accepted), got '" + v + "'");
                 exit(1);
             }
-        } elif (arg == "-i") {
+        } else if (arg == "-i") {
             string v = cli.valueAfter(args, i);
             if (v != "") {
                 filename = v;
@@ -1085,7 +1085,7 @@ void main() {
                 printline("Error: -i requires a filename");
                 exit(1);
             }
-        } elif (arg == "-o") {
+        } else if (arg == "-o") {
             // -o is accepted for command compatibility but ignored because
             // silveri executes source directly instead of producing a
             // compiled output file.
@@ -1096,11 +1096,11 @@ void main() {
                 printline("Error: -o requires a filename");
                 exit(1);
             }
-        } elif (cli.isOption(arg)) {
+        } else if (cli.isOption(arg)) {
             printline("Error: Unknown option '" + arg + "'");
             printHelp();
             exit(1);
-        } elif (filename == "") {
+        } else if (filename == "") {
             filename = arg;
         } else {
             // DOCS/124 -- trailing positional arguments after the script name
@@ -1187,7 +1187,7 @@ void main() {
             if (c == '\n') {
                 lineLens.add(current);
                 current = 0;
-            } elif (c != '\r') {
+            } else if (c != '\r') {
                 current++;
             }
         }

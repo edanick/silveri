@@ -322,7 +322,7 @@ class Parser {
             if (this.check(TK_LPAREN)) {
                 depth++;
                 this.advance();
-            } elif (this.check(TK_RPAREN)) {
+            } else if (this.check(TK_RPAREN)) {
                 depth--;
                 this.advance();
                 if (depth == 0) { break; }
@@ -338,7 +338,7 @@ class Parser {
             this.advance();
             while (!this.check(TK_EOF) && !this.check(TK_SEMI) && !this.check(TK_RBRACE)) { this.advance(); }
             if (this.check(TK_SEMI)) { this.advance(); }
-        } elif (this.check(TK_LBRACE)) {
+        } else if (this.check(TK_LBRACE)) {
             this.skipBalancedBraces();
             if (this.check(TK_SEMI)) { this.advance(); }
         }
@@ -434,11 +434,11 @@ class Parser {
             if (k == TK_LPAREN) {
                 depth++;
                 i++;
-            } elif (k == TK_RPAREN) {
+            } else if (k == TK_RPAREN) {
                 depth--;
                 i++;
                 if (depth == 0) { break; }
-            } elif (k == TK_EOF) {
+            } else if (k == TK_EOF) {
                 return false;
             } else {
                 i++;
@@ -468,7 +468,7 @@ class Parser {
                 depth++;
                 started = true;
                 this.advance();
-            } elif (this.check(TK_RPAREN)) {
+            } else if (this.check(TK_RPAREN)) {
                 if (!started) { return; }
                 depth--;
                 this.advance();
@@ -487,7 +487,7 @@ class Parser {
             if (this.check(TK_LBRACE)) {
                 depth++;
                 this.advance();
-            } elif (this.check(TK_RBRACE)) {
+            } else if (this.check(TK_RBRACE)) {
                 depth--;
                 this.advance();
                 if (depth == 0) { return; }
@@ -733,7 +733,7 @@ private Node? parseItem() {
         if (this.check(TK_STAR)) {
             this.advance();
             all = true;
-        } elif (this.check(TK_LBRACE)) {
+        } else if (this.check(TK_LBRACE)) {
             // DOCS/213 -- import { a, b } from win32;
             this.advance();
             names.add(this.expectIdent());
@@ -920,9 +920,9 @@ private Node? parseItem() {
             while (sawModifier) {
                 sawModifier = false;
                 if (this.check(TK_PUBLIC)) { this.advance(); isPub = true; sectionInternal = false; sawModifier = true; }
-                elif (this.check(TK_PRIVATE)) { this.advance(); isPub = false; sectionInternal = false; sawModifier = true; }
-                elif (this.check(TK_INTERNAL)) { this.advance(); isInt = true; sawModifier = true; }
-                elif (this.check(TK_STATIC)) { this.advance(); isStat = true; sawModifier = true; }
+                else if (this.check(TK_PRIVATE)) { this.advance(); isPub = false; sectionInternal = false; sawModifier = true; }
+                else if (this.check(TK_INTERNAL)) { this.advance(); isInt = true; sawModifier = true; }
+                else if (this.check(TK_STATIC)) { this.advance(); isStat = true; sawModifier = true; }
             }
             if (this.check(TK_DEF)) {
                 this.advance();
@@ -957,7 +957,7 @@ private Node? parseItem() {
                     // DOCS/259 -- rejection recovery consumed the signature
                     // and body; finish the method without follow-on errors.
                     fn.addChild(new Node(ND_BLOCK, dln, dc));
-                } elif (this.check(TK_SHL)) {
+                } else if (this.check(TK_SHL)) {
                     this.advance();
                     Node bodyExpr = this.parseExpr(0);
                     Node body = new Node(ND_BLOCK, dln, dc);
@@ -1241,7 +1241,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             this.expectSemi();
         } else if (this.check(TK_LBRACE)) {
             n.addChild(this.parseBlock());
-        } elif (this.check(TK_RBRACE) || this.check(TK_EOF)) {
+        } else if (this.check(TK_RBRACE) || this.check(TK_EOF)) {
             // `void main()` followed by `}` on the next line: the opening
             // curly bracket is missing; point just past the signature's
             // end-of-line.
@@ -1279,7 +1279,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             // (`int add(int x int y)`).
             if (this.check(TK_COMMA)) {
                 this.advance();
-            } elif (sawParam) {
+            } else if (sawParam) {
                 Token prevT = this.tokens[this.pos - 1];
                 this.recordError("you forgot a comma \",\" at line " + prevT.line.toString() + ", column " + (prevT.col + this.tokenSrcLen(prevT)).toString());
             }
@@ -1417,7 +1417,14 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         if (this.check(TK_FOREACH)) { return this.parseForeach(); }
         if (this.check(TK_WHILE)) { return this.parseWhile(); }
         if (this.check(TK_IF)) { return this.parseIf(); }
-        if (this.check(TK_ELIF)) { return this.parseIf(); }
+        // A leading `elif` is not Silver; write `else if` (merged into
+        // the previous chain) or `if` (standalone). Parsed as `if` so
+        // later passes see a valid tree; the driver still fails on this.
+        if (this.check(TK_ELIF)) {
+            Token leadTok = this.peek();
+            this.recordError(leadTok.line.toString() + ":" + leadTok.col.toString() + ": `elif` is not Silver; write `else if` instead");
+            return this.parseIf();
+        }
         if (this.check(TK_MATCH)) { return this.parseMatchStmt(); }
         if (this.check(TK_TRY)) { return this.parseTryCatch(); }
         if (this.check(TK_THROW)) { return this.parseThrow(); }
@@ -1546,7 +1553,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
                 this.advance();
                 while (depth > 0 && this.pos < this.tokens.length && !this.check(TK_EOF)) {
                     if (this.check(TK_LESS)) { depth++; }
-                    elif (this.check(TK_GREATER)) { depth--; }
+                    else if (this.check(TK_GREATER)) { depth--; }
                     this.advance();
                 }
                 // `tuple<...> (x, y) = t;` is the tuple destructuring form
@@ -1608,7 +1615,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         Node init = new Node(ND_EXPR_STMT, ln, c);
         if (this.check(TK_SEMI)) {
             this.advance();
-        } elif (this.checkType() || this.check(TK_VAR)) {
+        } else if (this.checkType() || this.check(TK_VAR)) {
             init = this.parseVarDecl();
         } else {
             Node expr = this.parseExpr(0);
@@ -1633,8 +1640,8 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         this.expect(TK_LPAREN);
         string typ = "";
         if (this.checkType()) { typ = this.parseTypeStr(); }
-        elif (this.check(TK_VAR)) { this.advance(); typ = "var"; }
-        elif (this.check(TK_IDENT)) {
+        else if (this.check(TK_VAR)) { this.advance(); typ = "var"; }
+        else if (this.check(TK_IDENT)) {
             int saved = this.pos;
             string first = this.expectIdent();
             bool isTyped = !this.check(TK_IN);
@@ -1698,6 +1705,8 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             }
         }
         if (this.check(TK_ELIF)) {
+            Token tailTok = this.peek();
+            this.recordError(tailTok.line.toString() + ":" + tailTok.col.toString() + ": `elif` is not Silver; write `else if` instead");
             Node? elseIf = this.parseIf();
             if (elseIf != null) { n.addChild(elseIf); }
         }
@@ -1939,7 +1948,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         if (this.check(TK_ASSIGN)) {
             this.advance();
             n.addChild(this.parseExpr(0));
-        } elif (isFixed) {
+        } else if (isFixed) {
             // Materialize zero elements so the interpreter's normal array
             // representation has the requested length and can be indexed or
             // passed to native out-parameter helpers.
@@ -2036,7 +2045,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         if (this.check(TK_ASSIGN)) {
             this.advance();
             n.addChild(this.parseExpr(0));
-        } elif (isFixed) {
+        } else if (isFixed) {
             Node arr = new Node(ND_ARRAY_LIT, ln, c);
             for (int i = 0; i < fixedSize; i++) {
                 Node zero = new Node(ND_INT_LIT, ln, c);
@@ -2575,7 +2584,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             while (!this.check(TK_RPAREN) && !this.check(TK_EOF)) {
                 if (this.check(TK_COMMA)) {
                     this.advance();
-                } elif (args.length > 0) {
+                } else if (args.length > 0) {
                     Token prevT = this.tokens[this.pos - 1];
                     this.recordError("you forgot a comma \",\" at line " + prevT.line.toString() + ", column " + (prevT.col + this.tokenSrcLen(prevT)).toString());
                 }
@@ -2660,9 +2669,9 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             string member = "";
             if (this.check(TK_IDENT)) {
                 member = this.expectIdent();
-            } elif (this.check(TK_INT_LIT)) {
+            } else if (this.check(TK_INT_LIT)) {
                 member = this.advance().text;
-            } elif (this.check(TK_FLOAT_LIT)) {
+            } else if (this.check(TK_FLOAT_LIT)) {
                 // `t.0.toString()` lexes the index as the float "0."; a float
                 // made of digits and a bare trailing dot is the tuple-index
                 // member form, so strip the trailing dot.
@@ -2963,8 +2972,8 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         while (i2 < len) {
             char c = t[i2];
             if (c >= '0' && c <= '9') { sawDigit = true; }
-            elif (c == '.' && !wantInt && !sawDot && !sawExp) { sawDot = true; }
-            elif ((c == 'e' || c == 'E') && !wantInt && sawDigit && !sawExp) {
+            else if (c == '.' && !wantInt && !sawDot && !sawExp) { sawDot = true; }
+            else if ((c == 'e' || c == 'E') && !wantInt && sawDigit && !sawExp) {
                 sawExp = true;
                 if (i2 + 1 < len && (t[i2 + 1] == '+' || t[i2 + 1] == '-')) { i2++; }
                 if (i2 + 1 >= len) { return false; }
@@ -3752,7 +3761,7 @@ string diagClosestMatch(string needle, string[] candidates) {
         int d = diagLevenshtein(needleLc, candLc);
         bool acceptable = false;
         if (d == 1) { acceptable = true; }
-        elif (d == 2 && needleLc.length >= 3) {
+        else if (d == 2 && needleLc.length >= 3) {
             if (needleLc[0] == candLc[0] && needleLc[1] == candLc[1]) { acceptable = true; }
         }
         if (acceptable) {
