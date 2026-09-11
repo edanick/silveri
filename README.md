@@ -35,6 +35,43 @@ Save the example as `hello.sr` and execute it immediately:
 silveri hello.sr
 ```
 
+### Put `silveri` on your `PATH`
+
+#### Windows
+
+1. Create the folder `%LocalAppData%\Silver\bin`.
+2. Copy `silveri.exe` into it.
+3. Add it to your user `PATH` (reopen the terminal afterwards):
+
+```powershell
+setx PATH "$env:PATH;$env:LocalAppData\Silver\bin"
+```
+
+4. Verify with `silveri --version`.
+
+#### Linux and macOS
+
+Both use the same location, `~/.local/bin`:
+
+```bash
+mkdir -p ~/.local/bin
+cp silveri ~/.local/bin/silveri
+chmod +x ~/.local/bin/silveri
+```
+
+Make sure `~/.local/bin` is on your `PATH`:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Add that line to `~/.bashrc` (Linux) or `~/.zshrc` (macOS, the default
+shell) so it persists. Most Linux distributions pick up `~/.local/bin`
+automatically once it exists (re-login to apply); macOS always needs the
+export line above, then `source ~/.zshrc`.
+
+Verify with `silveri --version`.
+
 ## Command-line usage
 
 ```text
