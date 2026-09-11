@@ -199,9 +199,9 @@ class CacheSession {
         this.sortRecords();
 
         string indexText = "created " + icIntToStr(this.createdStamp) + "\n";
-        indexText = indexText + "name " + this.projectName + "\n";
+        indexText += "name " + this.projectName + "\n";
         for (int r = 0; r < this.keys.length; r++) {
-            indexText = indexText + "f " + this.keyOf(r) + "\n";
+            indexText += "f " + this.keyOf(r) + "\n";
         }
         if (indexText == this.oldIndexText) { return; }
 

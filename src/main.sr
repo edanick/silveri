@@ -901,7 +901,7 @@ string resolveImports(string source, string inputFile, int[] prependLen, string 
             && !fixedMacModule(module)) {
             string modSrc = readStdModule(module, inputFile, source, target);
             if (modSrc.length > 0) {
-                prepend = prepend + modSrc + "\n";
+                prepend += modSrc + "\n";
             } else if (aggregateDeclaresModule(source, module)) {
                 // Satisfied by a project-local or `.qs` bundle module
                 // already in the aggregate: Silver wins over custom names.
@@ -985,14 +985,14 @@ string resolveImports(string source, string inputFile, int[] prependLen, string 
             if (nativeModule(modName) || moduleAlwaysResolvable(modName)) { continue; }
             string modSrc = readStdModule(modName, inputFile, source, target);
             if (modSrc.length > 0) {
-                plainPrepend = plainPrepend + modSrc + "\n";
+                plainPrepend += modSrc + "\n";
             }
         }
         cursor2 = semi2 + 1;
     }
     string combined = prepend;
     if (plainPrepend.length > 0) {
-        combined = combined + plainPrepend + "\n";
+        combined += plainPrepend + "\n";
     }
     if (combined.length > 0) {
         prependLen[0] = combined.length;

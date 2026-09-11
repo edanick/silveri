@@ -516,7 +516,7 @@ float64 floatStrToF64(string s) {
         for (int64 i = 1; i < flen; i++) {
             divisor = divisor * 10.0;
         }
-        result = result + fracPart.toFloat64() / divisor;
+        result += fracPart.toFloat64() / divisor;
     }
     if (exp != 0) {
         float64 p10 = 1.0;

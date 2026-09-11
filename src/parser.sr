@@ -377,7 +377,7 @@ class Parser {
         string target = t.text;
         if (this.check(TK_LESS)) {
             while (!this.check(TK_GREATER) && !this.check(TK_SEMI) && !this.check(TK_RBRACE) && !this.check(TK_EOF)) {
-                target = target + this.advance().text;
+                target += this.advance().text;
             }
             if (this.check(TK_GREATER)) { target += ">"; this.advance(); }
         }
@@ -582,7 +582,7 @@ public Node[] parseProgram() {
         string msg = "you forgot to put a semicolon \";\" in ";
         for (int si = 0; si < this.missingSemiLines.length; si++) {
             if (si > 0) { msg += " and "; }
-            msg = msg + "line " + this.missingSemiLines[si].toString() + ", column " + this.missingSemiCols[si].toString();
+            msg += "line " + this.missingSemiLines[si].toString() + ", column " + this.missingSemiCols[si].toString();
         }
         this.recordError(msg);
         this.missingSemiLines = [];
@@ -3014,7 +3014,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
     private void checkCallArgTypes(Node call) {
         string joined = ",";
         for (int s = 0; s < this.sigNames.length; s++) {
-            joined = joined + this.sigNames[s] + ",";
+            joined += this.sigNames[s] + ",";
         }
         if (joined.indexOf("," + call.name + ",") < 0) { return; }
         string bestSegs = "";
@@ -3035,7 +3035,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
                 int af = this.literalFamily(arg);
                 if (af < 0 || af == pf) { continue; }
                 if (count > 0) { segs += ", and "; }
-                segs = segs + "line " + arg.line.toString() + ", column " + arg.col.toString() + " for \"" + names[j] + "\" parameter expected " + this.articleOf(types[j]) + " got " + this.articleOf(this.literalTypeName(arg));
+                segs += "line " + arg.line.toString() + ", column " + arg.col.toString() + " for \"" + names[j] + "\" parameter expected " + this.articleOf(types[j]) + " got " + this.articleOf(this.literalTypeName(arg));
                 count++;
             }
             if (count == 0) { return; }

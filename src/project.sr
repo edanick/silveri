@@ -230,12 +230,12 @@ string[] qsModuleSources(string content) {
     int pos = 6;
     pos += 4;              // flags (reserved)
     int metaLen = qsU32(content, pos);
-    pos = pos + 4 + metaLen;    // metadata payload
+    pos += 4 + metaLen;    // metadata payload
     int count = qsU32(content, pos);
     pos += 4;
     for (int i = 0; i < count; i++) {
         int nameLen = qsU32(content, pos);
-        pos = pos + 4 + nameLen;
+        pos += 4 + nameLen;
         int srcLen = qsU32(content, pos);
         pos += 4;
         result.add(projSlice(content, pos, pos + srcLen));
@@ -331,7 +331,7 @@ string projCollectionLiteral(string path) {
                 string value = projSlice(content, start, end);
                 if (!first) { result += ", "; }
                 first = false;
-                result = result + "\"" + projCollectionEscape(value) + "\"";
+                result += "\"" + projCollectionEscape(value) + "\"";
             }
             start = i + 1;
         }
@@ -379,7 +379,7 @@ string projExpandCollections(string source, string root, string collections) {
             #off
             string fullPath = projJoin(root, collections + colSep + path);
             if (!fs.exists(fullPath)) { projCollectionFail(path, line); }
-            result = result + prefix + " = " + projCollectionLiteral(fullPath) + projSlice(path, semi, path.length);
+            result += prefix + " = " + projCollectionLiteral(fullPath) + projSlice(path, semi, path.length);
         } else {
             result += text;
         }
@@ -459,7 +459,7 @@ string loadProjectSource(string projectPath) {
         // Read into a local first: a chained `x = x + f() + "lit"` concat
         // with the call in the middle miscompiles and corrupts x.
         string content = fs.readFile(files[k]);
-        body = body + content + "\n";
+        body += content + "\n";
     }
 
     // `.qs` libraries listed under `imports` are not auto-imported: declaring
@@ -480,7 +480,7 @@ string loadProjectSource(string projectPath) {
                 // consumer's declarations (compilers' `.qs` rule). Plain
                 // comment lines, invisible to the lexer; line counts are
                 // preserved by every later stage.
-                body = body + "//__silveri_qs_begin__\n" + libSources[si] + "\n//__silveri_qs_end__\n";
+                body += "//__silveri_qs_begin__\n" + libSources[si] + "\n//__silveri_qs_end__\n";
             }
         }
     }
@@ -495,14 +495,14 @@ string loadProjectSource(string projectPath) {
     string name = projManifestValue(manifest, "name");
     string version = projManifestValue(manifest, "version");
     string license = projManifestValue(manifest, "license");
-    if (name != "") { metadata = metadata + "const string APP_NAME = \"" + name + "\";\n"; }
-    if (version != "") { metadata = metadata + "const string APP_VERSION = \"" + version + "\";\n"; }
-    if (license != "") { metadata = metadata + "const string APP_LICENSE = \"" + license + "\";\n"; }
+    if (name != "") { metadata += "const string APP_NAME = \"" + name + "\";\n"; }
+    if (version != "") { metadata += "const string APP_VERSION = \"" + version + "\";\n"; }
+    if (license != "") { metadata += "const string APP_LICENSE = \"" + license + "\";\n"; }
     metadata += "const string LANG_VERSION = \"0.7.1\";\n";
     metadata += "const string APP_COPYRIGHT = \"Edan M. © 2025\";\n";
     string ptype = projManifestValue(manifest, "type");
     if (ptype == "" || ptype == "exe") { ptype = "console"; }
-    metadata = metadata + "const string APP_TYPE = \"" + ptype + "\";\n";
+    metadata += "const string APP_TYPE = \"" + ptype + "\";\n";
     return metadata + body;
 }
 
@@ -634,7 +634,7 @@ string natParseStrList(string value) {
             item = projTrim(item);
         }
         if (item.length > 0) {
-            result = result + sep + item;
+            result += sep + item;
             sep = ",";
         }
     }
@@ -733,7 +733,7 @@ void natNoteQsStems(string content) {
     int pos = 6;
     pos += 4;
     int metaLen = qsU32(content, pos);
-    pos = pos + 4 + metaLen;
+    pos += 4 + metaLen;
     int count = qsU32(content, pos);
     pos += 4;
     for (int i = 0; i < count; i++) {
@@ -742,7 +742,7 @@ void natNoteQsStems(string content) {
         string filename = projSlice(content, pos, pos + nameLen);
         pos += nameLen;
         int srcLen = qsU32(content, pos);
-        pos = pos + 4 + srcLen;
+        pos += 4 + srcLen;
         int last = -1;
         for (int k = 0; k < filename.length; k++) {
             if (filename[k] == '/' || filename[k] == '\\') { last = k; }
