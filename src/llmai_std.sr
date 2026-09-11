@@ -5,7 +5,7 @@ mod export llmai_std;
 // and parse them at startup (see main.sr). The only native piece is
 // llmai.chat(url, headers, body), dispatched through the builtin module.
 public string source() {
-    return "def Compatibility = enum { OpenAI, Anthropic, Gemini, DeepSeek, Qwen, Zhipu, Moonshot, Baichuan, Doubao, MiniMax, Custom };
+    return "enum Compatibility { OpenAI, Anthropic, Gemini, DeepSeek, Qwen, Zhipu, Moonshot, Baichuan, Doubao, MiniMax, Custom }
 
 class LlmHeaders {
     public prop string contentType;
