@@ -1048,20 +1048,27 @@ private Node? parseItem() {
     private Node parseConstructor(string className) {
         int ln = this.line(); int c = this.col();
         this.advance();
-        this.expect(TK_LPAREN);
+        // The parameter list is optional: `construct { ... }` is a
+        // zero-parameter constructor, `construct(params) { ... }` the full
+        // form. A class may also omit `construct` entirely.
         Node n = new Node(ND_FUNC, ln, c);
         n.name = "construct";
         n.parentType = className;
-        n.addChild(this.parseParamList());
-        if (this.paramListDamaged) {
-            // DOCS/259 -- the rejection recovery consumed the signature and
-            // body; finish the constructor without follow-on errors.
-            this.paramListDamaged = false;
+        if (this.check(TK_LPAREN)) {
+            this.advance();
+            n.addChild(this.parseParamList());
+            if (this.paramListDamaged) {
+                // DOCS/259 -- the rejection recovery consumed the signature and
+                // body; finish the constructor without follow-on errors.
+                this.paramListDamaged = false;
+                n.addChild(new Node(ND_BLOCK, ln, c));
+                this.prependThisParam(n, className);
+                return n;
+            }
+            this.expect(TK_RPAREN);
+        } else {
             n.addChild(new Node(ND_BLOCK, ln, c));
-            this.prependThisParam(n, className);
-            return n;
         }
-        this.expect(TK_RPAREN);
         n.addChild(this.parseBlock());
         this.prependThisParam(n, className);
         return n;
