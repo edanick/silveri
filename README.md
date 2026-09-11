@@ -39,15 +39,27 @@ silveri hello.sr
 
 #### Windows
 
-1. Create the folder `C:\bin`.
-2. Download or copy `silveri.exe` into it.
-3. Add it to your user `PATH` (reopen the terminal afterwards):
+Pick either a global binaries directory or a per-user one under AppData.
+
+Option 1 — global `C:\bin` (needs admin to create):
 
 ```powershell
+mkdir C:\bin
 setx PATH "$env:PATH;C:\bin"
 ```
 
-4. Verify with `silveri --version`.
+Download or copy `silveri.exe` into `C:\bin`.
+
+Option 2 — per-user `%appdata%\silver\bin` (no admin needed):
+
+```powershell
+mkdir "$env:APPDATA\silver\bin"
+setx PATH "$env:PATH;$env:APPDATA\silver\bin"
+```
+
+Download or copy `silveri.exe` into `%appdata%\silver\bin`.
+
+Reopen the terminal afterwards, then verify with `silveri --version`.
 
 #### Linux and macOS
 
