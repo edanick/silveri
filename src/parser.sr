@@ -623,6 +623,7 @@ private Node? parseItem() {
         if (this.check(TK_IMPORT)) { return this.parseImport(); }
         if (this.check(TK_CONST)) { return this.parseConst(); }
         if (this.check(TK_DEF)) { return this.parseDef(); }
+        if (this.check(TK_ENUM)) { return this.parseEnum(); }
         if (this.check(TK_FUN)) { return this.parseFun(); }
         if (this.check(TK_STRUCT)) { return this.parseStruct(); }
         if (this.check(TK_CLASS)) { return this.parseClass(); }
@@ -822,33 +823,47 @@ private Node? parseItem() {
         this.advance();
         string name = this.expectIdent();
         if (this.check(TK_ASSIGN)) {
+            // `def Name = enum { ... };` is not Silver. Enums are declared
+            // as `enum Name { ... }` (DOCS/212). Swallow the legacy body so
+            // the user gets this single error instead of a cascade, and
+            // fall back to a plain unit so later passes still see the name.
+            this.recordError(ln.toString() + ":" + c.toString() + ": `def " + name + " = enum ...` is not Silver; declare enums as `enum " + name + " { ... }` (see DOCS/212)");
             this.advance();
-            if (this.check(TK_ENUM)) {
-                this.advance();
-                this.expect(TK_LBRACE);
-                string[] variants = [];
-                while (!this.check(TK_RBRACE) && !this.check(TK_EOF)) {
-                    variants.add(this.expectIdent());
-                    if (this.check(TK_COMMA)) { this.advance(); }
-                }
-                this.expect(TK_RBRACE);
-                this.expectSemi();
-                Node n = new Node(ND_ENUM_DEF, ln, c);
-                n.name = name;
-                this.registerDeclaredType(name);
-                string joined = "";
-                string prefix = "";
-                for (int i = 0; i < variants.length; i++) {
-                    joined += prefix + variants[i];
-                    prefix = "|";
-                }
-                n.strVal = joined;
-                return n;
-            }
+            if (this.check(TK_ENUM)) { this.advance(); }
+            if (this.check(TK_LBRACE)) { this.skipBalancedBraces(); }
+            this.expectSemi();
+            Node n = new Node(ND_DEF_UNIT, ln, c);
+            n.name = name;
+            return n;
         }
         this.expectSemi();
         Node n = new Node(ND_DEF_UNIT, ln, c);
         n.name = name;
+        return n;
+    }
+
+    private Node parseEnum() {
+        int ln = this.line(); int c = this.col();
+        this.advance();
+        string name = this.expectIdent();
+        this.expect(TK_LBRACE);
+        string[] variants = [];
+        while (!this.check(TK_RBRACE) && !this.check(TK_EOF)) {
+            variants.add(this.expectIdent());
+            if (this.check(TK_COMMA)) { this.advance(); }
+        }
+        this.expect(TK_RBRACE);
+        if (this.check(TK_SEMI)) { this.advance(); }
+        Node n = new Node(ND_ENUM_DEF, ln, c);
+        n.name = name;
+        this.registerDeclaredType(name);
+        string joined = "";
+        string prefix = "";
+        for (int i = 0; i < variants.length; i++) {
+            joined += prefix + variants[i];
+            prefix = "|";
+        }
+        n.strVal = joined;
         return n;
     }
 
