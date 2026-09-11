@@ -321,9 +321,9 @@ class MemoryGuard {
         } else {
             this.checkExpr(lhs);
         }
-        if (lhsNullable) { this.nullSafeDepth = this.nullSafeDepth + 1; }
+        if (lhsNullable) { this.nullSafeDepth++; }
         int result = this.checkExpr(rhs);
-        if (lhsNullable) { this.nullSafeDepth = this.nullSafeDepth - 1; }
+        if (lhsNullable) { this.nullSafeDepth--; }
         return result;
     }
 
@@ -382,9 +382,9 @@ class MemoryGuard {
             return;
         }
         this.checkInitCompat(n, init);
-        if (nullable) { this.nullSafeDepth = this.nullSafeDepth + 1; }
+        if (nullable) { this.nullSafeDepth++; }
         this.checkExpr(init);
-        if (nullable) { this.nullSafeDepth = this.nullSafeDepth - 1; }
+        if (nullable) { this.nullSafeDepth--; }
         this.declareVar(name, n.typeHint, true, true, onceFlag, fixedFlag, nullable, false, n.line, n.col);
     }
 
@@ -650,9 +650,9 @@ class MemoryGuard {
             if (op == OP_ASSIGN) { return this.checkAssign(n); }
             if (op == OP_MOVE) { this.checkMove(n); return 0; }
             if (op == OP_COALESCE) {
-                this.nullSafeDepth = this.nullSafeDepth + 1;
+                this.nullSafeDepth++;
                 this.checkExpr(n.child(0));
-                this.nullSafeDepth = this.nullSafeDepth - 1;
+                this.nullSafeDepth--;
                 this.checkExpr(n.child(1));
                 return 0;
             }
@@ -660,10 +660,10 @@ class MemoryGuard {
                 Node nl = n.child(0);
                 Node nr = n.child(1);
                 bool hasNull = (nl.kind == ND_NULL_LIT && nr.kind != ND_NULL_LIT) || (nr.kind == ND_NULL_LIT && nl.kind != ND_NULL_LIT);
-                if (hasNull) { this.nullSafeDepth = this.nullSafeDepth + 1; }
+                if (hasNull) { this.nullSafeDepth++; }
                 this.checkExpr(nl);
                 this.checkExpr(nr);
-                if (hasNull) { this.nullSafeDepth = this.nullSafeDepth - 1; }
+                if (hasNull) { this.nullSafeDepth--; }
                 return 0;
             }
             int la = this.checkExpr(n.child(0));

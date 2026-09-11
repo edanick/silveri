@@ -5,16 +5,16 @@ import * from fs;
 bool projEndsWith(string text, string suffix) {
     if (text.length < suffix.length) { return false; }
     int start = text.length - suffix.length;
-    for (int i = 0; i < suffix.length; i = i + 1) {
+    for (int i = 0; i < suffix.length; i++) {
         if (text[start + i] != suffix[i]) { return false; }
     }
     return true;
 }
 
 int projFind(string text, string needle, int start) {
-    for (int i = start; i + needle.length <= text.length; i = i + 1) {
+    for (int i = start; i + needle.length <= text.length; i++) {
         bool hit = true;
-        for (int j = 0; j < needle.length; j = j + 1) {
+        for (int j = 0; j < needle.length; j++) {
             if (text[i + j] != needle[j]) { hit = false; }
         }
         if (hit) { return i; }
@@ -24,15 +24,15 @@ int projFind(string text, string needle, int start) {
 
 string projSlice(string text, int start, int end) {
     string result = "";
-    for (int i = start; i < end; i = i + 1) {
-        result = result + text[i];
+    for (int i = start; i < end; i++) {
+        result += text[i];
     }
     return result;
 }
 
 string projDirname(string path) {
     int last = -1;
-    for (int i = 0; i < path.length; i = i + 1) {
+    for (int i = 0; i < path.length; i++) {
         if (path[i] == '/' || path[i] == '\\') { last = i; }
     }
     if (last < 0) { return "."; }
@@ -118,17 +118,17 @@ string projManifestValue(string manifest, string key) {
     if (keyPos < 0) { return ""; }
     int colon = keyPos + key.length;
     while (colon < manifest.length && manifest[colon] != ':') {
-        colon = colon + 1;
+        colon++;
     }
     if (colon >= manifest.length) { return ""; }
     int quote = colon + 1;
     while (quote < manifest.length && manifest[quote] != '"') {
-        quote = quote + 1;
+        quote++;
     }
     if (quote >= manifest.length) { return ""; }
     int end = quote + 1;
     while (end < manifest.length && manifest[end] != '"') {
-        end = end + 1;
+        end++;
     }
     return projSlice(manifest, quote + 1, end);
 }
@@ -142,34 +142,34 @@ string[] projManifestList(string manifest, string key) {
     if (keyPos < 0) { return result; }
     int cursor = keyPos;
     while (cursor < manifest.length && manifest[cursor] != '[') {
-        cursor = cursor + 1;
+        cursor++;
     }
     if (cursor >= manifest.length) { return result; }
-    cursor = cursor + 1;
+    cursor++;
     while (cursor < manifest.length && manifest[cursor] != ']') {
         while (cursor < manifest.length && manifest[cursor] != '"' && manifest[cursor] != ']') {
-            cursor = cursor + 1;
+            cursor++;
         }
         if (cursor >= manifest.length || manifest[cursor] == ']') { break; }
         int start = cursor + 1;
         cursor = start;
         while (cursor < manifest.length && manifest[cursor] != '"') {
-            cursor = cursor + 1;
+            cursor++;
         }
         if (cursor <= manifest.length) {
             result.add(projSlice(manifest, start, cursor));
         }
-        cursor = cursor + 1;
+        cursor++;
     }
     return result;
 }
 
 bool projIsExcluded(string rel, string[] excludes) {
-    for (int i = 0; i < excludes.length; i = i + 1) {
+    for (int i = 0; i < excludes.length; i++) {
         string pat = excludes[i];
         if (rel.length < pat.length) { continue; }
         bool hit = true;
-        for (int j = 0; j < pat.length; j = j + 1) {
+        for (int j = 0; j < pat.length; j++) {
             if (pat[j] != rel[j]) {
                 if (pat[j] == '/') {
                     if (rel[j] != '\\') { hit = false; }
@@ -191,7 +191,7 @@ bool projIsExcluded(string rel, string[] excludes) {
 }
 
 bool projVisited(string[] visited, string path) {
-    for (int i = 0; i < visited.length; i = i + 1) {
+    for (int i = 0; i < visited.length; i++) {
         if (visited[i] == path) { return true; }
     }
     return false;
@@ -216,7 +216,7 @@ bool qsIsBundle(string content) {
 // Read a fixed 4-byte base-255 big-endian u32 at pos (digit = byte - 1).
 int qsU32(string content, int pos) {
     int v = 0;
-    for (int i = 0; i < 4; i = i + 1) {
+    for (int i = 0; i < 4; i++) {
         v = v * 255 + (content[pos + i] - 1);
     }
     return v;
@@ -228,18 +228,18 @@ string[] qsModuleSources(string content) {
     string[] result = [];
     if (!qsIsBundle(content)) { return result; }
     int pos = 6;
-    pos = pos + 4;              // flags (reserved)
+    pos += 4;              // flags (reserved)
     int metaLen = qsU32(content, pos);
     pos = pos + 4 + metaLen;    // metadata payload
     int count = qsU32(content, pos);
-    pos = pos + 4;
-    for (int i = 0; i < count; i = i + 1) {
+    pos += 4;
+    for (int i = 0; i < count; i++) {
         int nameLen = qsU32(content, pos);
         pos = pos + 4 + nameLen;
         int srcLen = qsU32(content, pos);
-        pos = pos + 4;
+        pos += 4;
         result.add(projSlice(content, pos, pos + srcLen));
-        pos = pos + srcLen;
+        pos += srcLen;
     }
     return result;
 }
@@ -263,7 +263,7 @@ string[] projWalk(string root, string relDir, string[] excludes) {
     relSep = "/";
     #off
     string[] names = folder.getFiles(dir);
-    for (int i = 0; i < names.length; i = i + 1) {
+    for (int i = 0; i < names.length; i++) {
         string name = names[i];
         string rel = name;
         if (relDir.length > 0) { rel = relDir + relSep + name; }
@@ -272,13 +272,13 @@ string[] projWalk(string root, string relDir, string[] excludes) {
         result.add(projJoin(root, rel));
     }
     string[] subdirs = folder.getFolders(dir);
-    for (int k = 0; k < subdirs.length; k = k + 1) {
+    for (int k = 0; k < subdirs.length; k++) {
         string subname = subdirs[k];
         string subrel = subname;
         if (relDir.length > 0) { subrel = relDir + relSep + subname; }
         if (projIsExcluded(subrel, excludes)) { continue; }
         string[] sub = projWalk(root, subrel, excludes);
-        for (int m = 0; m < sub.length; m = m + 1) {
+        for (int m = 0; m < sub.length; m++) {
             result.add(sub[m]);
         }
     }
@@ -298,19 +298,19 @@ string[] projAddEntry(string root, string entry, string[] excludes) {
 string projTrim(string text) {
     int start = 0;
     int end = text.length;
-    while (start < end && (text[start] == ' ' || text[start] == '\t' || text[start] == '\r' || text[start] == '\n')) { start = start + 1; }
-    while (end > start && (text[end - 1] == ' ' || text[end - 1] == '\t' || text[end - 1] == '\r' || text[end - 1] == '\n')) { end = end - 1; }
+    while (start < end && (text[start] == ' ' || text[start] == '\t' || text[start] == '\r' || text[start] == '\n')) { start++; }
+    while (end > start && (text[end - 1] == ' ' || text[end - 1] == '\t' || text[end - 1] == '\r' || text[end - 1] == '\n')) { end--; }
     return projSlice(text, start, end);
 }
 
 string projCollectionEscape(string value) {
     string result = "";
-    for (int i = 0; i < value.length; i = i + 1) {
+    for (int i = 0; i < value.length; i++) {
         char c = value[i];
-        if (c == '\\') { result = result + "\\\\"; }
-        elif (c == '"') { result = result + "\\\""; }
-        elif (c == '\t') { result = result + "\\t"; }
-        else { result = result + c; }
+        if (c == '\\') { result += "\\\\"; }
+        elif (c == '"') { result += "\\\""; }
+        elif (c == '\t') { result += "\\t"; }
+        else { result += c; }
     }
     return result;
 }
@@ -320,16 +320,16 @@ string projCollectionLiteral(string path) {
     string result = "[";
     bool first = true;
     int start = 0;
-    for (int i = 0; i <= content.length; i = i + 1) {
+    for (int i = 0; i <= content.length; i++) {
         bool atEnd = i == content.length;
         bool atLineEnd = false;
         if (!atEnd && content[i] == '\n') { atLineEnd = true; }
         if (atEnd || atLineEnd) {
             if (!atEnd || start < i) {
                 int end = i;
-                if (end > start && content[end - 1] == '\r') { end = end - 1; }
+                if (end > start && content[end - 1] == '\r') { end--; }
                 string value = projSlice(content, start, end);
-                if (!first) { result = result + ", "; }
+                if (!first) { result += ", "; }
                 first = false;
                 result = result + "\"" + projCollectionEscape(value) + "\"";
             }
@@ -350,14 +350,14 @@ string projExpandCollections(string source, string root, string collections) {
     int line = 1;
     while (cursor < source.length) {
         int end = cursor;
-        while (end < source.length && source[end] != '\n') { end = end + 1; }
+        while (end < source.length && source[end] != '\n') { end++; }
         string text = projSlice(source, cursor, end);
         int marker = projFind(text, "collects", 0);
         int comment = projFind(text, "//", 0);
         if (marker >= 0 && (comment < 0 || comment > marker)) {
             string prefix = projTrim(projSlice(text, 0, marker));
             int split = prefix.length - 1;
-            while (split >= 0 && (prefix[split] != ' ' && prefix[split] != '\t')) { split = split - 1; }
+            while (split >= 0 && (prefix[split] != ' ' && prefix[split] != '\t')) { split--; }
             if (split < 0 || projTrim(projSlice(prefix, 0, split)) != "string[]") {
                 projCollectionFail("invalid declaration", line);
             }
@@ -381,11 +381,11 @@ string projExpandCollections(string source, string root, string collections) {
             if (!fs.exists(fullPath)) { projCollectionFail(path, line); }
             result = result + prefix + " = " + projCollectionLiteral(fullPath) + projSlice(path, semi, path.length);
         } else {
-            result = result + text;
+            result += text;
         }
-        if (end < source.length) { result = result + '\n'; }
+        if (end < source.length) { result += '\n'; }
         cursor = end + 1;
-        line = line + 1;
+        line++;
     }
     return result;
 }
@@ -419,9 +419,9 @@ string loadProjectSource(string projectPath) {
     entryFrom = '\\';
     entrySep = "/";
     #off
-    for (int ei = 0; ei < entry.length; ei = ei + 1) {
-        if (entry[ei] == entryFrom) { entryPath = entryPath + entrySep; }
-        else { entryPath = entryPath + entry[ei]; }
+    for (int ei = 0; ei < entry.length; ei++) {
+        if (entry[ei] == entryFrom) { entryPath += entrySep; }
+        else { entryPath += entry[ei]; }
     }
     entryPath = projJoin(root, entryPath);
     if (!projVisited(visited, entryPath)) {
@@ -431,9 +431,9 @@ string loadProjectSource(string projectPath) {
     }
 
     if (sources.length > 0) {
-        for (int i = 0; i < sources.length; i = i + 1) {
+        for (int i = 0; i < sources.length; i++) {
             string[] got = projAddEntry(root, sources[i], excludes);
-            for (int k = 0; k < got.length; k = k + 1) {
+            for (int k = 0; k < got.length; k++) {
                 string p = got[k];
                 if (!projVisited(visited, p)) {
                     visited.add(p);
@@ -444,7 +444,7 @@ string loadProjectSource(string projectPath) {
         }
     } else {
         string[] got = projWalk(root, "", excludes);
-        for (int k = 0; k < got.length; k = k + 1) {
+        for (int k = 0; k < got.length; k++) {
             string p = got[k];
             if (!projVisited(visited, p)) {
                 visited.add(p);
@@ -455,7 +455,7 @@ string loadProjectSource(string projectPath) {
     }
 
     string body = "";
-    for (int k = 0; k < files.length; k = k + 1) {
+    for (int k = 0; k < files.length; k++) {
         // Read into a local first: a chained `x = x + f() + "lit"` concat
         // with the call in the middle miscompiles and corrupts x.
         string content = fs.readFile(files[k]);
@@ -467,13 +467,13 @@ string loadProjectSource(string projectPath) {
     // bundle and compiled alongside the project sources, so `import * from X;`
     // statements in the code resolve to the library's symbols.
     string[] imports = projManifestList(manifest, "imports");
-    for (int ki = 0; ki < imports.length; ki = ki + 1) {
+    for (int ki = 0; ki < imports.length; ki++) {
         string qsPath = projJoin(root, imports[ki]);
         string qsContent = fs.readFile(qsPath);
         if (qsContent.length > 0) {
             natNoteQsStems(qsContent);
             string[] libSources = qsModuleSources(qsContent);
-            for (int si = 0; si < libSources.length; si = si + 1) {
+            for (int si = 0; si < libSources.length; si++) {
                 // Bundle-origin markers: the driver's import validation
                 // attributes statements between them to the `.qs` library,
                 // whose custom-native imports always verify against the
@@ -498,8 +498,8 @@ string loadProjectSource(string projectPath) {
     if (name != "") { metadata = metadata + "const string APP_NAME = \"" + name + "\";\n"; }
     if (version != "") { metadata = metadata + "const string APP_VERSION = \"" + version + "\";\n"; }
     if (license != "") { metadata = metadata + "const string APP_LICENSE = \"" + license + "\";\n"; }
-    metadata = metadata + "const string LANG_VERSION = \"0.7.1\";\n";
-    metadata = metadata + "const string APP_COPYRIGHT = \"Edan M. © 2025\";\n";
+    metadata += "const string LANG_VERSION = \"0.7.1\";\n";
+    metadata += "const string APP_COPYRIGHT = \"Edan M. © 2025\";\n";
     string ptype = projManifestValue(manifest, "type");
     if (ptype == "" || ptype == "exe") { ptype = "console"; }
     metadata = metadata + "const string APP_TYPE = \"" + ptype + "\";\n";
@@ -589,9 +589,9 @@ string natUnquote(string value) {
         while (i < raw.length) {
             if (raw[i] == '\\' && i + 1 < raw.length) {
                 i++;
-                result = result + raw[i];
+                result += raw[i];
             } else {
-                result = result + raw[i];
+                result += raw[i];
             }
             i++;
         }
@@ -619,16 +619,16 @@ string natParseStrList(string value) {
             while (i < inner.length && inner[i] != q) {
                 if (inner[i] == '\\' && i + 1 < inner.length) {
                     i++;
-                    item = item + inner[i];
+                    item += inner[i];
                 } else {
-                    item = item + inner[i];
+                    item += inner[i];
                 }
                 i++;
             }
             i++;
         } else {
             while (i < inner.length && inner[i] != ',') {
-                item = item + inner[i];
+                item += inner[i];
                 i++;
             }
             item = projTrim(item);
@@ -731,16 +731,16 @@ void natNoteProjectFile(string path) {
 void natNoteQsStems(string content) {
     if (!qsIsBundle(content)) { return; }
     int pos = 6;
-    pos = pos + 4;
+    pos += 4;
     int metaLen = qsU32(content, pos);
     pos = pos + 4 + metaLen;
     int count = qsU32(content, pos);
-    pos = pos + 4;
+    pos += 4;
     for (int i = 0; i < count; i++) {
         int nameLen = qsU32(content, pos);
-        pos = pos + 4;
+        pos += 4;
         string filename = projSlice(content, pos, pos + nameLen);
-        pos = pos + nameLen;
+        pos += nameLen;
         int srcLen = qsU32(content, pos);
         pos = pos + 4 + srcLen;
         int last = -1;

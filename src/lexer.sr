@@ -28,7 +28,7 @@ class Lexer {
                 this.lineLens.add(current);
                 current = 0;
             } elif (c != '\r') {
-                current += 1;
+                current++;
             }
         }
         this.lineLens.add(current);
@@ -49,7 +49,7 @@ class Lexer {
     }
 
     private void recordLexError(string msg) {
-        this.lexErrors += 1;
+        this.lexErrors++;
         printline(msg);
     }
 
@@ -70,12 +70,12 @@ class Lexer {
     private char? advance() {
         if (this.pos >= this.src.length) { return null; }
         char c = this.src[this.pos];
-        this.pos += 1;
+        this.pos++;
         if (c == '\n') {
-            this.line += 1;
+            this.line++;
             this.col = 1;
         } else {
-            this.col += 1;
+            this.col++;
         }
         return c;
     }
@@ -104,11 +104,11 @@ class Lexer {
         while (this.pos < this.src.length && depth > 0) {
             char c = this.src[this.pos];
             if (c == '/' && this.pos + 1 < this.src.length && this.src[this.pos + 1] == '*') {
-                depth += 1;
+                depth++;
                 this.advance();
                 this.advance();
             } else if (c == '*' && this.pos + 1 < this.src.length && this.src[this.pos + 1] == '/') {
-                depth -= 1;
+                depth--;
                 this.advance();
                 this.advance();
             } else {
@@ -155,7 +155,7 @@ class Lexer {
                             if (dv < 0) { break; }
                             this.advance();
                             hv = hv * 16 + dv;
-                            nd = nd + 1;
+                            nd++;
                         }
                         if (nd > 0) {
                             char xc = char(hv);
@@ -212,7 +212,7 @@ class Lexer {
                             if (dv < 0) { break; }
                             this.advance();
                             hv = hv * 16 + dv;
-                            nd = nd + 1;
+                            nd++;
                         }
                         if (nd > 0) { ch = char(hv); } else { ch = esc; }
                     }

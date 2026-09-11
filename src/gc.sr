@@ -76,7 +76,7 @@ class GCState {
         } else {
             this.registry.add(v);
         }
-        this.registryCount = this.registryCount + 1;
+        this.registryCount++;
     }
 
     private void registerEnv(Env e) {
@@ -85,14 +85,14 @@ class GCState {
         } else {
             this.envRegistry.add(e);
         }
-        this.envRegistryCount = this.envRegistryCount + 1;
+        this.envRegistryCount++;
     }
 
     public Value acquireValue() {
-        this.allocs = this.allocs + 1;
+        this.allocs++;
         Value v;
         if (this.poolCount > 0) {
-            this.poolCount = this.poolCount - 1;
+            this.poolCount--;
             v = this.pool[this.poolCount];
             resetForPool(v);
             v.intVal = 0;
@@ -116,15 +116,15 @@ class GCState {
     }
 
     public Env acquireEnv(Env parent) {
-        this.envAllocs = this.envAllocs + 1;
+        this.envAllocs++;
         Env e;
         if (this.envPoolCount > 0) {
-            this.envPoolCount = this.envPoolCount - 1;
+            this.envPoolCount--;
             e = this.envPool[this.envPoolCount];
             // Reuse the environment's dictionary and name storage. Assigning
             // fresh `{}`/`[]` values here leaks their native backing buffers
             // because generated Silver storage is not individually freeable.
-            for (int i = 0; i < e.varNames.length; i = i + 1) {
+            for (int i = 0; i < e.varNames.length; i++) {
                 e.vars[e.varNames[i]] = makeNull();
             }
             e.parent = parent;
@@ -145,12 +145,12 @@ class GCState {
         } else {
             this.roots.add(v);
         }
-        this.rootCount = this.rootCount + 1;
+        this.rootCount++;
     }
 
     public void popRoot() {
         if (this.rootCount > 0) {
-            this.rootCount = this.rootCount - 1;
+            this.rootCount--;
         }
     }
 
@@ -163,12 +163,12 @@ class GCState {
         if (isMarked(v)) { return; }
         setMarked(v, true);
         if (v.tag == VAL_ARRAY || v.tag == VAL_TUPLE) {
-            for (int i = 0; i < v.arrVal.length; i = i + 1) {
+            for (int i = 0; i < v.arrVal.length; i++) {
                 this.markValue(v.arrVal[i]);
             }
         }
         if (v.tag == VAL_OBJECT || v.tag == VAL_CLASS_INST || v.tag == VAL_DICT) {
-            for (int i = 0; i < objValsLen(v); i = i + 1) {
+            for (int i = 0; i < objValsLen(v); i++) {
                 this.markValue(objValsGet(v, i));
             }
         }
@@ -177,7 +177,7 @@ class GCState {
     public void markEnv(Env e) {
         if (e.gcMark) { return; }
         e.gcMark = true;
-        for (int i = 0; i < e.varNames.length; i = i + 1) {
+        for (int i = 0; i < e.varNames.length; i++) {
             string k = e.varNames[i];
             if (e.vars.contains(k)) {
                 this.markValue(e.vars[k]);
@@ -195,7 +195,7 @@ class GCState {
     private void markRoots(Env rootEnv, Env globals) {
         this.markChain(rootEnv);
         this.markEnv(globals);
-        for (int i = 0; i < this.rootCount; i = i + 1) {
+        for (int i = 0; i < this.rootCount; i++) {
             this.markValue(this.roots[i]);
         }
         // Allocations made after a sweep starts are protected by the
@@ -232,7 +232,7 @@ class GCState {
 
     private void finishCollection() {
         int w = 0;
-        for (int i = 0; i < this.registryCount; i = i + 1) {
+        for (int i = 0; i < this.registryCount; i++) {
             Value v = this.registry[i];
             // Entries appended after sweepLimit were allocated during this
             // cycle. Keep them until the next cycle instead of racing them.
@@ -240,7 +240,7 @@ class GCState {
             if (keep) {
                 setMarked(v, false);
                 this.registry[w] = v;
-                w = w + 1;
+                w++;
             } else {
                 resetForPool(v);
                 if (this.poolCount < this.pool.length) {
@@ -248,19 +248,19 @@ class GCState {
                 } else {
                     this.pool.add(v);
                 }
-                this.poolCount = this.poolCount + 1;
+                this.poolCount++;
             }
         }
         this.registryCount = w;
 
         int ew = 0;
-        for (int i = 0; i < this.envRegistryCount; i = i + 1) {
+        for (int i = 0; i < this.envRegistryCount; i++) {
             Env e = this.envRegistry[i];
             bool keep = i >= this.envSweepLimit || e.gcMark;
             if (keep) {
                 e.gcMark = false;
                 this.envRegistry[ew] = e;
-                ew = ew + 1;
+                ew++;
             } else {
                 e.gcMark = false;
                 e.parent = null;
@@ -269,7 +269,7 @@ class GCState {
                 } else {
                     this.envPool.add(e);
                 }
-                this.envPoolCount = this.envPoolCount + 1;
+                this.envPoolCount++;
             }
         }
         this.envRegistryCount = ew;
@@ -280,20 +280,20 @@ class GCState {
         // slots. The estimate is refreshed at every completed cycle, not on
         // every allocation, because a Value's contents are set after acquire.
         int64 liveBytes = 0;
-        for (int i = 0; i < this.registryCount; i = i + 1) {
+        for (int i = 0; i < this.registryCount; i++) {
             Value v = this.registry[i];
             int64 bytes = 128;
             if (v.tag == VAL_STRING) { bytes = bytes + v.strVal.length.toInt64() * 2; }
-            if (v.tag == VAL_CHAR) { bytes = bytes + 2; }
+            if (v.tag == VAL_CHAR) { bytes += 2; }
             if (v.tag == VAL_ARRAY || v.tag == VAL_TUPLE) {
                 bytes = bytes + v.arrVal.length.toInt64() * 16;
             }
             if (v.tag == VAL_OBJECT || v.tag == VAL_CLASS_INST || v.tag == VAL_DICT) {
                 bytes = bytes + objValsLen(v).toInt64() * 48;
             }
-            liveBytes = liveBytes + bytes;
+            liveBytes += bytes;
         }
-        for (int i = 0; i < this.envRegistryCount; i = i + 1) {
+        for (int i = 0; i < this.envRegistryCount; i++) {
             Env e = this.envRegistry[i];
             liveBytes = liveBytes + 96 + e.varNames.length.toInt64() * 32;
         }
@@ -301,7 +301,7 @@ class GCState {
         if (liveBytes > this.peakBytes) { this.peakBytes = liveBytes; }
 
         this.lastEpoch = this.epoch;
-        this.epoch = this.epoch + 1;
+        this.epoch++;
         this.allocs = 0;
         this.envAllocs = 0;
         this.collecting = false;

@@ -452,7 +452,7 @@ class CacheSession {
             t.put(":");
             string hex = "";
             for (int i = 0; i < s.length; i++) {
-                hex = hex + icHexDigits(s[i] & 0xFF);
+                hex += icHexDigits(s[i] & 0xFF);
                 if (hex.length >= 64) {
                     t.put(hex);
                     hex = "";
@@ -473,7 +473,7 @@ class CacheSession {
         int pos = 0;
         string header = "";
         while (pos < text.length && text[pos] != '\n') {
-            header = header + text[pos];
+            header += text[pos];
             pos++;
         }
         pos++;
@@ -489,7 +489,7 @@ class CacheSession {
         for (int i = 0; i < count && pos < text.length; i++) {
             string line = "";
             while (pos < text.length && text[pos] != '\n') {
-                line = line + text[pos];
+                line += text[pos];
                 pos++;
             }
             pos++;
@@ -784,9 +784,9 @@ public string icSanitize(string name) {
         char c = name[i];
         if (c == '<' || c == '>' || c == ':' || c == '"' || c == '/'
             || c == '\\' || c == '|' || c == '?' || c == '*') {
-            r = r + '_';
+            r += '_';
         } else {
-            r = r + c;
+            r += c;
         }
     }
     return r;
@@ -795,8 +795,8 @@ public string icSanitize(string name) {
 public string icNormalizeSlashes(string path) {
     string r = "";
     for (int i = 0; i < path.length; i++) {
-        if (path[i] == '\\') { r = r + '/'; }
-        else { r = r + path[i]; }
+        if (path[i] == '\\') { r += '/'; }
+        else { r += path[i]; }
     }
     return r;
 }
@@ -811,12 +811,12 @@ public string icReplaceAll(string s, string what, string with) {
                 if (s[i + j] != what[j]) { hit = false; break; }
             }
             if (hit) {
-                r = r + with;
+                r += with;
                 i += what.length;
                 continue;
             }
         }
-        r = r + s[i];
+        r += s[i];
         i++;
     }
     return r;
@@ -863,9 +863,9 @@ public void icEnsureDirTree(string dir) {
         char c = dir[i];
         if (c == '\\' || c == '/') {
             if (curL.length >= 2) { mkdir(curL, 493); }
-            curL = curL + '/';
+            curL += '/';
         } else {
-            curL = curL + c;
+            curL += c;
         }
     }
     if (curL.length >= 2) { mkdir(curL, 493); }
@@ -876,9 +876,9 @@ public void icEnsureDirTree(string dir) {
         char c = dir[i];
         if (c == '\\' || c == '/') {
             if (curL.length >= 2) { mkdir(curL, 493); }
-            curL = curL + '/';
+            curL += '/';
         } else {
-            curL = curL + c;
+            curL += c;
         }
     }
     if (curL.length >= 2) { mkdir(curL, 493); }
@@ -893,9 +893,9 @@ public void icEnsureDirTree(string dir) {
                 CreateDirectoryA(cur, null);
                 #off
             }
-            cur = cur + '\\';
+            cur += '\\';
         } else {
-            cur = cur + c;
+            cur += c;
         }
     }
     if (cur.length >= 2) {
@@ -907,7 +907,7 @@ public void icEnsureDirTree(string dir) {
 
 public string icSliceRange(string s, int start, int end) {
     string r = "";
-    for (int i = start; i < end && i < s.length; i++) { r = r + s[i]; }
+    for (int i = start; i < end && i < s.length; i++) { r += s[i]; }
     return r;
 }
 
@@ -1183,7 +1183,7 @@ private string icHexDigits(int v) {
     string r = "";
     for (int i = 0; i < 2; i++) {
         int nib = (v >> ((1 - i) * 4)) & 0xF;
-        r = r + digits[nib];
+        r += digits[nib];
     }
     return r;
 }
@@ -1208,7 +1208,7 @@ private string icTokenLine(Token t) {
         string s = t.strVal;
         string hex = "";
         for (int i = 0; i < s.length; i++) {
-            hex = hex + icHexDigits(s[i] & 0xFF);
+            hex += icHexDigits(s[i] & 0xFF);
         }
         return head + " " + s.length.toString() + ":" + hex + "\n";
     }
@@ -1245,7 +1245,7 @@ private Token? icTokenFromLine(string line) {
             int lo = icHexVal(hex[b * 2 + 1]);
             if (hi < 0 || lo < 0) { return null; }
             char pb = char(hi * 16 + lo);
-            payload = payload + pb;
+            payload += pb;
         }
     }
     Token t = icTokenFromParts(tag, payload, iv, cv);
@@ -1263,12 +1263,12 @@ private string icIntToStr(int64 v) {
     string rev = "";
     while (mag > 0) {
         char digit = char(48 + (mag % 10));
-        rev = rev + digit;
+        rev += digit;
         mag = mag / 10;
     }
     string r = "";
     for (int i = rev.length - 1; i >= 0; i--) {
-        r = r + rev[i];
+        r += rev[i];
     }
     if (neg) { r = "-" + r; }
     return r;

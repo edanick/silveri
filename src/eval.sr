@@ -276,7 +276,7 @@ class Evaluator {
         // infinite, but after a bounded iteration count they yield 1 ms so they
         // cannot monopolize a CPU core. The counter is per evaluator and reset
         // explicitly (compound assignment on object fields is not safe here).
-        this.loopTicks = this.loopTicks + 1;
+        this.loopTicks++;
         if (this.loopTicks >= 256) {
             this.loopTicks = 0;
             #on WINDOWS
@@ -1226,7 +1226,7 @@ class Evaluator {
         int rooted = 0;
         for (int i = 0; i < args.length; i++) {
             GC.pushRoot(args[i]);
-            rooted += 1;
+            rooted++;
         }
         Node params = fn.child(0);
         Env fnEnv = this.globals.push();
@@ -1266,7 +1266,7 @@ class Evaluator {
         int rooted = 0;
         for (int i = 0; i < args.length; i++) {
             GC.pushRoot(args[i]);
-            rooted += 1;
+            rooted++;
         }
         Node params = fn.child(0);
         Env fnEnv = this.globals.push();
@@ -1462,7 +1462,7 @@ class Evaluator {
             // evaluation binds a fresh callable so each invocation re-executes
             // the body with fresh locals.
             string name = "__anon_" + this.anonCounter.toString();
-            this.anonCounter = this.anonCounter + 1;
+            this.anonCounter++;
             this.anonBodies[name] = node.child(0);
             return makeFunc(name);
         }
@@ -1547,7 +1547,7 @@ class Evaluator {
             int64 start = lhs.toInt();
             int64 end = rhs.toInt();
             Value[] items = [];
-            for (int64 i = start; i < end; i += 1) {
+            for (int64 i = start; i < end; i++) {
                 items.add(makeInt(i));
             }
             return makeArray(items);
@@ -1557,7 +1557,7 @@ class Evaluator {
             string s = lhs.toString();
             int64 n = rhs.toInt();
             string result = "";
-            for (int64 i = 0; i < n; i += 1) { result += s; }
+            for (int64 i = 0; i < n; i++) { result += s; }
             return makeString(result);
         }
 
@@ -1781,7 +1781,7 @@ mirrorPut(obj, target.name, val);
             if (fn.childCount() >= 1 && this.paramsAcceptArity(fn.child(0), nargs)) {
                 best = fn;
             }
-            k += 1;
+            k++;
         }
         return best;
     }
@@ -1802,7 +1802,7 @@ mirrorPut(obj, target.name, val);
         int pc = params.childCount() - start;
         int minArgs = 0;
         for (int k2 = start; k2 < params.childCount(); k2++) {
-            if (params.child(k2).childCount() == 0) { minArgs += 1; }
+            if (params.child(k2).childCount() == 0) { minArgs++; }
         }
         return nargs >= minArgs && nargs <= pc;
     }
@@ -1821,7 +1821,7 @@ mirrorPut(obj, target.name, val);
                 refNames.add("");
             }
             GC.pushRoot(a);
-            rooted += 1;
+            rooted++;
         }
         // VALUE_EXCEPTION.md — remember the first argument's source position
         // so runtime diagnostics can point at the offending value.
@@ -1981,7 +1981,7 @@ mirrorPut(obj, target.name, val);
             Value a = this.evalExpr(node.child(i), env);
             args.add(a);
             GC.pushRoot(a);
-            rooted += 1;
+            rooted++;
         }
         // VALUE_EXCEPTION.md — remember the first argument's source position
         // so runtime diagnostics can point at the offending value.
@@ -2127,11 +2127,11 @@ mirrorPut(obj, target.name, val);
             if (arg == null) { continue; }
             int af = valueTagFamilyRT(arg);
             if (af < 0 || af == pf) { continue; }
-            if (count > 0) { segs = segs + ", and "; }
+            if (count > 0) { segs += ", and "; }
             segs = segs + "line " + argNode.line.toString() + ", column " + argNode.col.toString()
                 + " for \"" + param.name + "\" parameter expected " + articleRT(param.typeHint)
                 + " got " + articleRT(valueTypeNameRT(arg));
-            count += 1;
+            count++;
         }
         if (count > 0) {
             this.throwException("TypeException", "wrong value type at " + segs);
@@ -2258,7 +2258,7 @@ mirrorPut(obj, target.name, val);
             if (s < 0) { s = 0; }
             if (e > collection.arrVal.length) { e = collection.arrVal.length; }
             Value[] result = [];
-            for (int i = s; i < e; i += 1) {
+            for (int i = s; i < e; i++) {
                 result.add(collection.arrVal[i]);
             }
             return makeArray(result);
@@ -2368,7 +2368,7 @@ mirrorPut(obj, target.name, val);
             Value a = this.evalExpr(node.child(i), env);
             args.add(a);
             GC.pushRoot(a);
-            rooted += 1;
+            rooted++;
         }
         Value result = makeNull();
         if (node.name == "byte" && node.childCount() == 1) {
@@ -2378,7 +2378,7 @@ mirrorPut(obj, target.name, val);
                 exit(1);
             }
             Value[] bytes = [];
-            for (int i = 0; i < count; i += 1) {
+            for (int i = 0; i < count; i++) {
                 bytes.add(makeByte(0));
             }
             result = makeArray(bytes);
@@ -2421,7 +2421,7 @@ mirrorPut(obj, target.name, val);
         int rooted = 1;
         for (int i = 0; i < args.length; i++) {
             GC.pushRoot(args[i]);
-            rooted += 1;
+            rooted++;
         }
         // Collect the inheritance chain leaf -> root (`class Foo : Parent`).
         string[] chain = [];
@@ -2431,7 +2431,7 @@ mirrorPut(obj, target.name, val);
             chain.add(cur);
             Node pn = this.classes[cur];
             cur = pn.parentClass;
-            guard += 1;
+            guard++;
         }
         // Initialize fields root -> leaf so inherited fields exist before the
         // constructor runs. A subclass field that redeclares a parent field
@@ -2519,7 +2519,7 @@ mirrorPut(obj, target.name, val);
                 }
             }
             cur = classDef.parentClass;
-            guard += 1;
+            guard++;
         }
         return false;
     }
@@ -2539,7 +2539,7 @@ mirrorPut(obj, target.name, val);
                 }
             }
             cur = classDef.parentClass;
-            guard += 1;
+            guard++;
         }
         return false;
     }
@@ -2554,7 +2554,7 @@ mirrorPut(obj, target.name, val);
             if (this.functions.contains(key)) { return key; }
             Node pc = this.classes[cur];
             cur = pc.parentClass;
-            guard += 1;
+            guard++;
         }
         return "";
     }
@@ -2570,14 +2570,14 @@ mirrorPut(obj, target.name, val);
                     foreach (Value v in spread.arrVal) {
                         items.add(v);
                         GC.pushRoot(v);
-                        rooted += 1;
+                        rooted++;
                     }
                 }
             } else {
                 Value v = this.evalExpr(child, env);
                 items.add(v);
                 GC.pushRoot(v);
-                rooted += 1;
+                rooted++;
             }
         }
         Value result = makeArray(items);
@@ -2599,7 +2599,7 @@ mirrorPut(obj, target.name, val);
                 Value val = this.evalExpr(pair.child(1), env);
                 dictSet(entries, evals, ekeys, key.toString(), val);
                 GC.pushRoot(val);
-                rooted += 1;
+                rooted++;
             }
         }
         Value result = makeDict(entries);
@@ -2617,7 +2617,7 @@ mirrorPut(obj, target.name, val);
             Value v = this.evalExpr(node.child(i), env);
             items.add(v);
             GC.pushRoot(v);
-            rooted += 1;
+            rooted++;
         }
         Value result = makeTuple(items);
         for (int i = 0; i < rooted; i++) {
@@ -2636,7 +2636,7 @@ mirrorPut(obj, target.name, val);
             Value v = this.evalExpr(field.child(0), env);
             dictSet(fields, fvals, fkeys, field.name, v);
             GC.pushRoot(v);
-            rooted += 1;
+            rooted++;
         }
         Value result = makeObject(fields, "");
         setObjVals(result, fvals, fkeys);
@@ -2896,7 +2896,7 @@ mirrorPut(obj, target.name, val);
             int64 end = this.evalExpr(stmt.child(1), env).toInt();
             Env forEnv = env.push();
             forEnv.define(stmt.name, makeInt(start));
-            for (int64 i = start; i < end; i += 1) {
+            for (int64 i = start; i < end; i++) {
                 if (this.hasReturned || this.hasThrown) { break; }
                 forEnv.set(stmt.name, makeInt(i));
                 this.execBlockInto(stmt.child(2), forEnv);

@@ -26,8 +26,8 @@ import cache;
 string dottedModulePath(string name, string sep) {
     string out = "";
     for (int i = 0; i < name.length; i++) {
-        if (name[i] == '.') { out = out + sep; }
-        else { out = out + name[i]; }
+        if (name[i] == '.') { out += sep; }
+        else { out += name[i]; }
     }
     return out;
 }
@@ -82,7 +82,7 @@ int findCI(string text, string needle, int start) {
         int j = 0;
         while (j < n.length) {
             if (t[i + j] != n[j]) { ok = false; }
-            j += 1;
+            j++;
         }
         if (ok) { result = i; break; }
     }
@@ -91,7 +91,7 @@ int findCI(string text, string needle, int start) {
 
 private string stdRegionSlice(string s, int start, int end) {
     string r = "";
-    for (int i = start; i < end; i++) { r = r + s[i]; }
+    for (int i = start; i < end; i++) { r += s[i]; }
     return r;
 }
 
@@ -186,23 +186,23 @@ string filterStdRegions(string src, string target) {
         if (nl >= 0) { end = nl; }
         // Content excludes a trailing CR of CRLF terminators.
         int contentEnd = end;
-        if (contentEnd > i && src[contentEnd - 1] == '\r') { contentEnd = contentEnd - 1; }
+        if (contentEnd > i && src[contentEnd - 1] == '\r') { contentEnd--; }
 
         bool drop = false;
         // Own-line rule: first non-whitespace token decides (DOCS/260), so
         // comments mentioning `#on` in prose pass through untouched.
         int p = i;
-        while (p < contentEnd && (src[p] == ' ' || src[p] == '\t')) { p = p + 1; }
+        while (p < contentEnd && (src[p] == ' ' || src[p] == '\t')) { p++; }
         if (p < contentEnd && src[p] == '#') {
             int wordEnd = p + 1;
-            while (wordEnd < contentEnd && src[wordEnd] >= 'a' && src[wordEnd] <= 'z') { wordEnd = wordEnd + 1; }
+            while (wordEnd < contentEnd && src[wordEnd] >= 'a' && src[wordEnd] <= 'z') { wordEnd++; }
             string word = stdRegionSlice(src, p + 1, wordEnd);
             if (word == "on") {
                 drop = true;
                 int nameStart = wordEnd;
-                while (nameStart < contentEnd && (src[nameStart] == ' ' || src[nameStart] == '\t')) { nameStart = nameStart + 1; }
+                while (nameStart < contentEnd && (src[nameStart] == ' ' || src[nameStart] == '\t')) { nameStart++; }
                 int nameEnd = nameStart;
-                while (nameEnd < contentEnd && src[nameEnd] != ' ' && src[nameEnd] != '\t') { nameEnd = nameEnd + 1; }
+                while (nameEnd < contentEnd && src[nameEnd] != ' ' && src[nameEnd] != '\t') { nameEnd++; }
                 string osName = stdRegionSlice(src, nameStart, nameEnd);
                 if (mode == 0) {
                     mode = 1;
@@ -265,17 +265,17 @@ string filterStdRegions(string src, string target) {
     int copyStart = 0;
     for (int d = 0; d < dropAt.length; d++) {
         if (dropAt[d] > copyStart) {
-            result = result + stdRegionSlice(src, copyStart, dropAt[d]);
+            result += stdRegionSlice(src, copyStart, dropAt[d]);
         }
         if (dropNl[d] >= 0) {
-            if (dropCr[d] == 1) { result = result + "\r\n"; }
-            else { result = result + "\n"; }
+            if (dropCr[d] == 1) { result += "\r\n"; }
+            else { result += "\n"; }
         }
         if (dropNl[d] >= 0) { copyStart = dropNl[d] + 1; }
         else { copyStart = src.length; }
     }
     if (copyStart < src.length) {
-        result = result + stdRegionSlice(src, copyStart, src.length);
+        result += stdRegionSlice(src, copyStart, src.length);
     }
     return result;
 }
@@ -840,7 +840,7 @@ int[] diagSourceLoc(string src, int off) {
     int line = 1;
     int lineStart = 0;
     for (int i = 0; i < off; i++) {
-        if (src[i] == '\n') { line += 1; lineStart = i + 1; }
+        if (src[i] == '\n') { line++; lineStart = i + 1; }
     }
     int[] loc = [];
     loc.add(line);
@@ -880,13 +880,13 @@ string resolveImports(string source, string inputFile, int[] prependLen, string 
         }
         if (semi < 0) { break; }
         int nameStart = importPos + 13;
-        while (nameStart < semi && source[nameStart] == ' ') { nameStart = nameStart + 1; }
+        while (nameStart < semi && source[nameStart] == ' ') { nameStart++; }
         int nameEnd = nameStart;
         // Dotted module names (`mylib.sub`) read whole, mirroring the
         // compilers' projectImportModule; native dotted sources are skipped
         // below before any file probe.
         while (nameEnd < semi && ((source[nameEnd] >= 'a' && source[nameEnd] <= 'z') || (source[nameEnd] >= 'A' && source[nameEnd] <= 'Z') || (source[nameEnd] >= '0' && source[nameEnd] <= '9') || source[nameEnd] == '_' || source[nameEnd] == '.')) {
-            nameEnd = nameEnd + 1;
+            nameEnd++;
         }
         string module = "";
         for (int mi = nameStart; mi < nameEnd; mi++) {
@@ -1042,7 +1042,7 @@ void main() {
     bool cacheBytecode = false;
     string osOverride = "";
 
-    for (int i = 1; i < args.length; i += 1) {
+    for (int i = 1; i < args.length; i++) {
         string arg = args[i];
         if (cli.isFlag(arg, helpNames)) {
             printHelp();
@@ -1065,13 +1065,13 @@ void main() {
             string v = cli.valueAfter(args, i);
             if (v.toLower() == "windows") {
                 osOverride = "WINDOWS";
-                i += 1;
+                i++;
             } elif (v.toLower() == "linux") {
                 osOverride = "LINUX";
-                i += 1;
+                i++;
             } elif (v.toLower() == "mac") {
                 osOverride = "MAC";
-                i += 1;
+                i++;
             } else {
                 printline("Error: --os expects one of windows, linux, mac (WINDOWS, LINUX, MAC also accepted), got '" + v + "'");
                 exit(1);
@@ -1080,7 +1080,7 @@ void main() {
             string v = cli.valueAfter(args, i);
             if (v != "") {
                 filename = v;
-                i += 1;
+                i++;
             } else {
                 printline("Error: -i requires a filename");
                 exit(1);
@@ -1091,7 +1091,7 @@ void main() {
             // compiled output file.
             string v = cli.valueAfter(args, i);
             if (v != "") {
-                i += 1;
+                i++;
             } else {
                 printline("Error: -o requires a filename");
                 exit(1);
@@ -1188,7 +1188,7 @@ void main() {
                 lineLens.add(current);
                 current = 0;
             } elif (c != '\r') {
-                current += 1;
+                current++;
             }
         }
         lineLens.add(current);

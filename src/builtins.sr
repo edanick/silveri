@@ -50,8 +50,8 @@ class BuiltinMethods {
     // relying on the compiler's throwing toInt64 builtin.
     private static bool hasLeadingDigits(string s) {
         int i = 0;
-        while (i < s.length && (s[i] == ' ' || s[i] == '\t')) { i += 1; }
-        if (i < s.length && (s[i] == '-' || s[i] == '+')) { i += 1; }
+        while (i < s.length && (s[i] == ' ' || s[i] == '\t')) { i++; }
+        if (i < s.length && (s[i] == '-' || s[i] == '+')) { i++; }
         return i < s.length && s[i] >= '0' && s[i] <= '9';
     }
 
@@ -61,12 +61,12 @@ class BuiltinMethods {
     private static bool stringIsNumericRT(string s, bool wantInt) {
         int start = 0;
         int end = s.length;
-        while (start < end && (s[start] == ' ' || s[start] == '\t')) { start += 1; }
-        while (end > start && (s[end - 1] == ' ' || s[end - 1] == '\t')) { end -= 1; }
+        while (start < end && (s[start] == ' ' || s[start] == '\t')) { start++; }
+        while (end > start && (s[end - 1] == ' ' || s[end - 1] == '\t')) { end--; }
         int len = end - start;
         if (len <= 0) { return false; }
         int i = start;
-        if (s[i] == '+' || s[i] == '-') { i += 1; }
+        if (s[i] == '+' || s[i] == '-') { i++; }
         if (i >= end) { return false; }
         bool sawDigit = false;
         bool sawDot = false;
@@ -77,11 +77,11 @@ class BuiltinMethods {
             elif (c == '.' && !wantInt && !sawDot && !sawExp) { sawDot = true; }
             elif ((c == 'e' || c == 'E') && !wantInt && sawDigit && !sawExp) {
                 sawExp = true;
-                if (i + 1 < end && (s[i + 1] == '+' || s[i + 1] == '-')) { i += 1; }
+                if (i + 1 < end && (s[i + 1] == '+' || s[i + 1] == '-')) { i++; }
                 if (i + 1 >= end) { return false; }
             }
             else { return false; }
-            i += 1;
+            i++;
         }
         return sawDigit;
     }
@@ -392,16 +392,16 @@ class BuiltinMethods {
         }
         if (method == "reverse") {
             Value[] result = [];
-            for (int i = arr.arrVal.length - 1; i >= 0; i -= 1) {
+            for (int i = arr.arrVal.length - 1; i >= 0; i--) {
                 result.add(arr.arrVal[i]);
             }
             return makeArray(result);
         }
         if (method == "unique" || method == "distinct") {
             Value[] result = [];
-            for (int i = 0; i < arr.arrVal.length; i += 1) {
+            for (int i = 0; i < arr.arrVal.length; i++) {
                 bool seen = false;
-                for (int j = 0; j < result.length; j += 1) {
+                for (int j = 0; j < result.length; j++) {
                     if (result[j].equals(arr.arrVal[i])) { seen = true; break; }
                 }
                 if (!seen) { result.add(arr.arrVal[i]); }
@@ -417,7 +417,7 @@ class BuiltinMethods {
                 int oldLen = arr.arrVal.length;
                 Value last = arr.arrVal[oldLen - 1];
                 Value[] remaining = [];
-                for (int i = 0; i < oldLen - 1; i = i + 1) {
+                for (int i = 0; i < oldLen - 1; i++) {
                     remaining.add(arr.arrVal[i]);
                 }
                 arr.arrVal = remaining;
@@ -586,7 +586,7 @@ class BuiltinMethods {
             if (args.length < 1) { return makeInt(arr.arrVal.length.toInt64()); }
             int c = 0;
             for (int i = 0; i < arr.arrVal.length; i++) {
-                if (arr.arrVal[i].equals(args[0])) { c += 1; }
+                if (arr.arrVal[i].equals(args[0])) { c++; }
             }
             return makeInt(c.toInt64());
         }
@@ -786,8 +786,8 @@ class BuiltinMethods {
                     for (int i = 0; i < a.length; i++) {
                         int ca = a[i];
                         int cb = b[i];
-                        if (ca >= 'A' && ca <= 'Z') { ca = ca + 32; }
-                        if (cb >= 'A' && cb <= 'Z') { cb = cb + 32; }
+                        if (ca >= 'A' && ca <= 'Z') { ca += 32; }
+                        if (cb >= 'A' && cb <= 'Z') { cb += 32; }
                         if (ca != cb) { return makeBool(false); }
                     }
                     return makeBool(true);
@@ -1626,7 +1626,7 @@ class BuiltinMethods {
                 // user32 calls inside the region.
                 if (args.length > 0) {
                     string text = args[0].strVal;
-                    for (int i = 0; i < text.length; i = i + 1) {
+                    for (int i = 0; i < text.length; i++) {
                         string one = "";
                         one += text[i];
                         string ch = one;
@@ -3422,7 +3422,7 @@ float64 mathLnF(float64 x) {
     float64 y = (x - 1.0) / (x + 1.0);
     float64 r = 0.0;
     float64 term = y;
-    for (int i = 1; i < 100; i = i + 2) {
+    for (int i = 1; i < 100; i += 2) {
         r = r + term / float64(i);
         if (mathAbsF(term / float64(i)) < 1e-15) { break; }
         term = term * (y * y);
@@ -3435,7 +3435,7 @@ float64 mathExpF(float64 x) {
     float64 term = 1.0;
     for (int i = 1; i <= 30; i++) {
         term = term * (x / float64(i));
-        r = r + term;
+        r += term;
     }
     return r;
 }
@@ -3447,7 +3447,7 @@ float64 mathExpHelperF(float64 base, float64 exp, int terms) {
     float64 term = 1.0;
     for (int i = 1; i <= terms; i++) {
         term = term * (x / float64(i));
-        r = r + term;
+        r += term;
     }
     return r;
 }
@@ -3475,7 +3475,7 @@ float64 mathSinF(float64 x) {
     for (int i = 0; i < 15; i++) {
         int n = 2 * i + 1;
         float64 term = mathPowF(x, float64(n)) / mathFactF(n);
-        if (sign > 0) { r = r + term; } else { r = r - term; }
+        if (sign > 0) { r += term; } else { r -= term; }
         sign = -sign;
     }
     return r;
@@ -3487,7 +3487,7 @@ float64 mathCosF(float64 x) {
     for (int i = 0; i < 15; i++) {
         int n = 2 * i;
         float64 term = mathPowF(x, float64(n)) / mathFactF(n);
-        if (sign > 0) { r = r + term; } else { r = r - term; }
+        if (sign > 0) { r += term; } else { r -= term; }
         sign = -sign;
     }
     return r;
@@ -3546,7 +3546,7 @@ class MathEvalParser {
         while (this.pos < this.src.length) {
             char c = this.src[this.pos];
             if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
-                this.pos = this.pos + 1;
+                this.pos++;
             } else {
                 break;
             }
@@ -3572,27 +3572,27 @@ class MathEvalParser {
             this.skipWs();
             char c = this.peek();
             if (c == '=' && this.pos + 1 < this.src.length && this.src[this.pos + 1] == '=') {
-                this.pos = this.pos + 2;
+                this.pos += 2;
                 int right = this.parseAdd();
                 if (left == right) { left = 1; } else { left = 0; }
             } elif (c == '!' && this.pos + 1 < this.src.length && this.src[this.pos + 1] == '=') {
-                this.pos = this.pos + 2;
+                this.pos += 2;
                 int right = this.parseAdd();
                 if (left != right) { left = 1; } else { left = 0; }
             } elif (c == '<' && this.pos + 1 < this.src.length && this.src[this.pos + 1] == '=') {
-                this.pos = this.pos + 2;
+                this.pos += 2;
                 int right = this.parseAdd();
                 if (left <= right) { left = 1; } else { left = 0; }
             } elif (c == '>' && this.pos + 1 < this.src.length && this.src[this.pos + 1] == '=') {
-                this.pos = this.pos + 2;
+                this.pos += 2;
                 int right = this.parseAdd();
                 if (left >= right) { left = 1; } else { left = 0; }
             } elif (c == '<') {
-                this.pos = this.pos + 1;
+                this.pos++;
                 int right = this.parseAdd();
                 if (left < right) { left = 1; } else { left = 0; }
             } elif (c == '>') {
-                this.pos = this.pos + 1;
+                this.pos++;
                 int right = this.parseAdd();
                 if (left > right) { left = 1; } else { left = 0; }
             } else {
@@ -3607,13 +3607,13 @@ class MathEvalParser {
             this.skipWs();
             char c = this.peek();
             if (c == '+') {
-                this.pos = this.pos + 1;
+                this.pos++;
                 int right = this.parseMul();
-                left = left + right;
+                left += right;
             } elif (c == '-') {
-                this.pos = this.pos + 1;
+                this.pos++;
                 int right = this.parseMul();
-                left = left - right;
+                left -= right;
             } else {
                 return left;
             }
@@ -3626,15 +3626,15 @@ class MathEvalParser {
             this.skipWs();
             char c = this.peek();
             if (c == '*') {
-                this.pos = this.pos + 1;
+                this.pos++;
                 int right = this.parseUnary();
                 left = left * right;
             } elif (c == '/') {
-                this.pos = this.pos + 1;
+                this.pos++;
                 int right = this.parseUnary();
                 left = left / right;
             } elif (c == '%') {
-                this.pos = this.pos + 1;
+                this.pos++;
                 int right = this.parseUnary();
                 left = left % right;
             } else {
@@ -3647,11 +3647,11 @@ class MathEvalParser {
         this.skipWs();
         char c = this.peek();
         if (c == '-') {
-            this.pos = this.pos + 1;
+            this.pos++;
             return 0 - this.parseUnary();
         }
         if (c == '+') {
-            this.pos = this.pos + 1;
+            this.pos++;
             return this.parseUnary();
         }
         return this.parsePrimary();
@@ -3661,11 +3661,11 @@ class MathEvalParser {
         this.skipWs();
         char c = this.peek();
         if (c == '(') {
-            this.pos = this.pos + 1;
+            this.pos++;
             int value = this.parseCompare();
             this.skipWs();
             if (this.peek() == ')') {
-                this.pos = this.pos + 1;
+                this.pos++;
                 return value;
             }
             throw 1;
@@ -3676,7 +3676,7 @@ class MathEvalParser {
                 char d = this.src[this.pos];
                 if (d >= '0' && d <= '9') {
                     value = value * 10 + (d - '0');
-                    this.pos = this.pos + 1;
+                    this.pos++;
                 } else {
                     break;
                 }
