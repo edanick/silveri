@@ -39,12 +39,12 @@ silveri hello.sr
 
 #### Windows
 
-1. Create the folder `%LocalAppData%\Silver\bin`.
-2. Copy `silveri.exe` into it.
+1. Create the folder `C:\bin`.
+2. Download or copy `silveri.exe` into it.
 3. Add it to your user `PATH` (reopen the terminal afterwards):
 
 ```powershell
-setx PATH "$env:PATH;$env:LocalAppData\Silver\bin"
+setx PATH "$env:PATH;C:\bin"
 ```
 
 4. Verify with `silveri --version`.
