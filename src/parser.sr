@@ -662,7 +662,23 @@ private Node? parseItem() {
             // Look ahead to see if this is a named type decl or an expression statement
             int saved = this.pos;
             string first = this.expectIdent();
+            bool namedDecl = false;
             if (this.check(TK_IDENT) || this.check(TK_MUT)) {
+                namedDecl = true;
+            } else if (this.check(TK_LBRACKET)) {
+                // Array-typed named declaration (`byte[] buf`, `byte[] f()`):
+                // an ident type followed by `[]` pairs and then the declared
+                // name. Anything else (`a[0]`, `a[]` without a name) stays an
+                // expression statement exactly as before.
+                int probe = this.pos;
+                while (probe + 1 < this.tokens.length && this.tokens[probe].kind == TK_LBRACKET && this.tokens[probe + 1].kind == TK_RBRACKET) {
+                    probe += 2;
+                }
+                if (probe > this.pos && probe < this.tokens.length && this.tokens[probe].kind == TK_IDENT) {
+                    namedDecl = true;
+                }
+            }
+            if (namedDecl) {
                 this.pos = saved;
                 Node? result = this.parseNamedTypeDecl();
                 return result ?? null;
@@ -1342,6 +1358,14 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
     private Node parseNamedTypeDecl() {
         int ln = this.line(); int c = this.col();
         string typeName = this.expectIdent();
+        // Array-typed declarations headed by a named (identifier-lexed) type
+        // (`byte[] buf = ...`, `byte[] build() { ... }`): consume the `[]`
+        // suffixes here so they behave exactly like keyword-lexed ones
+        // (`int[]`), which parseTypeStr already handles.
+        while (this.check(TK_LBRACKET) && this.pos + 1 < this.tokens.length && this.tokens[this.pos + 1].kind == TK_RBRACKET) {
+            this.advance(); this.advance();
+            typeName += "[]";
+        }
         bool isMut = false;
         if (this.check(TK_MUT)) { this.advance(); isMut = true; }
         string name = this.expectIdent();
@@ -2375,12 +2399,16 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
                 return new Node(ND_NULL_LIT, ln, c);
             }
             // C-style cast `(type) expr` (DOCS/113) when a type keyword follows
-            // the opening paren.
+            // the opening paren. A `(` directly after the keyword can never
+            // be a cast (a cast needs `)` there) — it is a conversion call
+            // inside a parenthesized expression (`(int(c) - 48)`), so fall
+            // through to the grouping rule instead of erroring.
             if (this.pos + 1 < this.tokens.length) {
                 TokenKind k2 = this.tokens[this.pos + 1].kind;
-                if (k2 == TK_INT || k2 == TK_INT32 || k2 == TK_INT64 || k2 == TK_UINT
+                bool callShape = this.pos + 2 < this.tokens.length && this.tokens[this.pos + 2].kind == TK_LPAREN;
+                if (!callShape && (k2 == TK_INT || k2 == TK_INT32 || k2 == TK_INT64 || k2 == TK_UINT
                     || k2 == TK_FLOAT || k2 == TK_FLOAT64 || k2 == TK_DOUBLE
-                    || k2 == TK_BOOL || k2 == TK_CHAR || k2 == TK_BYTE || k2 == TK_STRING) {
+                    || k2 == TK_BOOL || k2 == TK_CHAR || k2 == TK_BYTE || k2 == TK_STRING)) {
                     this.advance();
                     string castType = this.parseTypeStr();
                     this.expect(TK_RPAREN);
@@ -3471,7 +3499,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             || fn == "send" || fn == "recv"
             || fn == "getuid" || fn == "setsockopt"
             || fn == "getaddrinfo" || fn == "freeaddrinfo"
-            || fn == "memcpy") { return "libc.so.6"; }
+            || fn == "getrandom" || fn == "memcpy") { return "libc.so.6"; }
         return "";
     }
 

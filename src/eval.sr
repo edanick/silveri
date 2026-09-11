@@ -705,6 +705,7 @@ class Evaluator {
             fns.add("setsockopt");
             fns.add("getaddrinfo");
             fns.add("freeaddrinfo");
+            fns.add("getrandom");
             fns.add("memcpy");
             for (int i = 0; i < fns.length; i++) {
                 if (this.linuxHasExport(lib, fns[i])) {
@@ -1195,6 +1196,17 @@ class Evaluator {
             Node fn = this.functions[name];
             Node selected = this.selectOverload(name, args.length);
             if (selected == null && this.overloadArityMismatch(name, args.length)) {
+                // UNIFIED_CORE_LIBRARY.md §4 rule 6 (mirrors evalCall):
+                // no user overload accepts the count but a granted native
+                // export has this name — the call reaches the builtin.
+                Value nativeFn = this.globals.get(name);
+                bool nativeFallback = false;
+                if (nativeFn != null) {
+                    if (nativeFn.tag == VAL_BUILTIN) { nativeFallback = true; }
+                }
+                if (nativeFallback) {
+                    return callBuiltin(nativeFn.funcName, args);
+                }
                 printline("no overload of '" + name + "' takes " + args.length.toString() + " argument(s)");
                 exit(1);
             }
@@ -1895,8 +1907,22 @@ mirrorPut(obj, target.name, val);
             this.checkInternalFnName(node.name, node);
             Node selected = this.selectOverload(node.name, node.childCount());
             if (selected == null && this.overloadArityMismatch(node.name, node.childCount())) {
-                printline("no overload of '" + node.name + "' takes " + node.childCount().toString() + " argument(s)");
-                exit(1);
+                // UNIFIED_CORE_LIBRARY.md §4 rule 6: the bare name is also
+                // a granted native export and no user overload accepts the
+                // count — the call reaches the native builtin (net.sr's
+                // bare connect(sock, sa, 16)). A same-arity user
+                // declaration still wins (selected != null above).
+                Value nativeFn = this.globals.get(node.name);
+                bool nativeFallback = false;
+                if (nativeFn != null) {
+                    if (nativeFn.tag == VAL_BUILTIN) { nativeFallback = true; }
+                }
+                if (nativeFallback) {
+                    result = callBuiltin(nativeFn.funcName, args);
+                } else {
+                    printline("no overload of '" + node.name + "' takes " + node.childCount().toString() + " argument(s)");
+                    exit(1);
+                }
             }
             if (selected == null) {
                 selected = this.functions[node.name];

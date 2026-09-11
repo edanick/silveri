@@ -855,18 +855,46 @@ int[] diagSourceLoc(string src, int off) {
 // The total length of the prepended region is reported through
 // prependLen[0] so the evaluator knows where the project's own sources
 // begin (the `internal` visibility boundary).
-string resolveImports(string source, string inputFile, int[] prependLen, string target) {
-    if (prependLen.length == 0) { prependLen.add(0); } else { prependLen[0] = 0; }
+// Match `import * from <name>` at pos with any spacing around the star
+// and `from`: project sources spell `import * from net;` while minified
+// `.qs` bundle sources spell `import*from net;`. Sets bounds[0]/bounds[1]
+// to the module name bounds and returns true; otherwise false (the
+// caller skips past). The `from` keyword match is case-insensitive like
+// the import finder; a longer word (`fromage`) never matches.
+bool matchStarImport(string source, int pos, int[] bounds) {
+    int i = pos + 6;
+    while (i < source.length && source[i] == ' ') { i++; }
+    if (i >= source.length || source[i] != '*') { return false; }
+    i++;
+    while (i < source.length && source[i] == ' ') { i++; }
+    if (i + 4 > source.length) { return false; }
+    string w = "";
+    for (int k = i; k < i + 4; k++) { w += source[k]; }
+    if (w.lower() != "from") { return false; }
+    int after = i + 4;
+    if (after < source.length && isNatWordChar(source[after])) { return false; }
+    i = after;
+    while (i < source.length && source[i] == ' ') { i++; }
+    int ns = i;
+    while (i < source.length && (isNatWordChar(source[i]) || source[i] == '.')) { i++; }
+    if (i == ns) { return false; }
+    bounds[0] = ns;
+    bounds[1] = i;
+    return true;
+}
+
+string resolveImports(string source, string inputFile, int[] prependLen, string target) {    if (prependLen.length == 0) { prependLen.add(0); } else { prependLen[0] = 0; }
     int[] qsSpans = qsBundleSpans(source);
     string prepend = "";
     bool badModule = false;
     int cursor = 0;
     while (cursor < source.length) {
-        int importPos = findCI(source, "import * from ", cursor);
+        int importPos = findCI(source, "import", cursor);
         if (importPos < 0) { break; }
         // Only treat a match as an import statement when it starts at a
-        // statement boundary; otherwise it is `import * from ` text inside a
-        // string literal or comment and must be skipped.
+        // statement boundary; otherwise it is `import` text inside a
+        // string literal or comment and must be skipped. The keyword must
+        // also stand alone (`myimport` is not an import).
         if (importPos > 0) {
             char prev = source[importPos - 1];
             if (prev != '\n' && prev != '\r' && prev != ';') {
@@ -874,20 +902,31 @@ string resolveImports(string source, string inputFile, int[] prependLen, string 
                 continue;
             }
         }
+        int afterImport = importPos + 6;
+        if (afterImport < source.length && isNatWordChar(source[afterImport])) {
+            cursor = importPos + 1;
+            continue;
+        }
+        // Star-import shape with any spacing (`import * from m;` in
+        // sources, `import*from m;` in minified `.qs` bundles). Any other
+        // `import` spelling belongs to a later pass.
+        int[] mm = [];
+        mm.add(0);
+        mm.add(0);
+        if (!matchStarImport(source, importPos, mm)) {
+            cursor = importPos + 1;
+            continue;
+        }
         int semi = -1;
         for (int si = importPos; si < source.length; si++) {
             if (source[si] == ';') { semi = si; break; }
         }
         if (semi < 0) { break; }
-        int nameStart = importPos + 13;
-        while (nameStart < semi && source[nameStart] == ' ') { nameStart++; }
-        int nameEnd = nameStart;
-        // Dotted module names (`mylib.sub`) read whole, mirroring the
-        // compilers' projectImportModule; native dotted sources are skipped
-        // below before any file probe.
-        while (nameEnd < semi && ((source[nameEnd] >= 'a' && source[nameEnd] <= 'z') || (source[nameEnd] >= 'A' && source[nameEnd] <= 'Z') || (source[nameEnd] >= '0' && source[nameEnd] <= '9') || source[nameEnd] == '_' || source[nameEnd] == '.')) {
-            nameEnd++;
-        }
+        int nameStart = mm[0];
+        int nameEnd = mm[1];
+        // Dotted module names (`mylib.sub`) already read whole by the
+        // matcher, mirroring the compilers' projectImportModule; native
+        // dotted sources are skipped below before any file probe.
         string module = "";
         for (int mi = nameStart; mi < nameEnd; mi++) {
             module += source[mi];

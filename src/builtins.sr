@@ -3252,6 +3252,32 @@ Value callBuiltin(string name, Value[] args) {
         }
         return makeNull();
     }
+    // LINUX (additive): getrandom(2) entropy for interpreted uuid.sr
+    // Linux bodies, which call getrandom(buf, len, flags) bare with an
+    // int[] buffer. int[] copy shape like read/recv above; no MAC arm
+    // (getrandom is Linux-only and does not exist on macOS).
+    if (name == "getrandom") {
+        if (args.length >= 2 && args[0].tag == VAL_ARRAY) {
+            int grLen = arrValLen(args[0]);
+            int[] grBuf = new int[grLen];
+            for (int i = 0; i < grLen; i++) {
+                grBuf[i] = int(arrValIntAt(args[0], i));
+            }
+            int grN = arrValLen(args[0]);
+            if (args.length >= 2) { grN = args[1].toInt().toInt(); }
+            int grFlags = 0;
+            if (args.length >= 3) { grFlags = args[2].toInt().toInt(); }
+            int grRet = -1;
+            #on LINUX
+            grRet = getrandom(grBuf, grN, grFlags);
+            #off
+            for (int j = 0; j < grLen; j++) {
+                arrValSetAt(args[0], j, makeInt(grBuf[j]));
+            }
+            return makeInt(grRet);
+        }
+        return makeInt(-1);
+    }
     if (name == "getentropy") {
         if (args.length >= 2 && args[0].tag == VAL_ARRAY) {
             int geLen = arrValLen(args[0]);
