@@ -17,7 +17,7 @@ internal class Key {
 
 public class Box {
     internal prop string contents;
-    construct () {
+    construct {
         this.contents = "gold";
     }
     public string Peek() {

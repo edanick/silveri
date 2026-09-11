@@ -12,7 +12,7 @@ internal class Vehicle {
 
 public class Person {
     public internal prop bool verified;
-    construct () {
+    construct {
         this.verified = true;
     }
 }
