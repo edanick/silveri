@@ -113,6 +113,11 @@ class Value {
         if (this.tag == VAL_STRING) { return this.strVal == other.strVal; }
         if (this.tag == VAL_CHAR) { return this.charVal == other.charVal; }
         if (this.tag == VAL_NULL) { return true; }
+        // Enum values compare by type + variant so `x == MyEnum.Variant`
+        // works in the interpreter exactly like the compilers' int
+        // comparison of the same spelling (needed by string.equals'
+        // StringCase flag and any user-enum equality).
+        if (this.tag == VAL_ENUM_VAL) { return this.typeName == other.typeName && this.strVal == other.strVal; }
         return false;
     }
 

@@ -38,25 +38,25 @@ string dottedModulePath(string name, string sep) {
 bool dottedChildOrSelf(string name, string root) {
     string n = name.lower();
     string r = root.lower();
-    if (cli.eq(n, r)) { return true; }
+    if (n == r) { return true; }
     return n.startsWith(r + ".");
 }
 
 // Native modules the interpreter provides without needing a source file.
 bool nativeModule(string name) {
     string n = name.lower();
-    if (cli.eq(n, "fs") || cli.eq(n, "json") || cli.eq(n, "yaml")
-        || cli.eq(n, "env") || cli.eq(n, "url") || cli.eq(n, "hash")
-        || cli.eq(n, "path") || cli.eq(n, "bom") || cli.eq(n, "console")
-        || cli.eq(n, "math") || cli.eq(n, "llmai") || cli.eq(n, "os")
-        || cli.eq(n, "keyboard") || cli.eq(n, "mouse")
+    if (n == "fs" || n == "json" || n == "yaml"
+        || n == "env" || n == "url" || n == "hash"
+        || n == "path" || n == "bom" || n == "console"
+        || n == "math" || n == "llmai" || n == "os"
+        || n == "keyboard" || n == "mouse"
         // process is a native stdlib module on silverc-rs (stdlib::process
         // emits getFocusedProcess natively); the interpreter mirrors that:
         // std/process.sr is NOT prepended, Process.getFocusedProcess lands
         // in the builtins.sr native dispatch. Prepending the wrapper would
         // also drag in process_win, whose aliased win32 grants the parser
         // cannot spell (`X as Y`), so the source path is not viable.
-        || cli.eq(n, "process")) { return true; }
+        || n == "process") { return true; }
     // Dotted children of native singletons behave like their parents:
     // `fs.extra` never resolves from disk, exactly like `fs`.
     return dottedChildOrSelf(name, "fs") || dottedChildOrSelf(name, "json")
@@ -89,15 +89,6 @@ int findCI(string text, string needle, int start) {
     return result;
 }
 
-// Exact char-by-char string equality (same shape as preprocess.sr's ppEq).
-private bool stdRegionEq(string a, string b) {
-    if (a.length != b.length) { return false; }
-    for (int i = 0; i < a.length; i++) {
-        if (a[i] != b[i]) { return false; }
-    }
-    return true;
-}
-
 private string stdRegionSlice(string s, int start, int end) {
     string r = "";
     for (int i = start; i < end; i++) { r = r + s[i]; }
@@ -127,9 +118,9 @@ string interpHostOs() {
 // silverc/compiler/cli_flags.sr); "" or anything else falls back to the
 // host default (never fatal).
 string interpTargetOsFor(string overrideOs) {
-    if (cli.eqFold(overrideOs, "WINDOWS")) { return "WINDOWS"; }
-    if (cli.eqFold(overrideOs, "LINUX")) { return "LINUX"; }
-    if (cli.eqFold(overrideOs, "MAC")) { return "MAC"; }
+    if (overrideOs.toLower() == "windows") { return "WINDOWS"; }
+    if (overrideOs.toLower() == "linux") { return "LINUX"; }
+    if (overrideOs.toLower() == "mac") { return "MAC"; }
     return interpHostOs();
 }
 
@@ -206,7 +197,7 @@ string filterStdRegions(string src, string target) {
             int wordEnd = p + 1;
             while (wordEnd < contentEnd && src[wordEnd] >= 'a' && src[wordEnd] <= 'z') { wordEnd = wordEnd + 1; }
             string word = stdRegionSlice(src, p + 1, wordEnd);
-            if (stdRegionEq(word, "on")) {
+            if (word == "on") {
                 drop = true;
                 int nameStart = wordEnd;
                 while (nameStart < contentEnd && (src[nameStart] == ' ' || src[nameStart] == '\t')) { nameStart = nameStart + 1; }
@@ -218,7 +209,7 @@ string filterStdRegions(string src, string target) {
                     // Unknown or missing OS names strip their body too
                     // (active stays false); only the target's regions
                     // survive (directive names are UPPERCASE-only).
-                    active = stdRegionEq(osName, target);
+                    active = osName == target;
                     matchedAny = active;
                     sawElse = false;
                 } else {
@@ -229,10 +220,10 @@ string filterStdRegions(string src, string target) {
                     // matching branch feeds. Unknown or missing OS names keep
                     // stripping (the match stays false), exactly like a
                     // top-level `#on`.
-                    active = stdRegionEq(osName, target) && !matchedAny;
-                    matchedAny = matchedAny || stdRegionEq(osName, target);
+                    active = osName == target && !matchedAny;
+                    matchedAny = matchedAny || osName == target;
                 }
-            } elif (stdRegionEq(word, "else")) {
+            } elif (word == "else") {
                 drop = true;
                 // Lenient: `#else` outside a region just drops the line.
                 // Inside a region the `#else` body is kept only when no
@@ -241,7 +232,7 @@ string filterStdRegions(string src, string target) {
                     active = !matchedAny;
                     sawElse = true;
                 }
-            } elif (stdRegionEq(word, "off")) {
+            } elif (word == "off") {
                 drop = true;
                 // Lenient: `#off` outside a region just drops the line.
                 mode = 0;
@@ -420,9 +411,9 @@ string readStdModule(string name, string inputFile, string selfSource, string ta
 // itself (mirrors the compiler driver's always-resolvable list).
 bool moduleAlwaysResolvable(string name) {
     string n = name.lower();
-    if (nativeModule(name) || cli.eq(n, "exception") || cli.eq(n, "llmai")
-        || cli.eq(n, "win32") || cli.eq(n, "http") || cli.eq(n, "os")
-        || cli.eq(n, "project") || cli.eq(name, "LLMAI")) { return true; }
+    if (nativeModule(name) || n == "exception" || n == "llmai"
+        || n == "win32" || n == "http" || n == "os"
+        || n == "project" || name == "LLMAI") { return true; }
     // Dotted children of the embedded/fixed modules behave like their
     // parents (`win32.anything` needs no source, exactly like `win32`;
     // `llmai`/`os` children are already covered by nativeModule above).
@@ -437,18 +428,18 @@ bool moduleAlwaysResolvable(string name) {
 // prefixed source naming one of these stays on the fixed path even when a
 // custom entry collides with the short name.
 bool fixedWin32Module(string source) {
-    if (!source.startsWith("win32.")) { return cli.eq(source, "win32"); }
+    if (!source.startsWith("win32.")) { return source == "win32"; }
     string n = source.substr(6);
-    return cli.eq(n, "kernel32") || cli.eq(n, "ws2_32") || cli.eq(n, "winhttp")
-        || cli.eq(n, "wininet") || cli.eq(n, "shell32") || cli.eq(n, "msvcrt")
-        || cli.eq(n, "user32") || cli.eq(n, "registry") || cli.eq(n, "advapi32")
-        || cli.eq(n, "version");
+    return n == "kernel32" || n == "ws2_32" || n == "winhttp"
+        || n == "wininet" || n == "shell32" || n == "msvcrt"
+        || n == "user32" || n == "registry" || n == "advapi32"
+        || n == "version";
 }
 
 bool fixedLinuxModule(string source) {
-    if (!source.startsWith("linux.")) { return cli.eq(source, "linux"); }
+    if (!source.startsWith("linux.")) { return source == "linux"; }
     string n = source.substr(6);
-    return cli.eq(n, "libc") || cli.eq(n, "x11") || cli.eq(n, "xtst");
+    return n == "libc" || n == "x11" || n == "xtst";
 }
 
 // MAC (additive, mirrors silverc-rs/src/macos.rs module_to_lib): a
@@ -456,10 +447,10 @@ bool fixedLinuxModule(string source) {
 // custom entry collides with the short name. `mac` itself grants the fixed
 // modules only; custom modules are never pulled in implicitly.
 bool fixedMacModule(string source) {
-    if (!source.startsWith("mac.")) { return cli.eq(source, "mac"); }
+    if (!source.startsWith("mac.")) { return source == "mac"; }
     string n = source.substr(4);
-    return cli.eq(n, "libsystem") || cli.eq(n, "objc") || cli.eq(n, "appkit")
-        || cli.eq(n, "quartz");
+    return n == "libsystem" || n == "objc" || n == "appkit"
+        || n == "quartz";
 }
 
 bool isNatWordChar(char c) {
@@ -585,7 +576,7 @@ bool aggregateDeclaresModule(string source, string name) {
         while (e < source.length && (isNatWordChar(source[e]) || source[e] == '.')) { e++; }
         string got = "";
         for (int k = s; k < e; k++) { got += source[k]; }
-        if (cli.eqFold(got, name)) { return true; }
+        if (got.toLower() == name.toLower()) { return true; }
         if (e <= pos + 11) { cursor = pos + 1; } else { cursor = e; }
     }
     return false;
@@ -618,8 +609,8 @@ int[] qsBundleSpans(string source) {
         if (!eol) { continue; }
         string lineText = "";
         for (int k = lineStart; k < li; k++) { lineText += source[k]; }
-        if (cli.eq(lineText.trim(), "//__silveri_qs_begin__")) { openBegin = lineNo; }
-        elif (cli.eq(lineText.trim(), "//__silveri_qs_end__")) {
+        if (lineText.trim() == "//__silveri_qs_begin__") { openBegin = lineNo; }
+        elif (lineText.trim() == "//__silveri_qs_end__") {
             if (openBegin >= 0) {
                 spans.add(openBegin);
                 spans.add(lineNo);
@@ -1066,26 +1057,26 @@ void main() {
         }
         if (cli.isFlag(arg, ["--cache-bytecode"])) {
             cacheBytecode = true;
-        } elif (cli.eq(arg, "--os")) {
+        } elif (arg == "--os") {
             // Preprocessor target override (lowercase windows/linux/mac is
             // the documented form; UPPERCASE also accepted, mirroring
             // silverc/compiler/cli_flags.sr). A missing or unknown value
             // is fatal here, like the compilers' flag validation.
             string v = cli.valueAfter(args, i);
-            if (cli.eqFold(v, "windows")) {
+            if (v.toLower() == "windows") {
                 osOverride = "WINDOWS";
                 i += 1;
-            } elif (cli.eqFold(v, "linux")) {
+            } elif (v.toLower() == "linux") {
                 osOverride = "LINUX";
                 i += 1;
-            } elif (cli.eqFold(v, "mac")) {
+            } elif (v.toLower() == "mac") {
                 osOverride = "MAC";
                 i += 1;
             } else {
                 printline("Error: --os expects one of windows, linux, mac (WINDOWS, LINUX, MAC also accepted), got '" + v + "'");
                 exit(1);
             }
-        } elif (cli.eq(arg, "-i")) {
+        } elif (arg == "-i") {
             string v = cli.valueAfter(args, i);
             if (v != "") {
                 filename = v;
@@ -1094,7 +1085,7 @@ void main() {
                 printline("Error: -i requires a filename");
                 exit(1);
             }
-        } elif (cli.eq(arg, "-o")) {
+        } elif (arg == "-o") {
             // -o is accepted for command compatibility but ignored because
             // silveri executes source directly instead of producing a
             // compiled output file.

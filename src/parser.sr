@@ -131,14 +131,6 @@ class Parser {
         printline(msg);
     }
 
-    private bool strEq(string a, string b) {
-        if (a.length != b.length) { return false; }
-        for (int i = 0; i < a.length; i++) {
-            if (a[i] != b[i]) { return false; }
-        }
-        return true;
-    }
-
     // Source width of a token (quotes included for literals), used for
     // insertion-point columns of missing `;` / `,` / `)`.
     private int tokenSrcLen(Token t) {
@@ -207,7 +199,7 @@ class Parser {
 
     private bool isDeclaredTypeName(string name) {
         for (int i = 0; i < this.declaredTypes.length; i++) {
-            if (this.strEq(this.declaredTypes[i], name)) { return true; }
+            if (this.declaredTypes[i] == name) { return true; }
         }
         return false;
     }
@@ -218,14 +210,14 @@ class Parser {
 
     private bool knownIdentName(string name) {
         for (int i = 0; i < this.knownIdents.length; i++) {
-            if (this.strEq(this.knownIdents[i], name)) { return true; }
+            if (this.knownIdents[i] == name) { return true; }
         }
-        if (this.strEq(name, "cargs") || this.strEq(name, "getCommandLine")
-            || this.strEq(name, "print") || this.strEq(name, "printline")
-            || this.strEq(name, "eprint") || this.strEq(name, "eprintln")
-            || this.strEq(name, "exit") || this.strEq(name, "input")
-            || this.strEq(name, "sleep") || this.strEq(name, "assert")
-            || this.strEq(name, "strlen") || this.strEq(name, "now")) { return true; }
+        if (name == "cargs" || name == "getCommandLine"
+            || name == "print" || name == "printline"
+            || name == "eprint" || name == "eprintln"
+            || name == "exit" || name == "input"
+            || name == "sleep" || name == "assert"
+            || name == "strlen" || name == "now") { return true; }
         return false;
     }
 
@@ -234,12 +226,12 @@ class Parser {
     // scope-blind knownIdents list, which grows with every LOCAL declaration
     // and therefore cannot decide anon-body resolution.
     private bool fixedBuiltinIdentName(string name) {
-        if (this.strEq(name, "cargs") || this.strEq(name, "getCommandLine")
-            || this.strEq(name, "print") || this.strEq(name, "printline")
-            || this.strEq(name, "eprint") || this.strEq(name, "eprintln")
-            || this.strEq(name, "exit") || this.strEq(name, "input")
-            || this.strEq(name, "sleep") || this.strEq(name, "assert")
-            || this.strEq(name, "strlen") || this.strEq(name, "now")) { return true; }
+        if (name == "cargs" || name == "getCommandLine"
+            || name == "print" || name == "printline"
+            || name == "eprint" || name == "eprintln"
+            || name == "exit" || name == "input"
+            || name == "sleep" || name == "assert"
+            || name == "strlen" || name == "now") { return true; }
         return false;
     }
 
@@ -250,10 +242,10 @@ class Parser {
         if (!this.identStartsLower(cur.text)) { return false; }
         // Primitive type words that lex as identifiers head declarations,
         // never unknown keywords.
-        if (this.strEq(cur.text, "double") || this.strEq(cur.text, "long")
-            || this.strEq(cur.text, "uint") || this.strEq(cur.text, "byte")
-            || this.strEq(cur.text, "int32") || this.strEq(cur.text, "int64")
-            || this.strEq(cur.text, "float64") || this.strEq(cur.text, "boolean")) { return false; }
+        if (cur.text == "double" || cur.text == "long"
+            || cur.text == "uint" || cur.text == "byte"
+            || cur.text == "int32" || cur.text == "int64"
+            || cur.text == "float64" || cur.text == "boolean") { return false; }
         bool declShape = nk == TK_IDENT || nk == TK_LBRACKET || nk == TK_LESS || nk == TK_COLON;
         if (declShape) {
             // `T name (` is a function-signature shape — legacy sources use
@@ -314,7 +306,7 @@ class Parser {
     // identifier), so the check matches the identifier's text.
     private bool rejectCStyleFunctionParam() {
         Token t = this.peek();
-        if (t.kind == TK_IDENT && this.strEq(t.text, "function")) {
+        if (t.kind == TK_IDENT && t.text == "function") {
             this.recordError(t.line.toString() + ":" + t.col.toString() + ": Unexpected token 'function: function-typed parameters are declared `void () name` and passed as `(void () { ... })` — C-style `function` keyword is not Silver (see DOCS/259)'");
             return true;
         }
@@ -401,18 +393,18 @@ class Parser {
     // DOCS/259 G4 -- primitive type spellings rejected as cast targets (the
     // cast only asserts class-instance types; mirrors the rs type checker).
     private bool isPrimitiveTypeSpelling(string t) {
-        if (this.strEq(t, "int")) { return true; }
-        if (this.strEq(t, "int32")) { return true; }
-        if (this.strEq(t, "int64")) { return true; }
-        if (this.strEq(t, "uint")) { return true; }
-        if (this.strEq(t, "float")) { return true; }
-        if (this.strEq(t, "float64")) { return true; }
-        if (this.strEq(t, "double")) { return true; }
-        if (this.strEq(t, "bool")) { return true; }
-        if (this.strEq(t, "byte")) { return true; }
-        if (this.strEq(t, "char")) { return true; }
-        if (this.strEq(t, "string")) { return true; }
-        if (this.strEq(t, "void")) { return true; }
+        if (t == "int") { return true; }
+        if (t == "int32") { return true; }
+        if (t == "int64") { return true; }
+        if (t == "uint") { return true; }
+        if (t == "float") { return true; }
+        if (t == "float64") { return true; }
+        if (t == "double") { return true; }
+        if (t == "bool") { return true; }
+        if (t == "byte") { return true; }
+        if (t == "char") { return true; }
+        if (t == "string") { return true; }
+        if (t == "void") { return true; }
         return false;
     }
 
@@ -429,8 +421,8 @@ class Parser {
         if (!typeKw) {
             // uint/byte/double/long lex as identifiers in this grammar.
             if (kw.kind == TK_IDENT) {
-                typeKw = this.strEq(kw.text, "uint") || this.strEq(kw.text, "byte") || this.strEq(kw.text, "double")
-                    || this.strEq(kw.text, "long") || this.strEq(kw.text, "boolean");
+                typeKw = kw.text == "uint" || kw.text == "byte" || kw.text == "double"
+                    || kw.text == "long" || kw.text == "boolean";
             }
         }
         if (!typeKw) { return false; }
@@ -649,7 +641,7 @@ private Node? parseItem() {
             // Recovery resyncs to the next statement boundary so the damaged
             // region does not cascade into unrelated follow-on errors.
             Token curTok = this.peek();
-            bool isTupleWord = this.strEq(curTok.text, "tuple");
+            bool isTupleWord = curTok.text == "tuple";
             if (!isTupleWord) {
                 int nk = -1;
                 if (this.pos + 1 < this.tokens.length) { nk = this.tokens[this.pos + 1].kind; }
@@ -980,7 +972,7 @@ private Node? parseItem() {
                 // DOCS/259 G2 -- fn-typed prop: `prop void () cb;` (fn arrays
                 // too via the `[]` suffix below). Any other base type, or any
                 // other `(...)` shape after `void`, is left untouched.
-                if (this.strEq(typ, "void") && this.check(TK_LPAREN) && this.pos + 1 < this.tokens.length && this.tokens[this.pos + 1].kind == TK_RPAREN) {
+                if (typ == "void" && this.check(TK_LPAREN) && this.pos + 1 < this.tokens.length && this.tokens[this.pos + 1].kind == TK_RPAREN) {
                     this.advance();
                     this.advance();
                     typ = "void ()";
@@ -1019,7 +1011,7 @@ private Node? parseItem() {
                 // too via the `[]` suffix below). The `(` after `void` never
                 // reaches parseTypeStr because the class body checks for a
                 // method shape first (`(` would otherwise mean a method).
-                if (this.strEq(retType, "void") && this.check(TK_LPAREN) && this.pos + 1 < this.tokens.length && this.tokens[this.pos + 1].kind == TK_RPAREN) {
+                if (retType == "void" && this.check(TK_LPAREN) && this.pos + 1 < this.tokens.length && this.tokens[this.pos + 1].kind == TK_RPAREN) {
                     this.advance();
                     this.advance();
                     retType = "void ()";
@@ -1290,7 +1282,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             // (parameters, non-void return types) is rejected.
             if (this.check(TK_LPAREN)) {
                 Token ftTok = this.peek();
-                if (this.strEq(typ, "void") && this.pos + 1 < this.tokens.length && this.tokens[this.pos + 1].kind == TK_RPAREN) {
+                if (typ == "void" && this.pos + 1 < this.tokens.length && this.tokens[this.pos + 1].kind == TK_RPAREN) {
                     this.advance();
                     this.advance();
                     typ = "void ()";
@@ -1501,7 +1493,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             // keyword or a typo of one. Uppercase-led identifiers stay on the
             // user-defined type-declaration path below.
             Token curTok = this.peek();
-            bool isTupleWord = this.strEq(curTok.text, "tuple");
+            bool isTupleWord = curTok.text == "tuple";
             if (!isTupleWord) {
                 int nk = -1;
                 if (this.pos + 1 < this.tokens.length) { nk = this.tokens[this.pos + 1].kind; }
@@ -2884,11 +2876,11 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             char c = t[i];
             if (c == '[' || c == ']' || c == '?' || c == '<' || c == '>' || c == '.' || c == ',') { return -1; }
         }
-        if (this.strEq(t, "int") || this.strEq(t, "int32") || this.strEq(t, "int64")
-            || this.strEq(t, "uint") || this.strEq(t, "byte") || this.strEq(t, "float")
-            || this.strEq(t, "float64") || this.strEq(t, "double") || this.strEq(t, "char")) { return 0; }
-        if (this.strEq(t, "string")) { return 1; }
-        if (this.strEq(t, "bool")) { return 2; }
+        if (t == "int" || t == "int32" || t == "int64"
+            || t == "uint" || t == "byte" || t == "float"
+            || t == "float64" || t == "double" || t == "char") { return 0; }
+        if (t == "string") { return 1; }
+        if (t == "bool") { return 2; }
         return -1;
     }
 
@@ -2962,13 +2954,13 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
     }
 
     private void checkParseValueException(string recv, string method, Node arg) {
-        bool isIntRecv = this.strEq(recv, "int") || this.strEq(recv, "int64");
-        bool isDblRecv = this.strEq(recv, "double") || this.strEq(recv, "float") || this.strEq(recv, "float64");
+        bool isIntRecv = recv == "int" || recv == "int64";
+        bool isDblRecv = recv == "double" || recv == "float" || recv == "float64";
         if (!isIntRecv && !isDblRecv) { return; }
-        bool wantsInt = this.strEq(method, "parseInt") || this.strEq(method, "toInt")
-            || this.strEq(method, "parseLong") || this.strEq(method, "toInt64");
-        bool wantsDouble = this.strEq(method, "parseDouble") || this.strEq(method, "toDouble")
-            || this.strEq(method, "parseFloat");
+        bool wantsInt = method == "parseInt" || method == "toInt"
+            || method == "parseLong" || method == "toInt64";
+        bool wantsDouble = method == "parseDouble" || method == "toDouble"
+            || method == "parseFloat";
         if (!wantsInt && !wantsDouble) { return; }
         if (arg.kind != ND_STRING_LIT) { return; }
         if (this.stringIsNumber(arg.strVal, wantsInt)) { return; }
@@ -2998,7 +2990,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         int bestCount = 0;
         // Accept the call when any same-named signature fits its arguments.
         for (int m = 0; m < this.sigNames.length; m++) {
-            if (!this.strEq(this.sigNames[m], call.name)) { continue; }
+            if (this.sigNames[m] != call.name) { continue; }
             string[] types = this.splitSigList(this.sigTypes[m]);
             string[] names = this.splitSigList(this.sigParams[m]);
             int limit = types.length;
@@ -3041,7 +3033,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
     }
 
     private void walkCallDiagnostics(Node n) {
-        if (n.kind == ND_VAR_DECL && this.strEq(n.typeHint, "void ()") && n.name.length > 0) {
+        if (n.kind == ND_VAR_DECL && n.typeHint == "void ()" && n.name.length > 0) {
             // DOCS/259 G2 -- fn-typed locals are invocable like fn-typed
             // parameters once declared (forward-visible for the rest of the
             // walk, matching the reference compiler's never-popped registry).
@@ -3057,7 +3049,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             if (n.childCount() > 0) {
                 Node fnParams = n.child(0);
                 for (int fp = 0; fp < fnParams.childCount(); fp++) {
-                    if (this.strEq(fnParams.child(fp).typeHint, "void ()")) {
+                    if (fnParams.child(fp).typeHint == "void ()") {
                         extended.add(fnParams.child(fp).name);
                     }
                 }
@@ -3142,7 +3134,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
 
     private bool isKnownCallableName(string name) {
         for (int i = 0; i < this.sigNames.length; i++) {
-            if (this.strEq(this.sigNames[i], name)) { return true; }
+            if (this.sigNames[i] == name) { return true; }
         }
         if (this.isDeclaredTypeName(name)) { return true; }
         if (this.knownIdentName(name)) { return true; }
@@ -3160,15 +3152,15 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
     private void collectAnonBodyLocals(Node n, string[] locals) {
         if (n.kind == ND_VAR_DECL && n.name.length > 0) { locals.add(n.name); }
         if (n.kind == ND_FOREACH && n.name.length > 0) { locals.add(n.name); }
-        if (n.kind == ND_TUPLE_LIT && n.childCount() == 2 && this.strEq(n.name, "arrow") && n.child(0).kind == ND_IDENT
-            && n.child(0).name.length > 0 && !this.strEq(n.child(0).name, "_")) { locals.add(n.child(0).name); }
+        if (n.kind == ND_TUPLE_LIT && n.childCount() == 2 && n.name == "arrow" && n.child(0).kind == ND_IDENT
+            && n.child(0).name.length > 0 && n.child(0).name != "_") { locals.add(n.child(0).name); }
         if (n.kind == ND_MATCH && n.childCount() > 0) {
             // Match-arm binding patterns introduce a local in the arm body.
             for (int a = 1; a < n.childCount(); a++) {
                 Node arm = n.child(a);
                 if (arm.childCount() > 0) {
                     Node pat = arm.child(0);
-                    if (pat.kind == ND_IDENT && pat.name.length > 0 && !this.strEq(pat.name, "_")) { locals.add(pat.name); }
+                    if (pat.kind == ND_IDENT && pat.name.length > 0 && pat.name != "_") { locals.add(pat.name); }
                 }
             }
         }
@@ -3202,7 +3194,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         }
         if (n.kind == ND_IDENT) {
             string name = n.name;
-            if (name.length > 0 && !this.strEq(name, "this") && !this.strEq(name, "null")) {
+            if (name.length > 0 && name != "this" && name != "null") {
                 if (!this.anonIdentResolves(name, locals)) {
                     this.recordError(n.line.toString() + ":" + n.col.toString() + ": Undefined variable '" + name + "'");
                 }
@@ -3215,23 +3207,23 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
 
     private bool anonIdentResolves(string name, string[] locals) {
         for (int i = 0; i < locals.length; i++) {
-            if (this.strEq(locals[i], name)) { return true; }
+            if (locals[i] == name) { return true; }
         }
         for (int g = 0; g < this.anonKnownGlobals.length; g++) {
-            if (this.strEq(this.anonKnownGlobals[g], name)) { return true; }
+            if (this.anonKnownGlobals[g] == name) { return true; }
         }
         // Scope-blind helper list: the parser's own knownIdents grows with
         // every LOCAL declaration, so it cannot decide anon-body resolution;
         // only the fixed interpreter-provided names apply here.
         if (this.fixedBuiltinIdentName(name)) { return true; }
         for (int s = 0; s < this.sigNames.length; s++) {
-            if (this.strEq(this.sigNames[s], name)) { return true; }
+            if (this.sigNames[s] == name) { return true; }
         }
         if (this.isDeclaredTypeName(name)) { return true; }
         // Module receivers (`time.now()` inside the body): the aggregate's
         // declared modules resolve like silverc-rs's module_names set.
         for (int m = 0; m < this.modExportNames.length; m++) {
-            if (this.strEq(this.modExportNames[m], name)) { return true; }
+            if (this.modExportNames[m] == name) { return true; }
         }
         // Value factories and compiler-intrinsic calls stay callable.
         if (name.length > 4 && name.startsWith("make") && name[4] >= 'A' && name[4] <= 'Z') { return true; }
@@ -3245,7 +3237,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
 
     private bool fnPtrCallScopeHas(string name) {
         for (int i = 0; i < this.fnPtrCallScope.length; i++) {
-            if (this.strEq(this.fnPtrCallScope[i], name)) { return true; }
+            if (this.fnPtrCallScope[i] == name) { return true; }
         }
         return false;
     }
@@ -3253,66 +3245,66 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
     // Names the evaluator always resolves: builtins, native module
     // singletons, and tray/registry bridges.
     private bool builtinCallableName(string name) {
-        if (this.strEq(name, "print") || this.strEq(name, "printline")
-            || this.strEq(name, "eprint") || this.strEq(name, "eprintln")
-            || this.strEq(name, "input") || this.strEq(name, "exit")
-            || this.strEq(name, "end") || this.strEq(name, "sleep")
-            || this.strEq(name, "assert") || this.strEq(name, "now")
-            || this.strEq(name, "int") || this.strEq(name, "float")
-            || this.strEq(name, "double") || this.strEq(name, "char")
+        if (name == "print" || name == "printline"
+            || name == "eprint" || name == "eprintln"
+            || name == "input" || name == "exit"
+            || name == "end" || name == "sleep"
+            || name == "assert" || name == "now"
+            || name == "int" || name == "float"
+            || name == "double" || name == "char"
             // Wide numeric cast-call spellings: the rs compiler maps
             // int64(x)/uint(x) onto the int conversion and float64(x) onto
             // the double conversion (parser.rs Int/Uint/Float token arms),
             // so all three must be callable in expression position here.
-            || this.strEq(name, "int64") || this.strEq(name, "uint")
-            || this.strEq(name, "float64")
-            || this.strEq(name, "byte") || this.strEq(name, "string")
-            || this.strEq(name, "bool") || this.strEq(name, "void")
-            || this.strEq(name, "main") || this.strEq(name, "super")
-            || this.strEq(name, "strlen") || this.strEq(name, "string_cast")
-            || this.strEq(name, "readFile") || this.strEq(name, "readString")
-            || this.strEq(name, "writeFile") || this.strEq(name, "writeString")
-            || this.strEq(name, "writeBytes") || this.strEq(name, "exists")
-            || this.strEq(name, "delete") || this.strEq(name, "deleteFile")
-            || this.strEq(name, "rename") || this.strEq(name, "mkdir")
-            || this.strEq(name, "toString") || this.strEq(name, "toInt")
-            || this.strEq(name, "toUpper") || this.strEq(name, "toLower")
-            || this.strEq(name, "nativeToastShow")
+            || name == "int64" || name == "uint"
+            || name == "float64"
+            || name == "byte" || name == "string"
+            || name == "bool" || name == "void"
+            || name == "main" || name == "super"
+            || name == "strlen" || name == "string_cast"
+            || name == "readFile" || name == "readString"
+            || name == "writeFile" || name == "writeString"
+            || name == "writeBytes" || name == "exists"
+            || name == "delete" || name == "deleteFile"
+            || name == "rename" || name == "mkdir"
+            || name == "toString" || name == "toInt"
+            || name == "toUpper" || name == "toLower"
+            || name == "nativeToastShow"
             // UNIFIED_CORE_LIBRARY.md phase 3 -- native os/time intercepts:
             // osType()/OSTypes are the compile-time WINDOWS contract and the
             // time module's win32 backend leaves (std/time_win.sr) are served
             // natively, mirroring silverc-rs and the self-hosted compiler.
-            || this.strEq(name, "osType") || this.strEq(name, "timeWinSleepInt")
-            || this.strEq(name, "timeWinSleepUint") || this.strEq(name, "timeWinNow")
+            || name == "osType" || name == "timeWinSleepInt"
+            || name == "timeWinSleepUint" || name == "timeWinNow"
             // notifications' internal backend leaf (std/notifications_win.sr)
             // is served natively like nativeToastShow (UNIFIED_CORE_LIBRARY.md
             // phase 3).
-            || this.strEq(name, "notifWinShow")
+            || name == "notifWinShow"
             // Native module singletons usable in expression position.
-            || this.strEq(name, "fs") || this.strEq(name, "file")
-            || this.strEq(name, "folder") || this.strEq(name, "url")
-            || this.strEq(name, "hash") || this.strEq(name, "path")
-            || this.strEq(name, "bom") || this.strEq(name, "console")
-            || this.strEq(name, "math") || this.strEq(name, "llmai")
-            || this.strEq(name, "LLMAI") || this.strEq(name, "keyboard")
-            || this.strEq(name, "mouse") || this.strEq(name, "time")
-            || this.strEq(name, "env") || this.strEq(name, "process")
-            || this.strEq(name, "Process") || this.strEq(name, "notifications")
-            || this.strEq(name, "json") || this.strEq(name, "yaml")
+            || name == "fs" || name == "file"
+            || name == "folder" || name == "url"
+            || name == "hash" || name == "path"
+            || name == "bom" || name == "console"
+            || name == "math" || name == "llmai"
+            || name == "LLMAI" || name == "keyboard"
+            || name == "mouse" || name == "time"
+            || name == "env" || name == "process"
+            || name == "Process" || name == "notifications"
+            || name == "json" || name == "yaml"
             // Tray and registry bridges registered by the evaluator.
-            || this.strEq(name, "trayAdd") || this.strEq(name, "traySetTooltip")
-            || this.strEq(name, "trayDelete") || this.strEq(name, "trayRemove")
-            || this.strEq(name, "traySetMenu") || this.strEq(name, "trayRunLoop")
-            || this.strEq(name, "trayPollMenu") || this.strEq(name, "trayPollClick")
-            || this.strEq(name, "regOpen") || this.strEq(name, "regCreate")
-            || this.strEq(name, "regClose") || this.strEq(name, "regSubKey")
-            || this.strEq(name, "regGetString") || this.strEq(name, "regSetString")
-            || this.strEq(name, "regGetInt") || this.strEq(name, "regSetInt")
-            || this.strEq(name, "regGetInt64") || this.strEq(name, "regSetInt64")
-            || this.strEq(name, "regDeleteValue") || this.strEq(name, "regDeleteKey")
-            || this.strEq(name, "regValueExists") || this.strEq(name, "regEnumSubKeyName")
-            || this.strEq(name, "regEnumValueName") || this.strEq(name, "regSubKeyCount")
-            || this.strEq(name, "regValueCount")) { return true; }
+            || name == "trayAdd" || name == "traySetTooltip"
+            || name == "trayDelete" || name == "trayRemove"
+            || name == "traySetMenu" || name == "trayRunLoop"
+            || name == "trayPollMenu" || name == "trayPollClick"
+            || name == "regOpen" || name == "regCreate"
+            || name == "regClose" || name == "regSubKey"
+            || name == "regGetString" || name == "regSetString"
+            || name == "regGetInt" || name == "regSetInt"
+            || name == "regGetInt64" || name == "regSetInt64"
+            || name == "regDeleteValue" || name == "regDeleteKey"
+            || name == "regValueExists" || name == "regEnumSubKeyName"
+            || name == "regEnumValueName" || name == "regSubKeyCount"
+            || name == "regValueCount") { return true; }
         return false;
     }
 
@@ -3338,14 +3330,14 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
 
     // DOCS/213 -- remember import grants for the unknown-method walk.
     private void recordWin32ImportGrant(string src, bool all, string[] names) {
-        if (this.strEq(src, "win32")) {
+        if (src == "win32") {
             if (all || names.length == 0) { this.win32AllModules = true; return; }
             for (int j = 0; j < names.length; j++) {
                 this.win32OpenModules.add(names[j]);
             }
             return;
         }
-        if (src.length > 6 && this.strEq(src.substr(0, 6), "win32.")) {
+        if (src.length > 6 && src.substr(0, 6) == "win32.") {
             string module = src.substr(6);
             if (all || names.length == 0) {
                 this.win32OpenModules.add(module);
@@ -3358,51 +3350,51 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
     }
 
     private string win32ModuleNameDll(string module) {
-        if (this.strEq(module, "kernel32")) { return "kernel32.dll"; }
-        if (this.strEq(module, "ws2_32")) { return "ws2_32.dll"; }
-        if (this.strEq(module, "winhttp")) { return "winhttp.dll"; }
-        if (this.strEq(module, "wininet")) { return "wininet.dll"; }
-        if (this.strEq(module, "shell32")) { return "shell32.dll"; }
-        if (this.strEq(module, "msvcrt")) { return "msvcrt.dll"; }
-        if (this.strEq(module, "user32")) { return "user32.dll"; }
-        if (this.strEq(module, "registry") || this.strEq(module, "advapi32")) { return "advapi32.dll"; }
-        if (this.strEq(module, "version")) { return "version.dll"; }
+        if (module == "kernel32") { return "kernel32.dll"; }
+        if (module == "ws2_32") { return "ws2_32.dll"; }
+        if (module == "winhttp") { return "winhttp.dll"; }
+        if (module == "wininet") { return "wininet.dll"; }
+        if (module == "shell32") { return "shell32.dll"; }
+        if (module == "msvcrt") { return "msvcrt.dll"; }
+        if (module == "user32") { return "user32.dll"; }
+        if (module == "registry" || module == "advapi32") { return "advapi32.dll"; }
+        if (module == "version") { return "version.dll"; }
         return "";
     }
 
     // The raw Win32 exports the interpreter can execute, mapped to their
     // owning DLL (mirrors Evaluator.win32DllForFn).
     private string win32DllForFn(string fn) {
-        if (this.strEq(fn, "keybd_event") || this.strEq(fn, "mouse_event")
-            || this.strEq(fn, "VkKeyScanA") || this.strEq(fn, "GetKeyState")
-            || this.strEq(fn, "GetAsyncKeyState") || this.strEq(fn, "MapVirtualKeyA")
-            || this.strEq(fn, "GetCursorPos") || this.strEq(fn, "SetCursorPos")
-            || this.strEq(fn, "SendInput") || this.strEq(fn, "SetCursor")
-            || this.strEq(fn, "ClipCursor") || this.strEq(fn, "GetClipCursor")
-            || this.strEq(fn, "GetDoubleClickTime") || this.strEq(fn, "SetDoubleClickTime")
-            || this.strEq(fn, "RegisterHotKey") || this.strEq(fn, "UnregisterHotKey")
-            || this.strEq(fn, "MessageBeep") || this.strEq(fn, "RegisterRawInputDevices")
-            || this.strEq(fn, "GetRawInputData") || this.strEq(fn, "GetRawInputDeviceList")
-            || this.strEq(fn, "GetForegroundWindow") || this.strEq(fn, "GetWindowTextA")
-            || this.strEq(fn, "GetWindowThreadProcessId") || this.strEq(fn, "RegisterClassExA")
-            || this.strEq(fn, "CreateWindowExA") || this.strEq(fn, "ShowWindow")
-            || this.strEq(fn, "UpdateWindow") || this.strEq(fn, "SetWindowTextA")
-            || this.strEq(fn, "DestroyWindow") || this.strEq(fn, "GetSystemMetrics")
-            || this.strEq(fn, "LoadImageA") || this.strEq(fn, "SendMessageA")) { return "user32.dll"; }
-        if (this.strEq(fn, "OpenProcess") || this.strEq(fn, "QueryFullProcessImageNameA")
-            || this.strEq(fn, "CloseHandle") || this.strEq(fn, "GetModuleHandleA")) { return "kernel32.dll"; }
+        if (fn == "keybd_event" || fn == "mouse_event"
+            || fn == "VkKeyScanA" || fn == "GetKeyState"
+            || fn == "GetAsyncKeyState" || fn == "MapVirtualKeyA"
+            || fn == "GetCursorPos" || fn == "SetCursorPos"
+            || fn == "SendInput" || fn == "SetCursor"
+            || fn == "ClipCursor" || fn == "GetClipCursor"
+            || fn == "GetDoubleClickTime" || fn == "SetDoubleClickTime"
+            || fn == "RegisterHotKey" || fn == "UnregisterHotKey"
+            || fn == "MessageBeep" || fn == "RegisterRawInputDevices"
+            || fn == "GetRawInputData" || fn == "GetRawInputDeviceList"
+            || fn == "GetForegroundWindow" || fn == "GetWindowTextA"
+            || fn == "GetWindowThreadProcessId" || fn == "RegisterClassExA"
+            || fn == "CreateWindowExA" || fn == "ShowWindow"
+            || fn == "UpdateWindow" || fn == "SetWindowTextA"
+            || fn == "DestroyWindow" || fn == "GetSystemMetrics"
+            || fn == "LoadImageA" || fn == "SendMessageA") { return "user32.dll"; }
+        if (fn == "OpenProcess" || fn == "QueryFullProcessImageNameA"
+            || fn == "CloseHandle" || fn == "GetModuleHandleA") { return "kernel32.dll"; }
         return "";
     }
 
     private bool win32Resolvable(string name) {
         if (this.win32AllModules) { return true; }
         for (int g = 0; g < this.win32GrantNames.length; g++) {
-            if (this.strEq(this.win32GrantNames[g], name)) { return true; }
+            if (this.win32GrantNames[g] == name) { return true; }
         }
         string fnDll = this.win32DllForFn(name);
         if (fnDll.length > 0) {
             for (int m = 0; m < this.win32OpenModules.length; m++) {
-                if (this.strEq(this.win32ModuleNameDll(this.win32OpenModules[m]), fnDll)) { return true; }
+                if (this.win32ModuleNameDll(this.win32OpenModules[m]) == fnDll) { return true; }
             }
         }
         return false;
@@ -3411,14 +3403,14 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
     // LINUX (additive, mirrors Evaluator linux tables): small grant entries
     // only -- the core libc names the interpreter defines builtins for.
     private void recordLinuxImportGrant(string src, bool all, string[] names) {
-        if (this.strEq(src, "linux")) {
+        if (src == "linux") {
             if (all || names.length == 0) { this.linuxAllModules = true; return; }
             for (int j = 0; j < names.length; j++) {
                 this.linuxOpenModules.add(names[j]);
             }
             return;
         }
-        if (src.length > 6 && this.strEq(src.substr(0, 6), "linux.")) {
+        if (src.length > 6 && src.substr(0, 6) == "linux.") {
             string module = src.substr(6);
             if (all || names.length == 0) {
                 this.linuxOpenModules.add(module);
@@ -3431,36 +3423,36 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
     }
 
     private string linuxModuleNameLib(string module) {
-        if (this.strEq(module, "libc")) { return "libc.so.6"; }
-        if (this.strEq(module, "x11")) { return "libX11.so.6"; }
-        if (this.strEq(module, "xtst")) { return "libXtst.so.6"; }
+        if (module == "libc") { return "libc.so.6"; }
+        if (module == "x11") { return "libX11.so.6"; }
+        if (module == "xtst") { return "libXtst.so.6"; }
         return "";
     }
 
     private string linuxLibForFn(string fn) {
-        if (this.strEq(fn, "nanosleep") || this.strEq(fn, "clock_gettime")
-            || this.strEq(fn, "getenv") || this.strEq(fn, "setenv")
-            || this.strEq(fn, "open") || this.strEq(fn, "read")
-            || this.strEq(fn, "write") || this.strEq(fn, "close")
-            || this.strEq(fn, "sysconf") || this.strEq(fn, "socket")
-            || this.strEq(fn, "connect") || this.strEq(fn, "bind")
-            || this.strEq(fn, "listen") || this.strEq(fn, "accept")
-            || this.strEq(fn, "send") || this.strEq(fn, "recv")
-            || this.strEq(fn, "getuid") || this.strEq(fn, "setsockopt")
-            || this.strEq(fn, "getaddrinfo") || this.strEq(fn, "freeaddrinfo")
-            || this.strEq(fn, "memcpy")) { return "libc.so.6"; }
+        if (fn == "nanosleep" || fn == "clock_gettime"
+            || fn == "getenv" || fn == "setenv"
+            || fn == "open" || fn == "read"
+            || fn == "write" || fn == "close"
+            || fn == "sysconf" || fn == "socket"
+            || fn == "connect" || fn == "bind"
+            || fn == "listen" || fn == "accept"
+            || fn == "send" || fn == "recv"
+            || fn == "getuid" || fn == "setsockopt"
+            || fn == "getaddrinfo" || fn == "freeaddrinfo"
+            || fn == "memcpy") { return "libc.so.6"; }
         return "";
     }
 
     private bool linuxResolvable(string name) {
         if (this.linuxAllModules) { return true; }
         for (int g = 0; g < this.linuxGrantNames.length; g++) {
-            if (this.strEq(this.linuxGrantNames[g], name)) { return true; }
+            if (this.linuxGrantNames[g] == name) { return true; }
         }
         string fnLib = this.linuxLibForFn(name);
         if (fnLib.length > 0) {
             for (int m = 0; m < this.linuxOpenModules.length; m++) {
-                if (this.strEq(this.linuxModuleNameLib(this.linuxOpenModules[m]), fnLib)) { return true; }
+                if (this.linuxModuleNameLib(this.linuxOpenModules[m]) == fnLib) { return true; }
             }
         }
         return false;
@@ -3470,14 +3462,14 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
     // only -- the core libSystem names the interpreter defines builtins
     // for, plus the Darwin-only sysctl/entropy shapes.
     private void recordMacImportGrant(string src, bool all, string[] names) {
-        if (this.strEq(src, "mac")) {
+        if (src == "mac") {
             if (all || names.length == 0) { this.macAllModules = true; return; }
             for (int j = 0; j < names.length; j++) {
                 this.macOpenModules.add(names[j]);
             }
             return;
         }
-        if (src.length > 4 && this.strEq(src.substr(0, 4), "mac.")) {
+        if (src.length > 4 && src.substr(0, 4) == "mac.") {
             string module = src.substr(4);
             if (all || names.length == 0) {
                 this.macOpenModules.add(module);
@@ -3490,40 +3482,40 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
     }
 
     private string macModuleNameLib(string module) {
-        if (this.strEq(module, "libsystem")) { return "/usr/lib/libSystem.B.dylib"; }
-        if (this.strEq(module, "objc")) { return "/usr/lib/libobjc.A.dylib"; }
-        if (this.strEq(module, "appkit")) { return "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit"; }
-        if (this.strEq(module, "quartz")) { return "/System/Library/Frameworks/QuartzCore.framework/Versions/A/QuartzCore"; }
+        if (module == "libsystem") { return "/usr/lib/libSystem.B.dylib"; }
+        if (module == "objc") { return "/usr/lib/libobjc.A.dylib"; }
+        if (module == "appkit") { return "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit"; }
+        if (module == "quartz") { return "/System/Library/Frameworks/QuartzCore.framework/Versions/A/QuartzCore"; }
         return "";
     }
 
     private string macLibForFn(string fn) {
-        if (this.strEq(fn, "nanosleep") || this.strEq(fn, "clock_gettime")
-            || this.strEq(fn, "getenv") || this.strEq(fn, "setenv")
-            || this.strEq(fn, "open") || this.strEq(fn, "read")
-            || this.strEq(fn, "write") || this.strEq(fn, "close")
-            || this.strEq(fn, "sysconf") || this.strEq(fn, "sysctlbyname")
-            || this.strEq(fn, "getentropy") || this.strEq(fn, "arc4random_buf")
-            || this.strEq(fn, "socket") || this.strEq(fn, "connect")
-            || this.strEq(fn, "bind") || this.strEq(fn, "listen")
-            || this.strEq(fn, "accept") || this.strEq(fn, "send")
-            || this.strEq(fn, "recv") || this.strEq(fn, "getuid")
-            || this.strEq(fn, "setsockopt") || this.strEq(fn, "getaddrinfo")
-            || this.strEq(fn, "freeaddrinfo") || this.strEq(fn, "memcpy")) { return "/usr/lib/libSystem.B.dylib"; }
-        if (this.strEq(fn, "objc_getClass") || this.strEq(fn, "sel_registerName")
-            || this.strEq(fn, "objc_msgSend")) { return "/usr/lib/libobjc.A.dylib"; }
+        if (fn == "nanosleep" || fn == "clock_gettime"
+            || fn == "getenv" || fn == "setenv"
+            || fn == "open" || fn == "read"
+            || fn == "write" || fn == "close"
+            || fn == "sysconf" || fn == "sysctlbyname"
+            || fn == "getentropy" || fn == "arc4random_buf"
+            || fn == "socket" || fn == "connect"
+            || fn == "bind" || fn == "listen"
+            || fn == "accept" || fn == "send"
+            || fn == "recv" || fn == "getuid"
+            || fn == "setsockopt" || fn == "getaddrinfo"
+            || fn == "freeaddrinfo" || fn == "memcpy") { return "/usr/lib/libSystem.B.dylib"; }
+        if (fn == "objc_getClass" || fn == "sel_registerName"
+            || fn == "objc_msgSend") { return "/usr/lib/libobjc.A.dylib"; }
         return "";
     }
 
     private bool macResolvable(string name) {
         if (this.macAllModules) { return true; }
         for (int g = 0; g < this.macGrantNames.length; g++) {
-            if (this.strEq(this.macGrantNames[g], name)) { return true; }
+            if (this.macGrantNames[g] == name) { return true; }
         }
         string fnLib = this.macLibForFn(name);
         if (fnLib.length > 0) {
             for (int m = 0; m < this.macOpenModules.length; m++) {
-                if (this.strEq(this.macModuleNameLib(this.macOpenModules[m]), fnLib)) { return true; }
+                if (this.macModuleNameLib(this.macOpenModules[m]) == fnLib) { return true; }
             }
         }
         return false;
@@ -3536,10 +3528,10 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
     // entry's export list (single-export grants need no list). Custom
     // grants skip the std-internal rule: the manifest is the opt-in.
     private void recordCustomImportGrant(string src, bool all, string[] names) {
-        if (this.strEq(src, "win32") || this.strEq(src, "linux") || this.strEq(src, "mac")) {
+        if (src == "win32" || src == "linux" || src == "mac") {
             return;
         }
-        if (src.length > 6 && this.strEq(src.substr(0, 6), "win32.")) {
+        if (src.length > 6 && src.substr(0, 6) == "win32.") {
             string module = src.substr(6);
             if (this.win32ModuleNameDll(module) != "") { return; }
             if (!customNativeHasWin(module)) { return; }
@@ -3549,7 +3541,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             }
             return;
         }
-        if (src.length > 6 && this.strEq(src.substr(0, 6), "linux.")) {
+        if (src.length > 6 && src.substr(0, 6) == "linux.") {
             string module = src.substr(6);
             if (this.linuxModuleNameLib(module) != "") { return; }
             if (!customNativeHasLin(module)) { return; }
@@ -3576,7 +3568,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
 
     private bool customResolvable(string name) {
         for (int g = 0; g < this.customGrantNames.length; g++) {
-            if (this.strEq(this.customGrantNames[g], name)) { return true; }
+            if (this.customGrantNames[g] == name) { return true; }
         }
         return false;
     }
@@ -3584,16 +3576,16 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
     // Filesystem entry points whose first argument must be a file path
     // (VALUE_EXCEPTION.md).
     private bool isPathFirstArgMethod(string m) {
-        if (this.strEq(m, "readString") || this.strEq(m, "readFile")) { return true; }
-        if (this.strEq(m, "readBytes") || this.strEq(m, "writeString")) { return true; }
-        if (this.strEq(m, "writeFile") || this.strEq(m, "writeBytes")) { return true; }
-        if (this.strEq(m, "exists") || this.strEq(m, "delete")) { return true; }
-        if (this.strEq(m, "deleteFile") || this.strEq(m, "rename")) { return true; }
-        if (this.strEq(m, "copy") || this.strEq(m, "mkdir")) { return true; }
-        if (this.strEq(m, "createDirectory") || this.strEq(m, "createDir")) { return true; }
-        if (this.strEq(m, "directoryExists") || this.strEq(m, "folderExists")) { return true; }
-        if (this.strEq(m, "isFile") || this.strEq(m, "isDirectory")) { return true; }
-        if (this.strEq(m, "size") || this.strEq(m, "listFiles")) { return true; }
+        if (m == "readString" || m == "readFile") { return true; }
+        if (m == "readBytes" || m == "writeString") { return true; }
+        if (m == "writeFile" || m == "writeBytes") { return true; }
+        if (m == "exists" || m == "delete") { return true; }
+        if (m == "deleteFile" || m == "rename") { return true; }
+        if (m == "copy" || m == "mkdir") { return true; }
+        if (m == "createDirectory" || m == "createDir") { return true; }
+        if (m == "directoryExists" || m == "folderExists") { return true; }
+        if (m == "isFile" || m == "isDirectory") { return true; }
+        if (m == "size" || m == "listFiles") { return true; }
         return false;
     }
 
@@ -3601,7 +3593,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         if (!this.isPathFirstArgMethod(call.name)) { return; }
         this.checkPathLiteralArg(call, 0);
         // rename(src, dst) / copy(src, dst): both arguments are paths.
-        if (this.strEq(call.name, "rename") || this.strEq(call.name, "copy")) {
+        if (call.name == "rename" || call.name == "copy") {
             this.checkPathLiteralArg(call, 1);
         }
     }
@@ -3610,12 +3602,12 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         if (call.childCount() < 1) { return; }
         Node recv = call.child(0);
         if (recv.kind != ND_IDENT) { return; }
-        if (!this.strEq(recv.name, "fs") && !this.strEq(recv.name, "file")
-            && !this.strEq(recv.name, "folder")) { return; }
+        if (recv.name != "fs" && recv.name != "file"
+            && recv.name != "folder") { return; }
         if (!this.isPathFirstArgMethod(call.name)) { return; }
         // Children are [receiver, arg0, arg1, ...].
         this.checkPathLiteralArg(call, 1);
-        if (this.strEq(call.name, "rename") || this.strEq(call.name, "copy")) {
+        if (call.name == "rename" || call.name == "copy") {
             this.checkPathLiteralArg(call, 2);
         }
     }

@@ -770,6 +770,30 @@ class BuiltinMethods {
                 if (args.length < 1) { return makeChar(' '); }
                 return makeChar(char(args[0].toInt()));
             }
+            // DOCS/262 — case-aware comparison. `==` stays the single
+            // spelling for case-sensitive equality; `sc == 1`
+            // (StringCase.INSENSITIVE) folds ASCII case before comparing.
+            if (method == "equals") {
+                if (args.length < 3) { return makeBool(false); }
+                string a = args[0].tag == VAL_STRING ? args[0].strVal : args[0].toString();
+                string b = args[1].tag == VAL_STRING ? args[1].strVal : args[1].toString();
+                // Raw ints (1 == INSENSITIVE, the compilers' enum value) and
+                // interpreter enum values both select the insensitive path.
+                int scFlag = args[2].toInt();
+                if (args[2].tag == VAL_ENUM_VAL) { scFlag = args[2].strVal == "INSENSITIVE" ? 1 : 0; }
+                if (scFlag == 1) {
+                    if (a.length != b.length) { return makeBool(false); }
+                    for (int i = 0; i < a.length; i++) {
+                        int ca = a[i];
+                        int cb = b[i];
+                        if (ca >= 'A' && ca <= 'Z') { ca = ca + 32; }
+                        if (cb >= 'A' && cb <= 'Z') { cb = cb + 32; }
+                        if (ca != cb) { return makeBool(false); }
+                    }
+                    return makeBool(true);
+                }
+                return makeBool(a == b);
+            }
             return makeNull();
         }
         // VALUE_EXCEPTION.md — numeric parse conversions on the interpreter's

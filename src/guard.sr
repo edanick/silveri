@@ -48,14 +48,6 @@ class MemoryGuard {
         this.nullSafeDepth = 0;
     }
 
-    private bool eq(string a, string b) {
-        if (a.length != b.length) { return false; }
-        for (int i = 0; i < a.length; i++) {
-            if (a[i] != b[i]) { return false; }
-        }
-        return true;
-    }
-
     private bool endsWithQ(string s) {
         if (s.length == 0) { return false; }
         return s[s.length - 1] == '?';
@@ -68,7 +60,7 @@ class MemoryGuard {
 
     private int findVar(string name) {
         for (int i = this.vars.length - 1; i >= 0; i--) {
-            if (this.eq(this.vars[i].name, name)) { return i; }
+            if (this.vars[i].name == name) { return i; }
         }
         return -1;
     }
@@ -87,7 +79,7 @@ class MemoryGuard {
             GuardVar dying = this.vars[d];
             for (int j = 0; j < start; j++) {
                 GuardVar outer = this.vars[j];
-                if (outer.isAlive && outer.aliasOf.length > 0 && this.eq(outer.aliasOf, dying.name)) {
+                if (outer.isAlive && outer.aliasOf.length > 0 && outer.aliasOf == dying.name) {
                     this.fail("UnsetAliasCallException", outer.line, outer.col, outer.name, "alias outlives its target " + dying.name);
                 }
             }
@@ -145,7 +137,7 @@ class MemoryGuard {
     private void killAliasesOf(string name) {
         for (int i = 0; i < this.vars.length; i++) {
             GuardVar a = this.vars[i];
-            if (a.aliasOf.length > 0 && this.eq(a.aliasOf, name)) {
+            if (a.aliasOf.length > 0 && a.aliasOf == name) {
                 a.isAlive = false;
                 a.isInit = false;
             }
@@ -162,7 +154,7 @@ class MemoryGuard {
 
     private void checkRead(Node n) {
         string name = n.name;
-        if (this.eq(name, "this")) { return; }
+        if (name == "this") { return; }
         int idx = this.findVar(name);
         if (idx < 0) { return; }
         GuardVar v = this.vars[idx];
@@ -186,7 +178,7 @@ class MemoryGuard {
 
     private void checkPeek(Node n) {
         string name = n.name;
-        if (this.eq(name, "this")) { return; }
+        if (name == "this") { return; }
         int idx = this.findVar(name);
         if (idx < 0) { return; }
         GuardVar v = this.vars[idx];
@@ -202,7 +194,7 @@ class MemoryGuard {
         Node op = n.child(0);
         if (op.kind == ND_IDENT) {
             string name = op.name;
-            if (!this.eq(name, "this")) {
+            if (name != "this") {
                 int idx = this.findVar(name);
                 if (idx >= 0) {
         GuardVar v = this.vars[idx];
@@ -229,7 +221,7 @@ class MemoryGuard {
     }
 
     private void killMoveSource(Node src) {
-        if (src.kind == ND_IDENT && !this.eq(src.name, "this")) {
+        if (src.kind == ND_IDENT && src.name != "this") {
             int si = this.findVar(src.name);
             if (si >= 0) {
                 GuardVar sv = this.vars[si];
@@ -250,7 +242,7 @@ class MemoryGuard {
 
     private void checkMove(Node n) {
         Node dest = n.child(0);
-        if (dest.kind == ND_IDENT && !this.eq(dest.name, "this")) {
+        if (dest.kind == ND_IDENT && dest.name != "this") {
             int di = this.findVar(dest.name);
             if (di >= 0) {
                 this.vars[di].isInit = true;
@@ -269,7 +261,7 @@ class MemoryGuard {
                 int oi = this.findVar(op.name);
                 if (oi >= 0) {
                     GuardVar ov = this.vars[oi];
-                    if (v.typeHint.length > 0 && ov.typeHint.length > 0 && !this.eq(v.typeHint, ov.typeHint)) {
+                    if (v.typeHint.length > 0 && ov.typeHint.length > 0 && v.typeHint != ov.typeHint) {
                         this.fail("AddressTypeMistmatchException", lhs.line, lhs.col, v.name, "type punning of an address (@" + op.name + " is " + ov.typeHint + ", target is " + v.typeHint + ")");
                     }
                     v.holdsAddress = true;
@@ -279,7 +271,7 @@ class MemoryGuard {
             int oi = this.findVar(init.name);
             if (oi >= 0 && this.vars[oi].holdsAddress) {
                 GuardVar ov = this.vars[oi];
-                if (v.typeHint.length > 0 && ov.typeHint.length > 0 && !this.eq(v.typeHint, ov.typeHint)) {
+                if (v.typeHint.length > 0 && ov.typeHint.length > 0 && v.typeHint != ov.typeHint) {
                     this.fail("AddressTypeMistmatchException", lhs.line, lhs.col, v.name, "type punning of an address (" + init.name + " is " + ov.typeHint + ", target is " + v.typeHint + ")");
                 }
                 v.holdsAddress = true;
@@ -302,7 +294,7 @@ class MemoryGuard {
         Node lhs = n.child(0);
         Node rhs = n.child(1);
         bool lhsNullable = false;
-        if (lhs.kind == ND_IDENT && !this.eq(lhs.name, "this")) {
+        if (lhs.kind == ND_IDENT && lhs.name != "this") {
             if (this.isConstName(lhs.name)) {
                 this.fail("InvalidAssignment", lhs.line, lhs.col, lhs.name, "cannot write to a const");
             }
@@ -337,7 +329,7 @@ class MemoryGuard {
 
     private bool isConstName(string name) {
         for (int i = 0; i < this.constNames.length; i++) {
-            if (this.eq(this.constNames[i], name)) { return true; }
+            if (this.constNames[i] == name) { return true; }
         }
         return false;
     }
@@ -358,7 +350,7 @@ class MemoryGuard {
                 int oi = this.findVar(op.name);
                 if (oi >= 0) {
                     GuardVar ov = this.vars[oi];
-                    if (node.typeHint.length > 0 && ov.typeHint.length > 0 && !this.eq(node.typeHint, ov.typeHint)) {
+                    if (node.typeHint.length > 0 && ov.typeHint.length > 0 && node.typeHint != ov.typeHint) {
                         this.fail("AddressTypeMistmatchException", init.line, init.col, tname, "type punning of an address (@" + op.name + " is " + ov.typeHint + ", target is " + node.typeHint + ")");
                     }
                 }
@@ -367,9 +359,9 @@ class MemoryGuard {
     }
 
     private bool isPrimitive(string t) {
-        if (this.eq(t, "int") || this.eq(t, "string") || this.eq(t, "bool") || this.eq(t, "char")) { return true; }
-        if (this.eq(t, "float") || this.eq(t, "float64") || this.eq(t, "int32") || this.eq(t, "int64")) { return true; }
-        if (this.eq(t, "uint") || this.eq(t, "double") || this.eq(t, "void") || this.eq(t, "var")) { return true; }
+        if (t == "int" || t == "string" || t == "bool" || t == "char") { return true; }
+        if (t == "float" || t == "float64" || t == "int32" || t == "int64") { return true; }
+        if (t == "uint" || t == "double" || t == "void" || t == "var") { return true; }
         return false;
     }
 
