@@ -498,7 +498,7 @@ string loadProjectSource(string projectPath) {
     if (name != "") { metadata += "const string APP_NAME = \"" + name + "\";\n"; }
     if (version != "") { metadata += "const string APP_VERSION = \"" + version + "\";\n"; }
     if (license != "") { metadata += "const string APP_LICENSE = \"" + license + "\";\n"; }
-    metadata += "const string LANG_VERSION = \"0.7.1\";\n";
+    metadata += "const string LANG_VERSION = \"0.7.7.1\";\n";
     metadata += "const string APP_COPYRIGHT = \"Edan M. © 2025\";\n";
     string ptype = projManifestValue(manifest, "type");
     if (ptype == "" || ptype == "exe") { ptype = "console"; }
