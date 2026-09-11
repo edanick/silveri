@@ -14,34 +14,13 @@ a native executable.
 
 ## Quick start
 
-Place `silveri` on your `PATH`, then run any Silver source file:
-
-```bash
-silveri path/to/program.sr
-```
-
-Silver files use the `.sr` extension:
-
-```silver
-void main() {
-    string message = "Hello from Silver";
-    printline(message);
-}
-```
-
-Save the example as `hello.sr` and execute it immediately:
-
-```bash
-silveri hello.sr
-```
-
 ### Put `silveri` on your `PATH`
 
 #### Windows
 
 Pick either a global binaries directory or a per-user one under AppData.
 
-Option 1 — global `C:\bin` (needs admin to create):
+Option 1 - global `C:\bin` (needs admin to create):
 
 ```powershell
 mkdir C:\bin
@@ -50,7 +29,7 @@ setx PATH "$env:PATH;C:\bin"
 
 Download or copy `silveri.exe` into `C:\bin`.
 
-Option 2 — per-user `%appdata%\silver\bin` (no admin needed):
+Option 2 - per-user `%appdata%\silver\bin` (no admin needed):
 
 ```powershell
 mkdir "$env:APPDATA\silver\bin"
@@ -95,6 +74,29 @@ automatically once it exists (re-login to apply); macOS always needs the
 export line above, then `source ~/.zshrc`.
 
 Verify with `silveri --version`.
+
+### Run a Silver program
+
+Place `silveri` on your `PATH`, then run any Silver source file:
+
+```bash
+silveri path/to/program.sr
+```
+
+Silver files use the `.sr` extension:
+
+```silver
+void main() {
+    string message = "Hello from Silver";
+    printline(message);
+}
+```
+
+Save the example as `hello.sr` and execute it immediately:
+
+```bash
+silveri hello.sr
+```
 
 ## Command-line usage
 

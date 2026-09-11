@@ -11,7 +11,7 @@ manifest sources).
 After the UNIFIED_CORE_LIBRARY phase-3 rewires (v2 canonical fold), the
 interpreter ships no `_win` backend files at all: `builtins_win.sr`,
 `cache_win.sr`, and `resource_win.sr` were folded into their owner modules
-(`builtins.sr`, `cache.sr`, `resource.sr`) and deleted — every raw kernel32/
+(`builtins.sr`, `cache.sr`, `resource.sr`) and deleted, so every raw kernel32/
 msvcrt call now lives inline inside an `#on WINDOWS ... #off` region of the
 owning function (file-top plain grant for the win32 imports), per
 UNIFIED_CORE_LIBRARY.md §4 rule 6. `gc.sr` keeps its runtime-internal
@@ -19,7 +19,7 @@ memory backend as-is. The remaining sources (`exception_std.sr`,
 `project.sr`, and the rest of `src/`) are win32-free: they route through
 the unified std (`fs.getenv`, `file.*`, `folder.*`). The old
 `mouse.sr`/`keyboard.sr` mirror files were dead code (never compiled,
-never dispatched — the interpreter implements `mouse`/`keyboard` natively
+never dispatched, as the interpreter implements `mouse`/`keyboard` natively
 via the `mouse_module`/`keyboard_module` builtin dispatch) and were
 removed.
 
