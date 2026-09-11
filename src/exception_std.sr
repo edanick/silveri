@@ -9,7 +9,10 @@ mod export exception_std;
 // compiler flattens module-level functions to the global namespace by
 // bare name, so it would collide with llmai_std.source().
 public string exceptionSource() {
-    return "
+    return "import * from win32.msvcrt;
+
+mod export exception;
+
 // Silver exception hierarchy.
 //
 // `throw` raises an instance of one of these classes (or any user class), and
@@ -1451,6 +1454,86 @@ class FfiException {
 // --- Misc -----------------------------------------------------------------
 
 class InvalidCharacterException {
+    string message;
+    int line;
+    int column;
+    string reason;
+    construct(string msg) {
+        this.message = msg;
+        this.line = 0;
+        this.column = 0;
+        this.reason = msg;
+    }
+}
+
+// --- Memory safety runtime backstop ---------------------------------------
+
+class UnsetAliasCallException {
+    string message;
+    int line;
+    int column;
+    string reason;
+    construct(string msg) {
+        this.message = msg;
+        this.line = 0;
+        this.column = 0;
+        this.reason = msg;
+    }
+}
+
+class AddressTypeMistmatchException {
+    string message;
+    int line;
+    int column;
+    string reason;
+    construct(string msg) {
+        this.message = msg;
+        this.line = 0;
+        this.column = 0;
+        this.reason = msg;
+    }
+}
+
+class UnassignedVariableCallException {
+    string message;
+    int line;
+    int column;
+    string reason;
+    construct(string msg) {
+        this.message = msg;
+        this.line = 0;
+        this.column = 0;
+        this.reason = msg;
+    }
+}
+
+class UnassignedConstDeclarationException {
+    string message;
+    int line;
+    int column;
+    string reason;
+    construct(string msg) {
+        this.message = msg;
+        this.line = 0;
+        this.column = 0;
+        this.reason = msg;
+    }
+}
+
+class NullValueException {
+    string message;
+    int line;
+    int column;
+    string reason;
+    construct(string msg) {
+        this.message = msg;
+        this.line = 0;
+        this.column = 0;
+        this.reason = msg;
+    }
+}
+
+class NonexistenceException {
     string message;
     int line;
     int column;
