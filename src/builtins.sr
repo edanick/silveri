@@ -1126,12 +1126,19 @@ class BuiltinMethods {
                 return makeArray(result);
             }
             if (method == "writeBytes" && args.length > 1 && args[1].tag == VAL_ARRAY) {
-                int count = arrValLen(args[1]);
-                byte[] data = [];
-                for (int i = 0; i < count; i++) {
-                    data.add(byte(arrValIntAt(args[1], i)));
+                int wbCount = arrValLen(args[1]);
+                // int[] (not byte[]): the native byte[] add path loses elements
+                // past the first (compiler bug, minimal repro nwb7.sr); the
+                // writeBytes builtin accepts int[] with identical semantics
+                // (see cache.sr BcBinWriter.flush). Locals use wb-prefixed
+                // names: moduleMethod reuses short names (data/count/i) across
+                // dozens of branches and same-named locals in disjoint
+                // branches collide (adds silently lost; minimal shape TBD).
+                int[] wbData = [];
+                for (int wbI = 0; wbI < wbCount; wbI++) {
+                    wbData.add(int(arrValIntAt(args[1], wbI)));
                 }
-                file.writeBytes(args[0].strVal, data);
+                file.writeBytes(args[0].strVal, wbData);
                 return makeNull();
             }
             return makeNull();
@@ -1230,12 +1237,19 @@ class BuiltinMethods {
                 return makeArray(result);
             }
             if (method == "writeBytes" && args.length > 1 && args[1].tag == VAL_ARRAY) {
-                int count = arrValLen(args[1]);
-                byte[] data = [];
-                for (int i = 0; i < count; i++) {
-                    data.add(byte(arrValIntAt(args[1], i)));
+                int wbCount = arrValLen(args[1]);
+                // int[] (not byte[]): the native byte[] add path loses elements
+                // past the first (compiler bug, minimal repro nwb7.sr); the
+                // writeBytes builtin accepts int[] with identical semantics
+                // (see cache.sr BcBinWriter.flush). Locals use wb-prefixed
+                // names: moduleMethod reuses short names (data/count/i) across
+                // dozens of branches and same-named locals in disjoint
+                // branches collide (adds silently lost; minimal shape TBD).
+                int[] wbData = [];
+                for (int wbI = 0; wbI < wbCount; wbI++) {
+                    wbData.add(int(arrValIntAt(args[1], wbI)));
                 }
-                file.writeBytes(args[0].strVal, data);
+                file.writeBytes(args[0].strVal, wbData);
                 return makeNull();
             }
             return makeNull();
