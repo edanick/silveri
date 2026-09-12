@@ -2515,6 +2515,43 @@ mirrorPut(obj, target.name, val);
         this.hasThrown = true;
     }
 
+    // Byte-conversion guards used by byte / byte[] variable declarations. Values
+    // outside the 0..255 range raise OverflowException (mirrors the compiled
+    // checked-byte conversion in the native backend). These are methods (not
+    // free functions) so failures raise an interpreted exception through
+    // throwException: OverflowException/ValueException only exist inside the
+    // embedded exceptionSource text, never in the interpreter's own compile
+    // scope, so `throw new` cannot name them here. Callers must check hasThrown
+    // before defining the variable.
+    public Value checkedByte(Value value) {
+        if (value.tag == VAL_INT || value.tag == VAL_BYTE) {
+            if (value.intVal < 0 || value.intVal > 255) {
+                this.throwException("OverflowException", "byte value out of range: " + value.intVal.toString());
+                return makeByte(0);
+            }
+            return makeByte(value.intVal);
+        }
+        this.throwException("ValueException", "byte conversion requires an integer value");
+        return makeByte(0);
+    }
+
+    public Value checkedByteArray(Value value) {
+        if (value.tag == VAL_ARRAY) {
+            for (int i = 0; i < value.arrVal.length; i++) {
+                Value el = value.arrVal[i];
+                if (el.tag == VAL_INT || el.tag == VAL_BYTE) {
+                    if (el.intVal < 0 || el.intVal > 255) {
+                        this.throwException("OverflowException", "byte[] element out of range: " + el.intVal.toString());
+                        return value;
+                    }
+                }
+            }
+            return value;
+        }
+        this.throwException("ValueException", "byte[] conversion requires an array value");
+        return value;
+    }
+
     private Value constructStruct(string name, Value[] args) {
         dict<string, Value> fields = {};
         Value[] fvals = [];
@@ -2773,10 +2810,11 @@ mirrorPut(obj, target.name, val);
             if (stmt.childCount() > 0) {
                 Value val = this.evalExpr(stmt.child(0), env);
                 if (stmt.typeHint == "byte") {
-                    val = checkedByte(val);
+                    val = this.checkedByte(val);
                 } else if (stmt.typeHint == "byte[]") {
-                    val = checkedByteArray(val);
+                    val = this.checkedByteArray(val);
                 }
+                if (this.hasThrown) { return; }
                 env.define(stmt.name, val);
             } else {
                 if (stmt.typeHint == "byte") { env.define(stmt.name, makeByte(0)); }
@@ -2822,10 +2860,11 @@ mirrorPut(obj, target.name, val);
             if (stmt.childCount() > 0) {
                 Value val = this.evalExpr(stmt.child(0), env);
                 if (stmt.typeHint == "byte") {
-                    val = checkedByte(val);
+                    val = this.checkedByte(val);
                 } else if (stmt.typeHint == "byte[]") {
-                    val = checkedByteArray(val);
+                    val = this.checkedByteArray(val);
                 }
+                if (this.hasThrown) { return; }
                 env.define(stmt.name, val);
             } else {
                 if (stmt.typeHint == "byte") { env.define(stmt.name, makeByte(0)); }
@@ -3046,34 +3085,6 @@ mirrorPut(obj, target.name, val);
             return;
         }
     }
-}
-
-// Byte-conversion guards used by byte / byte[] variable declarations. Values
-// outside the 0..255 range raise OverflowException (mirrors the compiled
-// checked-byte conversion in the native backend).
-Value checkedByte(Value value) {
-    if (value.tag == VAL_INT || value.tag == VAL_BYTE) {
-        if (value.intVal < 0 || value.intVal > 255) {
-            throw new OverflowException("byte value out of range: " + value.intVal);
-        }
-        return makeByte(value.intVal);
-    }
-    throw new ValueException("byte conversion requires an integer value");
-}
-
-Value checkedByteArray(Value value) {
-    if (value.tag == VAL_ARRAY) {
-        for (int i = 0; i < value.arrVal.length; i++) {
-            Value el = value.arrVal[i];
-            if (el.tag == VAL_INT || el.tag == VAL_BYTE) {
-                if (el.intVal < 0 || el.intVal > 255) {
-                    throw new OverflowException("byte[] element out of range: " + el.intVal);
-                }
-            }
-        }
-        return value;
-    }
-    throw new ValueException("byte[] conversion requires an array value");
 }
 
 // ---- TYPE_EXCEPTIONS.md runtime helpers -----------------------------------
