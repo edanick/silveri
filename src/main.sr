@@ -883,6 +883,39 @@ bool matchStarImport(string source, int pos, int[] bounds) {
     return true;
 }
 
+// `import NAME from SRC;` / `import {A, B} from SRC;` -- the source module
+// (dotted allowed) lands in bounds, mirroring matchStarImport. Star forms are
+// left to matchStarImport. The binding name / brace list before `from` is
+// skipped; resolution loads SRC and its classes/functions become visible.
+bool matchFromImport(string source, int pos, int[] bounds) {
+    int i = pos + 6;
+    while (i < source.length && source[i] == ' ') { i++; }
+    if (i >= source.length) { return false; }
+    if (source[i] == '*') { return false; }
+    if (source[i] == '{') {
+        while (i < source.length && source[i] != '}') { i++; }
+        if (i >= source.length) { return false; }
+        i++;
+    } else {
+        while (i < source.length && (isNatWordChar(source[i]) || source[i] == '.')) { i++; }
+    }
+    while (i < source.length && source[i] == ' ') { i++; }
+    if (i + 4 > source.length) { return false; }
+    string w = "";
+    for (int k = i; k < i + 4; k++) { w += source[k]; }
+    if (w.lower() != "from") { return false; }
+    int after = i + 4;
+    if (after < source.length && isNatWordChar(source[after])) { return false; }
+    i = after;
+    while (i < source.length && source[i] == ' ') { i++; }
+    int ns = i;
+    while (i < source.length && (isNatWordChar(source[i]) || source[i] == '.')) { i++; }
+    if (i == ns) { return false; }
+    bounds[0] = ns;
+    bounds[1] = i;
+    return true;
+}
+
 string resolveImports(string source, string inputFile, int[] prependLen, string target) {    if (prependLen.length == 0) { prependLen.add(0); } else { prependLen[0] = 0; }
     string prepend = "";
     bool badModule = false;
@@ -920,12 +953,14 @@ string resolveImports(string source, string inputFile, int[] prependLen, string 
             continue;
         }
         // Star-import shape with any spacing (`import * from m;` in
-        // sources, `import*from m;` in minified `.qs` bundles). Any other
-        // `import` spelling belongs to a later pass.
+        // sources, `import*from m;` in minified `.qs` bundles), and the
+        // named/braced `from` shapes (`import x from m;`,
+        // `import {a, b} from m;`) -- DOCS/260. Any other `import` spelling
+        // (a bare `import m;`) belongs to the plain pass below.
         int[] mm = [];
         mm.add(0);
         mm.add(0);
-        if (!matchStarImport(aggregate, importPos, mm)) {
+        if (!matchStarImport(aggregate, importPos, mm) && !matchFromImport(aggregate, importPos, mm)) {
             cursor = importPos + 1;
             continue;
         }
