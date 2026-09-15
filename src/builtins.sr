@@ -208,9 +208,9 @@ class BuiltinMethods {
         if (method == "lower" || method == "toLower") { return makeString(s.strVal.lower()); }
         if (method == "substr" || method == "substring") {
             if (args.length < 1) { return s; }
-            int start = args[0].toInt().toInt();
+            int start = args[0].toInt();
             if (args.length < 2) { return makeString(s.strVal.substr(start)); }
-            return makeString(s.strVal.substr(start, args[1].toInt().toInt()));
+            return makeString(s.strVal.substr(start, args[1].toInt()));
         }
         if (method == "length") { return makeInt(s.strVal.length.toInt64()); }
         if (method == "indexOf" || method == "find") {
@@ -237,15 +237,15 @@ class BuiltinMethods {
         if (method == "repeat") {
             if (args.length < 1) { return s; }
             string result = "";
-            int n = args[0].toInt().toInt();
+            int n = args[0].toInt();
             for (int i = 0; i < n; i++) { result += s.strVal; }
             return makeString(result);
         }
         if (method == "slice") {
             int start = 0;
-            if (args.length > 0) { start = args[0].toInt().toInt(); if (start < 0) { start = 0; } }
+            if (args.length > 0) { start = args[0].toInt(); if (start < 0) { start = 0; } }
             int end = s.strVal.length;
-            if (args.length > 1) { end = args[1].toInt().toInt(); if (end > s.strVal.length) { end = s.strVal.length; } }
+            if (args.length > 1) { end = args[1].toInt(); if (end > s.strVal.length) { end = s.strVal.length; } }
             if (end <= start) { return makeString(""); }
             // substr(start, X) takes X = LENGTH, so slice's exclusive end
             // must be converted to a length here (matches rs slice).
@@ -253,7 +253,7 @@ class BuiltinMethods {
         }
         if (method == "charAt") {
             if (args.length < 1) { return makeChar(' '); }
-            int i = args[0].toInt().toInt();
+            int i = args[0].toInt();
             if (i >= 0 && i < s.strVal.length) { return makeChar(s.strVal[i]); }
             return makeChar(' ');
         }
@@ -281,7 +281,7 @@ class BuiltinMethods {
         }
         if (method == "charCode") {
             if (args.length < 1) { return makeInt(0); }
-            int i = args[0].toInt().toInt();
+            int i = args[0].toInt();
             if (i >= 0 && i < s.strVal.length) { return makeInt(s.strVal[i].toInt64()); }
             return makeInt(0);
         }
@@ -291,7 +291,7 @@ class BuiltinMethods {
         }
         if (method == "pad" || method == "padLeft" || method == "padRight") {
             if (args.length < 2) { return s; }
-            int count = args[0].toInt().toInt();
+            int count = args[0].toInt();
             string fill = "";
             if (args[1].tag == VAL_CHAR) {
                 char ch = args[1].charVal;
@@ -457,7 +457,7 @@ class BuiltinMethods {
         }
         if (method == "remove") {
             if (args.length > 0) {
-                int idx = args[0].toInt().toInt();
+                int idx = args[0].toInt();
                 if (idx >= 0 && idx < arr.arrVal.length) {
                     arr.arrVal.remove(idx);
                 }
@@ -535,22 +535,22 @@ class BuiltinMethods {
         }
         if (method == "slice") {
             int start = 0;
-            if (args.length > 0) { start = args[0].toInt().toInt(); if (start < 0) { start = 0; } }
+            if (args.length > 0) { start = args[0].toInt(); if (start < 0) { start = 0; } }
             int end = arr.arrVal.length;
-            if (args.length > 1) { end = args[1].toInt().toInt(); if (end > arr.arrVal.length) { end = arr.arrVal.length; } }
+            if (args.length > 1) { end = args[1].toInt(); if (end > arr.arrVal.length) { end = arr.arrVal.length; } }
             Value[] result = [];
             for (int i = start; i < end; i++) { result.add(arr.arrVal[i]); }
             return makeArray(result);
         }
         if (method == "take") {
-            int n = 0; if (args.length > 0) { n = args[0].toInt().toInt(); }
+            int n = 0; if (args.length > 0) { n = args[0].toInt(); }
             if (n > arr.arrVal.length) { n = arr.arrVal.length; }
             Value[] result = [];
             for (int i = 0; i < n; i++) { result.add(arr.arrVal[i]); }
             return makeArray(result);
         }
         if (method == "skip") {
-            int n = 0; if (args.length > 0) { n = args[0].toInt().toInt(); }
+            int n = 0; if (args.length > 0) { n = args[0].toInt(); }
             if (n > arr.arrVal.length) { n = arr.arrVal.length; }
             Value[] result = [];
             for (int i = n; i < arr.arrVal.length; i++) { result.add(arr.arrVal[i]); }
@@ -591,7 +591,7 @@ class BuiltinMethods {
             return makeInt(c.toInt64());
         }
         if (method == "chunk") {
-            int n = 1; if (args.length > 0) { n = args[0].toInt().toInt(); if (n < 1) { n = 1; } }
+            int n = 1; if (args.length > 0) { n = args[0].toInt(); if (n < 1) { n = 1; } }
             Value[] result = [];
             for (int i = 0; i < arr.arrVal.length; i += n) {
                 Value[] chunk = [];
@@ -1520,7 +1520,7 @@ class BuiltinMethods {
         }
         if (mod == "console_module") {
             if (method == "setForeground" || method == "foreground") {
-                int color = args.length > 0 ? args[0].toInt().toInt() : 7;
+                int color = args.length > 0 ? args[0].toInt() : 7;
                 string code = "37";
                 if (color == 0) { code = "30"; }
                 else if (color == 1) { code = "34"; }
@@ -1540,7 +1540,7 @@ class BuiltinMethods {
                 return makeNull();
             }
             if (method == "setBackground") {
-                int color = args.length > 0 ? args[0].toInt().toInt() : 0;
+                int color = args.length > 0 ? args[0].toInt() : 0;
                 string code = "40";
                 if (color == 1) { code = "44"; }
                 else if (color == 2) { code = "42"; }
@@ -1617,7 +1617,7 @@ class BuiltinMethods {
             }
             if (method == "press" || method == "hold" || method == "down") {
                 if (args.length > 0) {
-                    int vk = args[0].tag == VAL_INT ? args[0].toInt().toInt() : keyNameToVk(args[0].strVal);
+                    int vk = args[0].tag == VAL_INT ? args[0].toInt() : keyNameToVk(args[0].strVal);
                     #on WINDOWS
                     keybd_event(vk, 0, 0, 0);
                     #off
@@ -1626,7 +1626,7 @@ class BuiltinMethods {
             }
             if (method == "release" || method == "up") {
                 if (args.length > 0) {
-                    int vk = args[0].tag == VAL_INT ? args[0].toInt().toInt() : keyNameToVk(args[0].strVal);
+                    int vk = args[0].tag == VAL_INT ? args[0].toInt() : keyNameToVk(args[0].strVal);
                     #on WINDOWS
                     keybd_event(vk, 0, 2, 0);
                     #off
@@ -1668,7 +1668,7 @@ class BuiltinMethods {
             }
             if (method == "isDown") {
                 if (args.length > 0) {
-                    int vk = args[0].tag == VAL_INT ? args[0].toInt().toInt() : keyNameToVk(args[0].strVal);
+                    int vk = args[0].tag == VAL_INT ? args[0].toInt() : keyNameToVk(args[0].strVal);
                     int state = 0;
                     #on WINDOWS
                     state = GetKeyState(vk);
@@ -1682,7 +1682,7 @@ class BuiltinMethods {
         if (mod == "mouse_module") {
             if (method == "press" || method == "hold" || method == "down") {
                 if (args.length > 0) {
-                    int mb = args[0].toInt().toInt();
+                    int mb = args[0].toInt();
                     int mf = 0x0002;
                     if (mb == 2) { mf = 0x0008; }
                     if (mb == 4) { mf = 0x0020; }
@@ -1694,7 +1694,7 @@ class BuiltinMethods {
             }
             if (method == "release" || method == "up") {
                 if (args.length > 0) {
-                    int mb = args[0].toInt().toInt();
+                    int mb = args[0].toInt();
                     int mf = 0x0004;
                     if (mb == 2) { mf = 0x0010; }
                     if (mb == 4) { mf = 0x0040; }
@@ -1706,7 +1706,7 @@ class BuiltinMethods {
             }
             if (method == "click" || method == "tap") {
                 if (args.length > 0) {
-                    int mb = args[0].toInt().toInt();
+                    int mb = args[0].toInt();
                     int down = 0x0002;
                     int up = 0x0004;
                     if (mb == 2) { down = 0x0008; up = 0x0010; }
@@ -1720,10 +1720,10 @@ class BuiltinMethods {
             }
             if (method == "scroll") {
                 int delta = 0;
-                if (args.length > 0) { delta = args[0].toInt().toInt(); }
+                if (args.length > 0) { delta = args[0].toInt(); }
                 int dirDelta = delta;
                 if (args.length >= 2) {
-                    int dir = args[1].toInt().toInt();
+                    int dir = args[1].toInt();
                     if (dir == 1) {
                         // ScrollDirections.UP: -|delta| -> negate
                         if (dirDelta > 0) { dirDelta = -dirDelta; }
@@ -1742,7 +1742,7 @@ class BuiltinMethods {
             // restore it later.
             if (method == "setCursor" || method == "setCursorImage") {
                 if (args.length > 0) {
-                    int handle = args[0].toInt().toInt();
+                    int handle = args[0].toInt();
                     int prior = 0;
                     #on WINDOWS
                     prior = SetCursor(handle);
@@ -1758,10 +1758,10 @@ class BuiltinMethods {
             if (method == "clipCursor") {
                 int rectAddr = 0;
                 if (args.length >= 4) {
-                    int l = args[0].toInt().toInt();
-                    int t = args[1].toInt().toInt();
-                    int r = args[2].toInt().toInt();
-                    int b = args[3].toInt().toInt();
+                    int l = args[0].toInt();
+                    int t = args[1].toInt();
+                    int r = args[2].toInt();
+                    int b = args[3].toInt();
                     // Pack onto the stack: 4 ints = 16 bytes.  A tiny
                     // buffer lives in a fresh stack slot until we hand
                     // its address to the Win32 call.
@@ -1778,7 +1778,7 @@ class BuiltinMethods {
                     return makeInt(clipped);
                 }
                 if (args.length >= 1) {
-                    rectAddr = args[0].toInt().toInt();
+                    rectAddr = args[0].toInt();
                     int clipped = 0;
                     #on WINDOWS
                     clipped = ClipCursor(rectAddr);
@@ -1804,9 +1804,9 @@ class BuiltinMethods {
             if (method == "getClipCursor") {
                 int rectAddr = 0;
                 if (args.length >= 4) {
-                    rectAddr = args[0].toInt().toInt();
+                    rectAddr = args[0].toInt();
                 } else if (args.length >= 1) {
-                    rectAddr = args[0].toInt().toInt();
+                    rectAddr = args[0].toInt();
                 }
                 int got = 0;
                 #on WINDOWS
@@ -2161,7 +2161,7 @@ Value callBuiltin(string name, Value[] args) {
             Sleep(args[0].toInt());
             #off
             #on LINUX
-            int msSleep = args[0].toInt().toInt();
+            int msSleep = args[0].toInt();
             if (msSleep < 0) { msSleep = 0; }
             int[] tsSleep = new int[2];
             tsSleep[0] = msSleep / 1000;
@@ -2173,7 +2173,7 @@ Value callBuiltin(string name, Value[] args) {
             // until probed on Mac hardware): nanosleep via mac.libsystem,
             // same timespec int[2] shape as LINUX (Darwin timespec is
             // tv_sec + tv_nsec = 16 bytes, like Linux x86-64).
-            int msSleep = args[0].toInt().toInt();
+            int msSleep = args[0].toInt();
             if (msSleep < 0) { msSleep = 0; }
             int[] tsSleep = new int[2];
             tsSleep[0] = msSleep / 1000;
@@ -2208,7 +2208,7 @@ Value callBuiltin(string name, Value[] args) {
             Sleep(args[0].toInt());
             #off
             #on LINUX
-            int msWin = args[0].toInt().toInt();
+            int msWin = args[0].toInt();
             if (msWin < 0) { msWin = 0; }
             int[] tsWin = new int[2];
             tsWin[0] = msWin / 1000;
@@ -2218,7 +2218,7 @@ Value callBuiltin(string name, Value[] args) {
             #on MAC
             // MAC (additive, code-only -- MAC.md section 10, UNVALIDATED
             // until probed on Mac hardware): same nanosleep shape as LINUX.
-            int msWin = args[0].toInt().toInt();
+            int msWin = args[0].toInt();
             if (msWin < 0) { msWin = 0; }
             int[] tsWin = new int[2];
             tsWin[0] = msWin / 1000;
@@ -2284,7 +2284,7 @@ Value callBuiltin(string name, Value[] args) {
     }
     if (name == "exit") {
         int code = 0;
-        if (args.length > 0) { code = args[0].toInt().toInt(); }
+        if (args.length > 0) { code = args[0].toInt(); }
         exit(code);
         return makeNull();
     }
@@ -2357,10 +2357,10 @@ Value callBuiltin(string name, Value[] args) {
         // / user32!mouse_event at runtime -- no special interpreter support
         // required beyond passing the args through.
         if (args.length >= 4) {
-            int p0 = args[0].toInt().toInt();
-            int p1 = args[1].toInt().toInt();
-            int p2 = args[2].toInt().toInt();
-            int p3 = args[3].toInt().toInt();
+            int p0 = args[0].toInt();
+            int p1 = args[1].toInt();
+            int p2 = args[2].toInt();
+            int p3 = args[3].toInt();
             #on WINDOWS
             if (name == "keybd_event") {
                 keybd_event(p0, p1, p2, p3);
@@ -2370,7 +2370,7 @@ Value callBuiltin(string name, Value[] args) {
             #off
         } else if (args.length > 0 && name == "keybd_event") {
             #on WINDOWS
-            keybd_event(args[0].toInt().toInt(), 0, 0, 0);
+            keybd_event(args[0].toInt(), 0, 0, 0);
             #off
         }
         return makeNull();
@@ -2390,7 +2390,7 @@ Value callBuiltin(string name, Value[] args) {
         if (args.length > 0) {
             int state = 0;
             #on WINDOWS
-            state = GetKeyState(args[0].toInt().toInt());
+            state = GetKeyState(args[0].toInt());
             #off
             return makeInt(state);
         }
@@ -2400,7 +2400,7 @@ Value callBuiltin(string name, Value[] args) {
         if (args.length > 0) {
             int state = 0;
             #on WINDOWS
-            state = GetAsyncKeyState(args[0].toInt().toInt());
+            state = GetAsyncKeyState(args[0].toInt());
             #off
             return makeInt(state);
         }
@@ -2408,8 +2408,8 @@ Value callBuiltin(string name, Value[] args) {
     }
     if (name == "MapVirtualKeyA") {
         if (args.length >= 2) {
-            int a0 = args[0].toInt().toInt();
-            int a1 = args[1].toInt().toInt();
+            int a0 = args[0].toInt();
+            int a1 = args[1].toInt();
             int mapped = 0;
             #on WINDOWS
             mapped = MapVirtualKeyA(a0, a1);
@@ -2458,8 +2458,8 @@ Value callBuiltin(string name, Value[] args) {
     }
     if (name == "SetCursorPos") {
         if (args.length >= 2) {
-            int ax = args[0].toInt().toInt();
-            int ay = args[1].toInt().toInt();
+            int ax = args[0].toInt();
+            int ay = args[1].toInt();
             int moved = 0;
             #on WINDOWS
             moved = SetCursorPos(ax, ay);
@@ -2473,7 +2473,7 @@ Value callBuiltin(string name, Value[] args) {
         // prior cursor handle so callers can restore it after a temporary
         // change.
         if (args.length >= 1) {
-            int handle = args[0].toInt().toInt();
+            int handle = args[0].toInt();
             int prior = 0;
             #on WINDOWS
             prior = SetCursor(handle);
@@ -2486,7 +2486,7 @@ Value callBuiltin(string name, Value[] args) {
         // The user supplies a 16-byte RECT by reference (silver pointer). We
         // forward raw through to Win32; passing 0 disables clipping.
         if (args.length >= 1) {
-            int refAddr = args[0].toInt().toInt();
+            int refAddr = args[0].toInt();
             int clipped = 0;
             #on WINDOWS
             clipped = ClipCursor(refAddr);
@@ -2499,7 +2499,7 @@ Value callBuiltin(string name, Value[] args) {
         // Caller passes an int that already points at a 16-byte scratch
         // buffer; we mirror Win32's behaviour of accepting a pointer arg.
         if (args.length >= 1) {
-            int refAddr = args[0].toInt().toInt();
+            int refAddr = args[0].toInt();
             int got = 0;
             #on WINDOWS
             got = GetClipCursor(refAddr);
@@ -2517,7 +2517,7 @@ Value callBuiltin(string name, Value[] args) {
     }
     if (name == "SetDoubleClickTime") {
         if (args.length >= 1) {
-            int v = args[0].toInt().toInt();
+            int v = args[0].toInt();
             int ok = 0;
             #on WINDOWS
             ok = SetDoubleClickTime(v);
@@ -2529,10 +2529,10 @@ Value callBuiltin(string name, Value[] args) {
     if (name == "RegisterHotKey") {
         // RegisterHotKey(HWND, int id, UINT fsModifiers, UINT vk)
         if (args.length >= 4) {
-            int a0 = args[0].toInt().toInt();
-            int a1 = args[1].toInt().toInt();
-            int a2 = args[2].toInt().toInt();
-            int a3 = args[3].toInt().toInt();
+            int a0 = args[0].toInt();
+            int a1 = args[1].toInt();
+            int a2 = args[2].toInt();
+            int a3 = args[3].toInt();
             int ok = 0;
             #on WINDOWS
             ok = RegisterHotKey(a0, a1, a2, a3);
@@ -2543,8 +2543,8 @@ Value callBuiltin(string name, Value[] args) {
     }
     if (name == "UnregisterHotKey") {
         if (args.length >= 2) {
-            int a0 = args[0].toInt().toInt();
-            int a1 = args[1].toInt().toInt();
+            int a0 = args[0].toInt();
+            int a1 = args[1].toInt();
             int ok = 0;
             #on WINDOWS
             ok = UnregisterHotKey(a0, a1);
@@ -2555,7 +2555,7 @@ Value callBuiltin(string name, Value[] args) {
     }
     if (name == "MessageBeep") {
         if (args.length >= 1) {
-            int t = args[0].toInt().toInt();
+            int t = args[0].toInt();
             int ok = 0;
             #on WINDOWS
             ok = MessageBeep(t);
@@ -2567,9 +2567,9 @@ Value callBuiltin(string name, Value[] args) {
     if (name == "RegisterRawInputDevices") {
         // RegisterRawInputDevices(PCRAWINPUTDEVICE[], UINT nDevices, UINT cbSize)
         if (args.length >= 3) {
-            int a0 = args[0].toInt().toInt();
-            int a1 = args[1].toInt().toInt();
-            int a2 = args[2].toInt().toInt();
+            int a0 = args[0].toInt();
+            int a1 = args[1].toInt();
+            int a2 = args[2].toInt();
             int ok = 0;
             #on WINDOWS
             ok = RegisterRawInputDevices(a0, a1, a2);
@@ -2581,11 +2581,11 @@ Value callBuiltin(string name, Value[] args) {
     if (name == "GetRawInputData") {
         // GetRawInputData(HRAWINPUT, UINT uiCommand, void* pData, int* pcbSize, UINT cbSizeHeader)
         if (args.length >= 5) {
-            int a0 = args[0].toInt().toInt();
-            int a1 = args[1].toInt().toInt();
-            int a2 = args[2].toInt().toInt();
-            int a3 = args[3].toInt().toInt();
-            int a4 = args[4].toInt().toInt();
+            int a0 = args[0].toInt();
+            int a1 = args[1].toInt();
+            int a2 = args[2].toInt();
+            int a3 = args[3].toInt();
+            int a4 = args[4].toInt();
             int got = 0;
             #on WINDOWS
             got = GetRawInputData(a0, a1, a2, a3, a4);
@@ -2597,9 +2597,9 @@ Value callBuiltin(string name, Value[] args) {
     if (name == "GetRawInputDeviceList") {
         // GetRawInputDeviceList(PRAWINPUTDEVICELIST* pRawInputDeviceList, PUINT puiNumDevices, UINT cbSize)
         if (args.length >= 3) {
-            int a0 = args[0].toInt().toInt();
-            int a1 = args[1].toInt().toInt();
-            int a2 = args[2].toInt().toInt();
+            int a0 = args[0].toInt();
+            int a1 = args[1].toInt();
+            int a2 = args[2].toInt();
             int got = 0;
             #on WINDOWS
             got = GetRawInputDeviceList(a0, a1, a2);
@@ -2617,9 +2617,9 @@ Value callBuiltin(string name, Value[] args) {
     }
     if (name == "GetWindowTextA") {
         if (args.length >= 3) {
-            int a0 = args[0].toInt().toInt();
-            int a1 = args[1].toInt().toInt();
-            int a2 = args[2].toInt().toInt();
+            int a0 = args[0].toInt();
+            int a1 = args[1].toInt();
+            int a2 = args[2].toInt();
             int copied = 0;
             #on WINDOWS
             copied = GetWindowTextA(a0, a1, a2);
@@ -2632,8 +2632,8 @@ Value callBuiltin(string name, Value[] args) {
         if (args.length >= 2) {
             // Raw passthrough (v2 rule 6): the caller supplies the LPDWORD
             // address itself; returns the thread id exactly as the export.
-            int a0 = args[0].toInt().toInt();
-            int a1 = args[1].toInt().toInt();
+            int a0 = args[0].toInt();
+            int a1 = args[1].toInt();
             int tid = 0;
             #on WINDOWS
             tid = GetWindowThreadProcessId(a0, a1);
@@ -2644,9 +2644,9 @@ Value callBuiltin(string name, Value[] args) {
     }
     if (name == "OpenProcess") {
         if (args.length >= 3) {
-            int a0 = args[0].toInt().toInt();
-            int a1 = args[1].toInt().toInt();
-            int a2 = args[2].toInt().toInt();
+            int a0 = args[0].toInt();
+            int a1 = args[1].toInt();
+            int a2 = args[2].toInt();
             int hProcess = 0;
             #on WINDOWS
             hProcess = OpenProcess(a0, a1, a2);
@@ -2657,10 +2657,10 @@ Value callBuiltin(string name, Value[] args) {
     }
     if (name == "QueryFullProcessImageNameA") {
         if (args.length >= 4) {
-            int a0 = args[0].toInt().toInt();
-            int a1 = args[1].toInt().toInt();
-            int a2 = args[2].toInt().toInt();
-            int a3 = args[3].toInt().toInt();
+            int a0 = args[0].toInt();
+            int a1 = args[1].toInt();
+            int a2 = args[2].toInt();
+            int a3 = args[3].toInt();
             int got = 0;
             #on WINDOWS
             got = QueryFullProcessImageNameA(a0, a1, a2, a3);
@@ -2671,7 +2671,7 @@ Value callBuiltin(string name, Value[] args) {
     }
     if (name == "CloseHandle") {
         if (args.length >= 1) {
-            int h = args[0].toInt().toInt();
+            int h = args[0].toInt();
             int ok = 0;
             #on WINDOWS
             ok = CloseHandle(h);
@@ -2711,7 +2711,7 @@ Value callBuiltin(string name, Value[] args) {
         // Args hoisted into locals ahead of the region so no call expression
         // sits inside the region itself.
         int a0 = 0;
-        if (args.length >= 1) { a0 = args[0].toInt().toInt(); }
+        if (args.length >= 1) { a0 = args[0].toInt(); }
         int h = 0;
         #on WINDOWS
         h = GetModuleHandleA(a0);
@@ -2720,7 +2720,7 @@ Value callBuiltin(string name, Value[] args) {
     }
     if (name == "GetSystemMetrics") {
         if (args.length >= 1) {
-            int idx = args[0].toInt().toInt();
+            int idx = args[0].toInt();
             int metric = 0;
             #on WINDOWS
             metric = GetSystemMetrics(idx);
@@ -2731,8 +2731,8 @@ Value callBuiltin(string name, Value[] args) {
     }
     if (name == "ShowWindow") {
         if (args.length >= 2) {
-            int a0 = args[0].toInt().toInt();
-            int a1 = args[1].toInt().toInt();
+            int a0 = args[0].toInt();
+            int a1 = args[1].toInt();
             int shown = 0;
             #on WINDOWS
             shown = ShowWindow(a0, a1);
@@ -2743,7 +2743,7 @@ Value callBuiltin(string name, Value[] args) {
     }
     if (name == "UpdateWindow") {
         if (args.length >= 1) {
-            int h = args[0].toInt().toInt();
+            int h = args[0].toInt();
             int updated = 0;
             #on WINDOWS
             updated = UpdateWindow(h);
@@ -2754,7 +2754,7 @@ Value callBuiltin(string name, Value[] args) {
     }
     if (name == "SetWindowTextA") {
         if (args.length >= 2) {
-            int h = args[0].toInt().toInt();
+            int h = args[0].toInt();
             string s = args[1].toString();
             int ok = 0;
             #on WINDOWS
@@ -2766,7 +2766,7 @@ Value callBuiltin(string name, Value[] args) {
     }
     if (name == "DestroyWindow") {
         if (args.length >= 1) {
-            int h = args[0].toInt().toInt();
+            int h = args[0].toInt();
             int destroyed = 0;
             #on WINDOWS
             destroyed = DestroyWindow(h);
@@ -2777,18 +2777,18 @@ Value callBuiltin(string name, Value[] args) {
     }
     if (name == "CreateWindowExA") {
         if (args.length >= 12) {
-            int cw0 = args[0].toInt().toInt();
+            int cw0 = args[0].toInt();
             string cw1 = args[1].toString();
             string cw2 = args[2].toString();
-            int cw3 = args[3].toInt().toInt();
-            int cw4 = args[4].toInt().toInt();
-            int cw5 = args[5].toInt().toInt();
-            int cw6 = args[6].toInt().toInt();
-            int cw7 = args[7].toInt().toInt();
-            int cw8 = args[8].toInt().toInt();
-            int cw9 = args[9].toInt().toInt();
-            int cw10 = args[10].toInt().toInt();
-            int cw11 = args[11].toInt().toInt();
+            int cw3 = args[3].toInt();
+            int cw4 = args[4].toInt();
+            int cw5 = args[5].toInt();
+            int cw6 = args[6].toInt();
+            int cw7 = args[7].toInt();
+            int cw8 = args[8].toInt();
+            int cw9 = args[9].toInt();
+            int cw10 = args[10].toInt();
+            int cw11 = args[11].toInt();
             int hwnd = 0;
             #on WINDOWS
             hwnd = CreateWindowExA(cw0, cw1, cw2, cw3, cw4, cw5, cw6, cw7, cw8, cw9, cw10, cw11);
@@ -2807,12 +2807,12 @@ Value callBuiltin(string name, Value[] args) {
     // Forward to user32!LoadImageA / SendMessageA through the native bridge.
     if (name == "LoadImageA") {
         if (args.length >= 6) {
-            int a0 = args[0].toInt().toInt();
+            int a0 = args[0].toInt();
             string a1 = args[1].toString();
-            int a2 = args[2].toInt().toInt();
-            int a3 = args[3].toInt().toInt();
-            int a4 = args[4].toInt().toInt();
-            int a5 = args[5].toInt().toInt();
+            int a2 = args[2].toInt();
+            int a3 = args[3].toInt();
+            int a4 = args[4].toInt();
+            int a5 = args[5].toInt();
             int loaded = 0;
             #on WINDOWS
             loaded = LoadImageA(a0, a1, a2, a3, a4, a5);
@@ -2824,10 +2824,10 @@ Value callBuiltin(string name, Value[] args) {
 
     if (name == "SendMessageA") {
         if (args.length >= 4) {
-            int a0 = args[0].toInt().toInt();
-            int a1 = args[1].toInt().toInt();
-            int a2 = args[2].toInt().toInt();
-            int a3 = args[3].toInt().toInt();
+            int a0 = args[0].toInt();
+            int a1 = args[1].toInt();
+            int a2 = args[2].toInt();
+            int a3 = args[3].toInt();
             int sent = 0;
             #on WINDOWS
             sent = SendMessageA(a0, a1, a2, a3);
@@ -2841,10 +2841,10 @@ Value callBuiltin(string name, Value[] args) {
     // lower to char pointers, so text/caption pass straight across.
     if (name == "MessageBoxA") {
         if (args.length >= 4) {
-            int h = args[0].toInt().toInt();
+            int h = args[0].toInt();
             string t = args[1].toString();
             string c = args[2].toString();
-            int f = args[3].toInt().toInt();
+            int f = args[3].toInt();
             int picked = 0;
             #on WINDOWS
             picked = MessageBoxA(h, t, c, f);
@@ -2865,15 +2865,15 @@ Value callBuiltin(string name, Value[] args) {
         return makeInt(0);
     }
     if (name == "traySetTooltip") {
-        if (args.length >= 2) { traySetTooltip(args[0].toInt().toInt(), args[1].toString()); }
+        if (args.length >= 2) { traySetTooltip(args[0].toInt(), args[1].toString()); }
         return makeNull();
     }
     if (name == "trayDelete") {
-        if (args.length >= 1) { trayDelete(args[0].toInt().toInt()); }
+        if (args.length >= 1) { trayDelete(args[0].toInt()); }
         return makeNull();
     }
     if (name == "trayRemove") {
-        if (args.length >= 1) { trayRemove(args[0].toInt().toInt()); }
+        if (args.length >= 1) { trayRemove(args[0].toInt()); }
         return makeNull();
     }
     // DOCS/249 -- tray click / context-menu bridges. No-op in the
@@ -2916,9 +2916,9 @@ Value callBuiltin(string name, Value[] args) {
         // values to user32!SendInput; unlike the old placeholder this returns
         // the actual number of events inserted.
         if (args.length >= 3) {
-            int a0 = args[0].toInt().toInt();
-            int a1 = args[1].toInt().toInt();
-            int a2 = args[2].toInt().toInt();
+            int a0 = args[0].toInt();
+            int a1 = args[1].toInt();
+            int a2 = args[2].toInt();
             int sent = 0;
             #on WINDOWS
             sent = SendInput(a0, a1, a2);
@@ -2940,8 +2940,8 @@ Value callBuiltin(string name, Value[] args) {
         int oFlags = 0;
         int oMode = 0;
         if (args.length > 0 && args[0].tag == VAL_STRING) { oPath = args[0].strVal; }
-        if (args.length > 1) { oFlags = args[1].toInt().toInt(); }
-        if (args.length > 2) { oMode = args[2].toInt().toInt(); }
+        if (args.length > 1) { oFlags = args[1].toInt(); }
+        if (args.length > 2) { oMode = args[2].toInt(); }
         int oFd = -1;
         #on LINUX
         oFd = open(oPath, oFlags, oMode);
@@ -2954,8 +2954,8 @@ Value callBuiltin(string name, Value[] args) {
     if (name == "read") {
         int rdFd = 0;
         int rdN = 0;
-        if (args.length > 0) { rdFd = args[0].toInt().toInt(); }
-        if (args.length > 2) { rdN = args[2].toInt().toInt(); }
+        if (args.length > 0) { rdFd = args[0].toInt(); }
+        if (args.length > 2) { rdN = args[2].toInt(); }
         if (args.length >= 2 && args[1].tag == VAL_ARRAY) {
             int rdLen = arrValLen(args[1]);
             int[] rdBuf = new int[rdLen];
@@ -2979,8 +2979,8 @@ Value callBuiltin(string name, Value[] args) {
     if (name == "write") {
         int wFd = 0;
         int wN = 0;
-        if (args.length > 0) { wFd = args[0].toInt().toInt(); }
-        if (args.length > 2) { wN = args[2].toInt().toInt(); }
+        if (args.length > 0) { wFd = args[0].toInt(); }
+        if (args.length > 2) { wN = args[2].toInt(); }
         if (args.length >= 2 && args[1].tag == VAL_ARRAY) {
             int wLen = arrValLen(args[1]);
             int[] wBuf = new int[wLen];
@@ -3000,7 +3000,7 @@ Value callBuiltin(string name, Value[] args) {
     }
     if (name == "close") {
         int cFd = 0;
-        if (args.length > 0) { cFd = args[0].toInt().toInt(); }
+        if (args.length > 0) { cFd = args[0].toInt(); }
         int cRes = -1;
         #on LINUX
         cRes = close(cFd);
@@ -3014,9 +3014,9 @@ Value callBuiltin(string name, Value[] args) {
         int sDom = 0;
         int sTyp = 0;
         int sProto = 0;
-        if (args.length > 0) { sDom = args[0].toInt().toInt(); }
-        if (args.length > 1) { sTyp = args[1].toInt().toInt(); }
-        if (args.length > 2) { sProto = args[2].toInt().toInt(); }
+        if (args.length > 0) { sDom = args[0].toInt(); }
+        if (args.length > 1) { sTyp = args[1].toInt(); }
+        if (args.length > 2) { sProto = args[2].toInt(); }
         int sFd = -1;
         #on LINUX
         sFd = socket(sDom, sTyp, sProto);
@@ -3029,8 +3029,8 @@ Value callBuiltin(string name, Value[] args) {
     if (name == "connect") {
         int cnFd = 0;
         int cnLen = 0;
-        if (args.length > 0) { cnFd = args[0].toInt().toInt(); }
-        if (args.length > 2) { cnLen = args[2].toInt().toInt(); }
+        if (args.length > 0) { cnFd = args[0].toInt(); }
+        if (args.length > 2) { cnLen = args[2].toInt(); }
         if (args.length >= 3 && args[1].tag == VAL_ARRAY) {
             int cnSaLen = arrValLen(args[1]);
             int[] cnSa = new int[cnSaLen];
@@ -3051,8 +3051,8 @@ Value callBuiltin(string name, Value[] args) {
     if (name == "bind") {
         int bFd = 0;
         int bLen = 0;
-        if (args.length > 0) { bFd = args[0].toInt().toInt(); }
-        if (args.length > 2) { bLen = args[2].toInt().toInt(); }
+        if (args.length > 0) { bFd = args[0].toInt(); }
+        if (args.length > 2) { bLen = args[2].toInt(); }
         if (args.length >= 3 && args[1].tag == VAL_ARRAY) {
             int bSaLen = arrValLen(args[1]);
             int[] bSa = new int[bSaLen];
@@ -3073,8 +3073,8 @@ Value callBuiltin(string name, Value[] args) {
     if (name == "listen") {
         int lFd = 0;
         int lBack = 0;
-        if (args.length > 0) { lFd = args[0].toInt().toInt(); }
-        if (args.length > 1) { lBack = args[1].toInt().toInt(); }
+        if (args.length > 0) { lFd = args[0].toInt(); }
+        if (args.length > 1) { lBack = args[1].toInt(); }
         int lRes = -1;
         #on LINUX
         lRes = listen(lFd, lBack);
@@ -3086,7 +3086,7 @@ Value callBuiltin(string name, Value[] args) {
     }
     if (name == "accept") {
         int acFd = 0;
-        if (args.length > 0) { acFd = args[0].toInt().toInt(); }
+        if (args.length > 0) { acFd = args[0].toInt(); }
         int acRes = -1;
         #on LINUX
         acRes = accept(acFd, null, null);
@@ -3100,9 +3100,9 @@ Value callBuiltin(string name, Value[] args) {
         int snFd = 0;
         int snLen = 0;
         int snFlags = 0;
-        if (args.length > 0) { snFd = args[0].toInt().toInt(); }
-        if (args.length > 2) { snLen = args[2].toInt().toInt(); }
-        if (args.length > 3) { snFlags = args[3].toInt().toInt(); }
+        if (args.length > 0) { snFd = args[0].toInt(); }
+        if (args.length > 2) { snLen = args[2].toInt(); }
+        if (args.length > 3) { snFlags = args[3].toInt(); }
         if (args.length >= 2 && args[1].tag == VAL_ARRAY) {
             int snBuflen = arrValLen(args[1]);
             int[] snBuf = new int[snBuflen];
@@ -3124,9 +3124,9 @@ Value callBuiltin(string name, Value[] args) {
         int rvFd = 0;
         int rvLen = 0;
         int rvFlags = 0;
-        if (args.length > 0) { rvFd = args[0].toInt().toInt(); }
-        if (args.length > 2) { rvLen = args[2].toInt().toInt(); }
-        if (args.length > 3) { rvFlags = args[3].toInt().toInt(); }
+        if (args.length > 0) { rvFd = args[0].toInt(); }
+        if (args.length > 2) { rvLen = args[2].toInt(); }
+        if (args.length > 3) { rvFlags = args[3].toInt(); }
         if (args.length >= 2 && args[1].tag == VAL_ARRAY) {
             int rvBuflen = arrValLen(args[1]);
             int[] rvBuf = new int[rvBuflen];
@@ -3162,10 +3162,10 @@ Value callBuiltin(string name, Value[] args) {
         int soLevel = 0;
         int soName = 0;
         int soLen = 0;
-        if (args.length > 0) { soFd = args[0].toInt().toInt(); }
-        if (args.length > 1) { soLevel = args[1].toInt().toInt(); }
-        if (args.length > 2) { soName = args[2].toInt().toInt(); }
-        if (args.length > 4) { soLen = args[4].toInt().toInt(); }
+        if (args.length > 0) { soFd = args[0].toInt(); }
+        if (args.length > 1) { soLevel = args[1].toInt(); }
+        if (args.length > 2) { soName = args[2].toInt(); }
+        if (args.length > 4) { soLen = args[4].toInt(); }
         if (args.length >= 4 && args[3].tag == VAL_ARRAY) {
             int soOptlen = arrValLen(args[3]);
             int[] soOpt = new int[soOptlen];
@@ -3224,7 +3224,7 @@ Value callBuiltin(string name, Value[] args) {
     }
     if (name == "freeaddrinfo") {
         int fPtr = 0;
-        if (args.length > 0) { fPtr = args[0].toInt().toInt(); }
+        if (args.length > 0) { fPtr = args[0].toInt(); }
         #on LINUX
         freeaddrinfo(fPtr);
         #on MAC
@@ -3235,7 +3235,7 @@ Value callBuiltin(string name, Value[] args) {
     }
     if (name == "memcpy") {
         int mN = 0;
-        if (args.length > 2) { mN = args[2].toInt().toInt(); }
+        if (args.length > 2) { mN = args[2].toInt(); }
         if (args.length >= 2 && args[0].tag == VAL_ARRAY) {
             int mDstLen = arrValLen(args[0]);
             int[] mDst = new int[mDstLen];
@@ -3256,7 +3256,7 @@ Value callBuiltin(string name, Value[] args) {
                 #off
             } else {
                 int mSrcPtr = 0;
-                if (args.length > 1) { mSrcPtr = args[1].toInt().toInt(); }
+                if (args.length > 1) { mSrcPtr = args[1].toInt(); }
                 #on LINUX
                 memcpy(mDst, mSrcPtr, mN);
                 #on MAC
@@ -3283,7 +3283,7 @@ Value callBuiltin(string name, Value[] args) {
             for (int i = 0; i < abLen; i++) {
                 abBuf[i] = int(arrValIntAt(args[0], i));
             }
-            int abN = args[1].toInt().toInt();
+            int abN = args[1].toInt();
             #on MAC
             arc4random_buf(abBuf, abN);
             #off
@@ -3306,9 +3306,9 @@ Value callBuiltin(string name, Value[] args) {
                 grBuf[i] = int(arrValIntAt(args[0], i));
             }
             int grN = arrValLen(args[0]);
-            if (args.length >= 2) { grN = args[1].toInt().toInt(); }
+            if (args.length >= 2) { grN = args[1].toInt(); }
             int grFlags = 0;
-            if (args.length >= 3) { grFlags = args[2].toInt().toInt(); }
+            if (args.length >= 3) { grFlags = args[2].toInt(); }
             int grRet = -1;
             #on LINUX
             grRet = getrandom(grBuf, grN, grFlags);
@@ -3327,7 +3327,7 @@ Value callBuiltin(string name, Value[] args) {
             for (int i = 0; i < geLen; i++) {
                 geBuf[i] = int(arrValIntAt(args[0], i));
             }
-            int geN = args[1].toInt().toInt();
+            int geN = args[1].toInt();
             int geRet = -1;
             #on MAC
             geRet = getentropy(geBuf, geN);
@@ -3353,7 +3353,7 @@ Value callBuiltin(string name, Value[] args) {
             string scName = "";
             if (args[0].tag == VAL_STRING) { scName = args[0].strVal; }
             int scLen = 0;
-            if (args.length >= 3) { scLen = args[2].toInt().toInt(); }
+            if (args.length >= 3) { scLen = args[2].toInt(); }
             int scRet = -1;
             if (args[1].tag == VAL_ARRAY) {
                 int scBuflen = arrValLen(args[1]);

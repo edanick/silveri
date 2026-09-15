@@ -1747,7 +1747,7 @@ mirrorPut(obj, target.name, val);
             Value idx = this.evalExpr(target.child(1), env);
             GC.popRoot();
             if (collection.tag == VAL_ARRAY) {
-                int i = idx.toInt().toInt();
+                int i = idx.toInt();
                 if (i >= 0 && i < collection.arrVal.length) {
                     collection.arrVal[i] = val;
                     GC.writeBarrier(collection, val);
@@ -2245,7 +2245,7 @@ mirrorPut(obj, target.name, val);
         Value idx = this.evalExpr(node.child(1), env);
         GC.popRoot();
         if (collection.tag == VAL_ARRAY) {
-            int i = idx.toInt().toInt();
+            int i = idx.toInt();
             if (i >= 0 && i < collection.arrVal.length) {
                 return collection.arrVal[i];
             }
@@ -2253,7 +2253,7 @@ mirrorPut(obj, target.name, val);
             return makeNull();
         }
         if (collection.tag == VAL_STRING) {
-            int i = idx.toInt().toInt();
+            int i = idx.toInt();
             if (i >= 0 && i < collection.strVal.length) {
                 return makeChar(collection.strVal[i]);
             }
@@ -2266,7 +2266,7 @@ mirrorPut(obj, target.name, val);
             return makeNull();
         }
         if (collection.tag == VAL_TUPLE) {
-            int i = idx.toInt().toInt();
+            int i = idx.toInt();
             if (i >= 0 && i < collection.arrVal.length) {
                 return collection.arrVal[i];
             }
@@ -2408,7 +2408,7 @@ mirrorPut(obj, target.name, val);
         }
         Value result = makeNull();
         if (node.name == "byte" && node.childCount() == 1) {
-            int count = this.evalExpr(node.child(0), env).toInt().toInt();
+            int count = this.evalExpr(node.child(0), env).toInt();
             if (count < 0) {
                 printline("Runtime error: byte array size cannot be negative");
                 exit(1);
@@ -2419,7 +2419,7 @@ mirrorPut(obj, target.name, val);
             }
             result = makeArray(bytes);
         } else if ((node.name == "int" || node.name == "int32" || node.name == "int64" || node.name == "uint") && node.childCount() == 1) {
-            int icount = this.evalExpr(node.child(0), env).toInt().toInt();
+            int icount = this.evalExpr(node.child(0), env).toInt();
             if (icount < 0) {
                 printline("Runtime error: int array size cannot be negative");
                 exit(1);
