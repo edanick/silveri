@@ -1335,6 +1335,12 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             string pname = this.expectIdent();
             Node param = new Node(ND_VAR_DECL, ln, c);
             param.name = pname;
+            // `default` is reserved: an optional parameter takes a real default
+            // VALUE (`int level = 6`), never a `default` keyword, and `default`
+            // cannot be used as a parameter name.
+            if (pname == "default") {
+                this.recordError(ln.toString() + ":" + c.toString() + ": reserved word 'default' cannot be used as an identifier");
+            }
             param.typeHint = typ;
             if (this.check(TK_ASSIGN)) {
                 this.advance();
