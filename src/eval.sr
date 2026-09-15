@@ -431,7 +431,7 @@ class Evaluator {
     // mapped to their owning DLL.
     public string win32DllForFn(string fn) {
         if (fn == "keybd_event" || fn == "mouse_event" || fn == "VkKeyScanA" || fn == "GetKeyState" || fn == "GetAsyncKeyState" || fn == "MapVirtualKeyA" || fn == "GetCursorPos" || fn == "SetCursorPos" || fn == "SendInput" || fn == "SetCursor" || fn == "ClipCursor" || fn == "GetClipCursor" || fn == "GetDoubleClickTime" || fn == "SetDoubleClickTime" || fn == "RegisterHotKey" || fn == "UnregisterHotKey" || fn == "MessageBeep" || fn == "RegisterRawInputDevices" || fn == "GetRawInputData" || fn == "GetRawInputDeviceList") { return "user32.dll"; }
-        if (fn == "GetForegroundWindow" || fn == "GetWindowTextA" || fn == "GetWindowThreadProcessId" || fn == "RegisterClassExA" || fn == "CreateWindowExA" || fn == "ShowWindow" || fn == "UpdateWindow" || fn == "SetWindowTextA" || fn == "DestroyWindow" || fn == "GetSystemMetrics" || fn == "LoadImageA" || fn == "SendMessageA" || fn == "SetFocus" || fn == "SetForegroundWindow" || fn == "PeekMessageA" || fn == "ScreenToClient" || fn == "GetClientRect") { return "user32.dll"; }
+        if (fn == "GetForegroundWindow" || fn == "GetWindowTextA" || fn == "GetWindowThreadProcessId" || fn == "RegisterClassExA" || fn == "CreateWindowExA" || fn == "ShowWindow" || fn == "UpdateWindow" || fn == "SetWindowTextA" || fn == "DestroyWindow" || fn == "GetSystemMetrics" || fn == "LoadImageA" || fn == "SendMessageA" || fn == "SetFocus" || fn == "SetForegroundWindow" || fn == "PeekMessageA" || fn == "ScreenToClient" || fn == "GetClientRect" || fn == "MessageBoxA") { return "user32.dll"; }
         if (fn == "OpenProcess" || fn == "QueryFullProcessImageNameA" || fn == "CloseHandle" || fn == "GetModuleHandleA" || fn == "GetSystemInfo" || fn == "GlobalMemoryStatusEx"
             // std/time.sr's folded WINDOWS now() body calls the QPC pair raw
             // (the v2 fold removed the time_win indirection); the interpreter
@@ -528,6 +528,7 @@ class Evaluator {
             fns.add("GetSystemMetrics");
             fns.add("LoadImageA");
             fns.add("SendMessageA");
+            fns.add("MessageBoxA");
             for (int i = 0; i < fns.length; i++) {
                 if (this.win32HasExport(dll, fns[i])) {
                     this.globals.define(fns[i], makeBuiltin(fns[i]));

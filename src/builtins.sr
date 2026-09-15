@@ -2836,6 +2836,23 @@ Value callBuiltin(string name, Value[] args) {
         }
         return makeInt(0);
     }
+    // DOCS/258 -- MessageBoxA(hWnd, text, caption, flags): modal dialog,
+    // blocks until dismissed, returns the ID* result code. Silver strings
+    // lower to char pointers, so text/caption pass straight across.
+    if (name == "MessageBoxA") {
+        if (args.length >= 4) {
+            int h = args[0].toInt().toInt();
+            string t = args[1].toString();
+            string c = args[2].toString();
+            int f = args[3].toInt().toInt();
+            int picked = 0;
+            #on WINDOWS
+            picked = MessageBoxA(h, t, c, f);
+            #off
+            return makeInt(picked);
+        }
+        return makeInt(0);
+    }
     // DOCS/249 -- system tray icon bridges. Forward to the native bridge
     // (compiled by silverc.exe), which is a no-op returning 0 in this
     // backend; silverc-rs emits the real Shell_NotifyIconA path.

@@ -3441,7 +3441,8 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             || fn == "CreateWindowExA" || fn == "ShowWindow"
             || fn == "UpdateWindow" || fn == "SetWindowTextA"
             || fn == "DestroyWindow" || fn == "GetSystemMetrics"
-            || fn == "LoadImageA" || fn == "SendMessageA") { return "user32.dll"; }
+            || fn == "LoadImageA" || fn == "SendMessageA"
+            || fn == "MessageBoxA") { return "user32.dll"; }
         if (fn == "OpenProcess" || fn == "QueryFullProcessImageNameA"
             || fn == "CloseHandle" || fn == "GetModuleHandleA") { return "kernel32.dll"; }
         return "";
