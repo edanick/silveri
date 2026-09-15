@@ -2901,6 +2901,15 @@ Value callBuiltin(string name, Value[] args) {
     if (name == "regGetString" || name == "regEnumSubKeyName" || name == "regEnumValueName") {
         return makeString("");
     }
+    // DOCS/259 -- file dialog bridges. silverc-rs and the self-hosted
+    // compiler emit the real comdlg32/shell32 sequences for these; the
+    // interpreter cannot build Win32 structs, so they are documented
+    // no-ops resolving to "" (deterministic Cancel semantics: every
+    // showDialog() in silverc/std/dialogs.sr sees "" and yields
+    // dialogResult.Cancel with empty results).
+    if (name == "nativeOpenFile" || name == "nativeSaveFile" || name == "nativeFolder") {
+        return makeString("");
+    }
     if (name == "SendInput") {
         // Raw SendInput wrapper: callers pass the address of an INPUT array,
         // count, and sizeof(INPUT). The native compiler forwards all three

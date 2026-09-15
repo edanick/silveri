@@ -420,6 +420,13 @@ class Evaluator {
         this.globals.define("regEnumValueName", makeBuiltin("regEnumValueName"));
         this.globals.define("regSubKeyCount", makeBuiltin("regSubKeyCount"));
         this.globals.define("regValueCount", makeBuiltin("regValueCount"));
+        // DOCS/259 -- file dialog bridges. No-op "" in the interpreter
+        // backend (see builtins.sr callBuiltin); the compilers emit the
+        // real comdlg32/shell32 sequences. Registered so the dialog
+        // classes in silverc/std/dialogs.sr resolve their bare calls.
+        this.globals.define("nativeOpenFile", makeBuiltin("nativeOpenFile"));
+        this.globals.define("nativeSaveFile", makeBuiltin("nativeSaveFile"));
+        this.globals.define("nativeFolder", makeBuiltin("nativeFolder"));
     }
 
     // ------------------------------------------------------------------

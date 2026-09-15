@@ -3331,6 +3331,10 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             || name == "toString" || name == "toInt"
             || name == "toUpper" || name == "toLower"
             || name == "nativeToastShow"
+            // DOCS/259 -- file dialog bridges served natively as "" no-ops
+            // (the interpreter cannot build Win32 structs).
+            || name == "nativeOpenFile" || name == "nativeSaveFile"
+            || name == "nativeFolder"
             // UNIFIED_CORE_LIBRARY.md phase 3 -- native os/time intercepts:
             // osType()/OSTypes are the compile-time WINDOWS contract and the
             // time module's win32 backend leaves (std/time_win.sr) are served

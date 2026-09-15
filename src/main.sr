@@ -884,26 +884,38 @@ bool matchStarImport(string source, int pos, int[] bounds) {
 }
 
 string resolveImports(string source, string inputFile, int[] prependLen, string target) {    if (prependLen.length == 0) { prependLen.add(0); } else { prependLen[0] = 0; }
-    int[] qsSpans = qsBundleSpans(source);
     string prepend = "";
     bool badModule = false;
+    // DOCS/259 -- fixpoint star-import resolution: pass 1 scans the user
+    // source; later passes re-scan the accumulated prepend, so nested
+    // source imports (dialogs -> msgbox, ftps -> net, sysinfo -> env, ...)
+    // resolve too. seenMods guards cycles and double-prepends (importing
+    // both dialogs and msgbox prepends msgbox exactly once); each pass
+    // prepends at least one module or the loop ends. First-pass behavior
+    // is unchanged (aggregate == source while prepend is empty).
+    string seenMods = ";";
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        string aggregate = prepend + source;
+        int[] aggSpans = qsBundleSpans(aggregate);
     int cursor = 0;
-    while (cursor < source.length) {
-        int importPos = findCI(source, "import", cursor);
+    while (cursor < aggregate.length) {
+        int importPos = findCI(aggregate, "import", cursor);
         if (importPos < 0) { break; }
         // Only treat a match as an import statement when it starts at a
         // statement boundary; otherwise it is `import` text inside a
         // string literal or comment and must be skipped. The keyword must
         // also stand alone (`myimport` is not an import).
         if (importPos > 0) {
-            char prev = source[importPos - 1];
+            char prev = aggregate[importPos - 1];
             if (prev != '\n' && prev != '\r' && prev != ';') {
                 cursor = importPos + 1;
                 continue;
             }
         }
         int afterImport = importPos + 6;
-        if (afterImport < source.length && isNatWordChar(source[afterImport])) {
+        if (afterImport < aggregate.length && isNatWordChar(aggregate[afterImport])) {
             cursor = importPos + 1;
             continue;
         }
@@ -913,13 +925,13 @@ string resolveImports(string source, string inputFile, int[] prependLen, string 
         int[] mm = [];
         mm.add(0);
         mm.add(0);
-        if (!matchStarImport(source, importPos, mm)) {
+        if (!matchStarImport(aggregate, importPos, mm)) {
             cursor = importPos + 1;
             continue;
         }
         int semi = -1;
-        for (int si = importPos; si < source.length; si++) {
-            if (source[si] == ';') { semi = si; break; }
+        for (int si = importPos; si < aggregate.length; si++) {
+            if (aggregate[si] == ';') { semi = si; break; }
         }
         if (semi < 0) { break; }
         int nameStart = mm[0];
@@ -929,8 +941,15 @@ string resolveImports(string source, string inputFile, int[] prependLen, string 
         // dotted sources are skipped below before any file probe.
         string module = "";
         for (int mi = nameStart; mi < nameEnd; mi++) {
-            module += source[mi];
+            module += aggregate[mi];
         }
+        // Already prepended (or otherwise settled) on an earlier pass:
+        // skip so cycles terminate and double imports prepend once.
+        if (module.length > 0 && seenMods.contains(";" + module + ";")) {
+            cursor = semi + 1;
+            continue;
+        }
+        if (module.length > 0) { seenMods += module + ";"; }
         // Fixed win32/linux/mac natives (and bare `win32`/`linux`/`mac`)
         // never come from disk: native prefix handling stays before file
         // probing, and validateNativeImports owns their diagnostics and
@@ -941,7 +960,8 @@ string resolveImports(string source, string inputFile, int[] prependLen, string 
             string modSrc = readStdModule(module, inputFile, source, target);
             if (modSrc.length > 0) {
                 prepend += modSrc + "\n";
-            } else if (aggregateDeclaresModule(source, module)) {
+                changed = true;
+            } else if (aggregateDeclaresModule(aggregate, module)) {
                 // Satisfied by a project-local or `.qs` bundle module
                 // already in the aggregate: Silver wins over custom names.
             } else if (moduleAlwaysResolvable(module)) {
@@ -958,7 +978,7 @@ string resolveImports(string source, string inputFile, int[] prependLen, string 
                     printline(customNativeStarMsg(module));
                     exit(1);
                 }
-            } else if (natInBundle(qsSpans, natImportLine(source, importPos)) || customNativeOptIn()) {
+            } else if (natInBundle(aggSpans, natImportLine(aggregate, importPos)) || customNativeOptIn()) {
                 // The manifest opts into custom natives (or the star comes
                 // from a consumed `.qs` bundle): an unresolvable star
                 // source names the declaration to add.
@@ -968,7 +988,7 @@ string resolveImports(string source, string inputFile, int[] prependLen, string 
                 // SYNTAX_EXCEPTIONS.md ? unknown module, with a did-you-mean
                 // suggestion when it resembles a known one.
                 badModule = true;
-                int[] loc = diagSourceLoc(source, nameStart);
+                int[] loc = diagSourceLoc(aggregate, nameStart);
                 string sugg = diagClosestMatch(module, knownModuleNames());
                 if (sugg.length > 0) {
                     printline("did you mean to import the module \"" + sugg + "\"?, unknown module \"" + module + "\" was found at line " + loc[0].toString() + " column " + loc[1].toString());
@@ -978,6 +998,7 @@ string resolveImports(string source, string inputFile, int[] prependLen, string 
             }
         }
         cursor = semi + 1;
+    }
     }
     if (badModule) {
         exit(1);
