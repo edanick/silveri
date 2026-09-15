@@ -315,6 +315,8 @@ class Evaluator {
         this.globals.define("print", makeBuiltin("print"));
         this.globals.define("eprintln", makeBuiltin("eprintln"));
         this.globals.define("eprint", makeBuiltin("eprint"));
+        this.globals.define("debugline", makeBuiltin("debugline"));
+        this.globals.define("debug", makeBuiltin("debug"));
         this.globals.define("input", makeBuiltin("input"));
         this.globals.define("assert", makeBuiltin("assert"));
         this.globals.define("sleep", makeBuiltin("sleep"));

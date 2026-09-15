@@ -2037,7 +2037,8 @@ Value callBuiltin(string name, Value[] args) {
         }
         return makeNull();
     }
-    if (name == "eprintln") {
+    if (name == "eprintln" || name == "debugline") {
+        // DOCS/256: debugline shares the eprintln arm (stderr + newline).
         // Raw stderr write inline per arm (v2 rule 6): the former
         // writeStderrBuiltin -> bwinWriteStderr chain is gone; each arm
         // holds the GetStdHandle(STD_ERROR_HANDLE) + WriteFile sequence in
@@ -2084,7 +2085,8 @@ Value callBuiltin(string name, Value[] args) {
         #off
         return makeNull();
     }
-    if (name == "eprint") {
+    if (name == "eprint" || name == "debug") {
+        // DOCS/256: debug shares the eprint arm (stderr, no newline).
         string msg = "";
         if (args.length > 0) {
             msg = args[0].toString();
