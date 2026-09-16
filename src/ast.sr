@@ -105,6 +105,10 @@ const int OP_BIT_OR_ASSIGN = 29;
 const int OP_BIT_XOR_ASSIGN = 30;
 const int OP_SHL_ASSIGN = 31;
 const int OP_SHR_ASSIGN = 32;
+// DOCS/261 / SPEC 15.6: membership operators `in` / `not in` (comparison
+// level; `not in` must be parenthesized).
+const int OP_IN = 34;
+const int OP_NOT_IN = 35;
 
 const int UOP_NEG = 0;
 const int UOP_NOT = 1;

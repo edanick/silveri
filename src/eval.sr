@@ -1673,6 +1673,20 @@ class Evaluator {
             }
             return makeBool(!lhs.equals(rhs));
         }
+        if (op == OP_IN || op == OP_NOT_IN) {
+            // DOCS/261 / SPEC 15.6: membership. Element comparison reuses
+            // `==` semantics (Value.equals), so computed strings match by
+            // content, never by pointer. Short-circuits on the first match;
+            // a non-array right operand never matches.
+            bool matched = false;
+            if (rhs.tag == VAL_ARRAY) {
+                foreach (Value elem in rhs.arrVal) {
+                    if (lhs.equals(elem)) { matched = true; break; }
+                }
+            }
+            if (op == OP_NOT_IN) { matched = !matched; }
+            return makeBool(matched);
+        }
         if (op == OP_LT) {
             if (lhs.tag == VAL_FLOAT || rhs.tag == VAL_FLOAT) { return makeBool(valueToFloat(lhs) < valueToFloat(rhs)); }
             return makeBool(lhs.toInt() < rhs.toInt());

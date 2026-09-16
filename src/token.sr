@@ -262,6 +262,7 @@ string kindToString(int kind) {
     if (kind == TK_PIPE) { return "|"; }
     if (kind == TK_SPREAD) { return "..."; }
     if (kind == TK_QUESTIONQUESTION) { return "??"; }
+    if (kind == TK_IN) { return "in"; }
     if (kind == TK_BREAK) { return "break"; }
     if (kind == TK_CONTINUE) { return "continue"; }
     if (kind == TK_EXTENDS) { return "extends"; }

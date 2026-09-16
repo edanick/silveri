@@ -10,6 +10,15 @@ class Parser {
     // Inside a `[...]` index, a top-level `..` starts a slice rather than
     // a binary range expression.
     private bool rangeIsSliceBoundary;
+    // DOCS/261 / SPEC 15.6: nesting depth of `(` groupings. A bare `not in`
+    // outside parentheses (depth 0) is a parse error; `if`/`while`/`switch`
+    // conditions count as parenthesized (the reference compilers bump the
+    // same depth around condition expressions and `(` groupings).
+    private int parenDepth;
+    // DOCS/261: set while parsing the right operand of a membership
+    // operator — `in` there is an operator token again, never the `in` of a
+    // `for`/`foreach` loop header.
+    private bool inMembershipOperand;
     private prop int parseErrors;
     // ---- EXCEPTIONS/*.md diagnostics --------------------------------------
     // Missing-semicolon positions, flushed as ONE merged message at the end
@@ -80,6 +89,8 @@ class Parser {
         this.tokens = toks;
         this.pos = 0;
         this.rangeIsSliceBoundary = false;
+        this.parenDepth = 0;
+        this.inMembershipOperand = false;
         this.parseErrors = 0;
         this.missingSemiLines = [];
         this.missingSemiCols = [];
@@ -1696,7 +1707,9 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         int ln = this.line(); int c = this.col();
         this.advance();
         this.expect(TK_LPAREN);
+        this.parenDepth++;
         Node cond = this.parseExpr(0);
+        this.parenDepth--;
         this.expect(TK_RPAREN);
         Node body = this.parseBlock();
         Node n = new Node(ND_WHILE, ln, c);
@@ -1720,7 +1733,9 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         int ln = this.line(); int c = this.col();
         this.advance();
         this.expect(TK_LPAREN);
+        this.parenDepth++;
         Node cond = this.parseExpr(0);
+        this.parenDepth--;
         this.expect(TK_RPAREN);
         Node then = this.parseBlock();
         Node n = new Node(ND_IF_STMT, ln, c);
@@ -1837,7 +1852,9 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         int ln = this.line(); int c = this.col();
         this.advance();
         this.expect(TK_LPAREN);
+        this.parenDepth++;
         Node expr = this.parseExpr(0);
+        this.parenDepth--;
         this.expect(TK_RPAREN);
         this.expect(TK_LBRACE);
         Node n = new Node(ND_SWITCH, ln, c);
@@ -2192,6 +2209,21 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         return lhs;
     }
 
+    // DOCS/261 / SPEC 15.6: true at an infix position when the next tokens
+    // form a membership operator: `in`, or `not in` (`not` lexes as a plain
+    // identifier, so the operator is the two-token sequence [IDENT "not"][IN]).
+    // Inside the right operand of an outer membership operator `in` is
+    // suppressed (see parseInfix), and loop-header parsers consume their own
+    // `in` before expression parsing begins, so neither is ever ambiguous.
+    private bool membershipAhead() {
+        if (this.inMembershipOperand) { return false; }
+        if (this.check(TK_IN)) { return true; }
+        if (this.check(TK_IDENT) && this.peek().text == "not"
+            && this.pos + 1 < this.tokens.length
+            && this.tokens[this.pos + 1].kind == TK_IN) { return true; }
+        return false;
+    }
+
     private bool isInfix() {
         int k = this.peekKind();
         if (k == TK_AS && this.isAsCastAhead()) {
@@ -2202,6 +2234,11 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             // `..` inside a `[...]` index starts a slice, so it is not an
             // infix operator there.
             return false;
+        }
+        // DOCS/261 / SPEC 15.6: `in` / `not in` are comparison-level infix
+        // operators (precedence is applied in parseExpr via getInfixPrec).
+        if (this.membershipAhead()) {
+            return true;
         }
         return k == TK_PLUS || k == TK_MINUS || k == TK_STAR || k == TK_SLASH || k == TK_PERCENT
             || k == TK_EQ || k == TK_NEQ || k == TK_LESS || k == TK_LEQ || k == TK_GREATER || k == TK_GEQ
@@ -2219,6 +2256,11 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
 
     private int getInfixPrec() {
         int k = this.peekKind();
+        // DOCS/261: `in` / `not in` sit at the comparison tier (same as
+        // `<`/`>`), so `a in b && c` parses as `(a in b) && c`.
+        if (this.membershipAhead()) {
+            return 5;
+        }
         if (k == TK_AS && this.isAsCastAhead()) {
             // DOCS/259 G4: the rs compiler binds `as` at 5 — above the
             // comparison operators (4) and below bitwise (6+) — with the
@@ -2251,6 +2293,24 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
 
     private Node parsePrefix() {
         int ln = this.line(); int c = this.col();
+        // DOCS/261: a bare `in` has no left operand, and `not in` needs one
+        // too — both are infix-only (mirror the reference parser's prefix
+        // rejections so the error points at the operator, not a follow-on).
+        if (this.check(TK_IN)) {
+            Token inTok = this.peek();
+            this.recordError("in: the membership operator needs a left operand (see DOCS/261) at line " + inTok.line.toString() + ", column " + inTok.col.toString());
+            this.advance();
+            return new Node(ND_NULL_LIT, ln, c);
+        }
+        if (this.check(TK_IDENT) && this.peek().text == "not"
+            && this.pos + 1 < this.tokens.length
+            && this.tokens[this.pos + 1].kind == TK_IN) {
+            Token nt = this.peek();
+            this.recordError("not in must be wrapped in parentheses: use (a not in b) at line " + nt.line.toString() + ", column " + nt.col.toString());
+            this.advance();
+            this.advance();
+            return new Node(ND_NULL_LIT, ln, c);
+        }
         if (this.check(TK_INT_LIT)) {
             Node n = new Node(ND_INT_LIT, ln, c);
             n.intVal = this.advance().intVal;
@@ -2436,6 +2496,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
                 }
             }
             this.advance();
+            this.parenDepth++;
             Node first = this.parseExpr(0);
             if (this.check(TK_COMMA)) {
                 Node n = new Node(ND_TUPLE_LIT, ln, c);
@@ -2444,9 +2505,11 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
                     this.advance();
                     n.addChild(this.parseExpr(0));
                 }
+                this.parenDepth--;
                 this.expect(TK_RPAREN);
                 return n;
             }
+            this.parenDepth--;
             this.expect(TK_RPAREN);
             Node n = new Node(ND_PAREN, ln, c);
             n.addChild(first);
@@ -2546,6 +2609,29 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         int ln = this.line(); int c = this.col();
         int k = this.peekKind();
 
+        // DOCS/261 / SPEC 15.6: `needle in collection` and its negation
+        // `needle not in collection` (two tokens: [IDENT "not"][IN]). The
+        // right operand parses at prec 6 with `in` suppressed, so `a in b`
+        // never nests and a loop-header `in` is never swallowed.
+        if (this.membershipAhead()) {
+            bool negated = this.check(TK_IDENT);
+            int notLine = this.peek().line;
+            int notCol = this.peek().col;
+            if (negated) { this.advance(); }
+            this.advance();
+            if (negated && this.parenDepth == 0) {
+                this.recordError("not in must be wrapped in parentheses: use (a not in b) at line " + notLine.toString() + ", column " + notCol.toString());
+            }
+            bool savedInMem = this.inMembershipOperand;
+            this.inMembershipOperand = true;
+            Node collection = this.parseExpr(6);
+            this.inMembershipOperand = savedInMem;
+            Node n = new Node(ND_BINARY, ln, c);
+            if (negated) { n.op = OP_NOT_IN; } else { n.op = OP_IN; }
+            n.addChild(lhs);
+            n.addChild(collection);
+            return n;
+        }
         if (k == TK_QUESTION) {
             this.advance();
             Node thenExpr = this.parseExpr(1);
