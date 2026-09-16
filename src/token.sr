@@ -133,6 +133,11 @@ const int TK_CARET_EQ = 154;
 const int TK_SHL_EQ = 155;
 const int TK_SHR_EQ = 156;
 
+// SPEC 12.2 / DOCS 102: an adjacent `$"..."` lexes as ONE brace/quote-aware
+// interpolation-string token. Kind number 168 matches the self-hosted
+// compiler's kind so the three backends share the same marker.
+const int TK_INTERP_STRING = 168;
+
 class Token {
     public prop int kind;
     public prop string text;
@@ -142,6 +147,17 @@ class Token {
     public prop float64 floatVal;
     public prop string strVal;
     public prop char charVal;
+    // SPEC 12.2 / DOCS 102 interpolation segments (TK_INTERP_STRING tokens
+    // only): four parallel arrays, one entry per `$"..."` segment. `ipKinds[d]`
+    // is 0 for a literal text run (decoded escapes in `ipTexts[d]`) or 1 for a
+    // `{...}` hole (raw source between the braces in `ipTexts[d]`, with its `{`
+    // position in `ipLines[d]`/`ipCols[d]` so the parser can report the
+    // parenthesization error at the right spot). Mirrors silverc-rs
+    // `TokenKind::InterpString(Vec<InterpSegment>)` and silverc's `ip*` arrays.
+    public prop int[] ipKinds;
+    public prop string[] ipTexts;
+    public prop int[] ipLines;
+    public prop int[] ipCols;
 
     construct (int kind, string text, int line, int col) {
         this.kind = kind;
@@ -152,6 +168,10 @@ class Token {
         this.floatVal = 0.0;
         this.strVal = "";
         this.charVal = ' ';
+        this.ipKinds = [];
+        this.ipTexts = [];
+        this.ipLines = [];
+        this.ipCols = [];
     }
 
     public string toString() {
@@ -248,5 +268,6 @@ string kindToString(int kind) {
     if (kind == TK_LOOP) { return "loop"; }
     if (kind == TK_TYPEALIAS) { return "typealias"; }
     if (kind == TK_INTERNAL) { return "internal"; }
+    if (kind == TK_INTERP_STRING) { return "INTERP_STRING"; }
     return "UNKNOWN(" + kind.toString() + ")";
 }

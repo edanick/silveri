@@ -2281,6 +2281,16 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             this.advance();
             return new Node(ND_NULL_LIT, ln, c);
         }
+        if (this.check(TK_INTERP_STRING)) {
+            // SPEC 12.2 / DOCS 102: the lexer produced a brace/quote-aware
+            // interpolation string (`$"..."`); build the node from its segments,
+            // classifying each hole value-vs-parenthesized-expression.
+            Token it = this.advance();
+            Node ip = this.buildInterpFromToken(it);
+            ip.line = it.line;
+            ip.col = it.col;
+            return ip;
+        }
         if (this.check(TK_DOLLAR)) {
             this.advance();
             Token t = this.expect(TK_STRING_LIT);
@@ -2834,32 +2844,42 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         return 9;
     }
 
+    // Legacy `$ "..."` splitter for a non-adjacent Dollar token followed by a
+    // string literal (SPEC 12.2). Holes are split on balanced braces and routed
+    // through classifyHole so the value-vs-parenthesized rule matches the main
+    // interpolation path (mirrors silverc's parseInterpString).
     private Node parseInterpolation(string raw, int ln, int c) {
         Node n = new Node(ND_INTERP, ln, c);
         string currentText = "";
         int i = 0;
         while (i < raw.length) {
             if (raw[i] == '{') {
+                if (i + 1 < raw.length && raw[i + 1] == '{') { currentText += "{"; i += 2; continue; }
                 if (currentText.length > 0) {
                     Node text = new Node(ND_STRING_LIT, ln, c);
                     text.strVal = currentText;
                     n.addChild(text);
                     currentText = "";
                 }
+                int depth = 1;
                 i++;
                 string exprStr = "";
-                int depth = 1;
                 while (i < raw.length && depth > 0) {
                     if (raw[i] == '{') { depth++; }
-                    else if (raw[i] == '}') { depth--; if (depth == 0) { break; } }
+                    else if (raw[i] == '}') {
+                        depth--;
+                        if (depth == 0) { break; }
+                    }
                     exprStr += raw[i].toString();
                     i++;
                 }
-                Lexer subLexer = new Lexer(exprStr);
-                Token[] subTokens = subLexer.tokenize();
-                Parser subParser = new Parser(subTokens);
-                Node exprNode = subParser.parseExpr(0);
-                n.addChild(exprNode);
+                if (depth == 0) {
+                    n.addChild(this.classifyHole(exprStr, ln, c));
+                }
+                i++;
+            } else if (raw[i] == '}') {
+                if (i + 1 < raw.length && raw[i + 1] == '}') { currentText += "}"; i += 2; continue; }
+                currentText += "}";
                 i++;
             } else {
                 currentText += raw[i].toString();
@@ -2872,6 +2892,149 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             n.addChild(text);
         }
         return n;
+    }
+
+    // Build the ND_INTERP node from a lexer TK_INTERP_STRING token's segments
+    // (SPEC 12.2 / DOCS 102). Text segments become literal ND_STRING_LIT
+    // children; hole segments are classified value-vs-parenthesized-expression.
+    private Node buildInterpFromToken(Token t) {
+        Node n = new Node(ND_INTERP, t.line, t.col);
+        for (int i = 0; i < t.ipKinds.length; i++) {
+            if (t.ipKinds[i] == 0) {
+                string txt = t.ipTexts[i];
+                if (txt.length > 0) {
+                    Node tn = new Node(ND_STRING_LIT, t.line, t.col);
+                    tn.strVal = txt;
+                    n.addChild(tn);
+                }
+            } else {
+                n.addChild(this.classifyHole(t.ipTexts[i], t.ipLines[i], t.ipCols[i]));
+            }
+        }
+        return n;
+    }
+
+    // Classify one interpolation hole (SPEC 12.2 / DOCS 102): a hole fully
+    // wrapped in parentheses is an arbitrary expression; anything else must be
+    // a plain value reference (identifier with `.member` / `[index]` postfixes),
+    // or it is a parse error telling the user to parenthesize. Mirrors
+    // silverc's Parser::classifyHole (and silverc-rs Parser::parse_interp_hole).
+    private Node classifyHole(string raw, int hLine, int hCol) {
+        string h = this.ipTrim(raw);
+        if (h.length == 0) {
+            this.recordError("Parse error at " + hLine.toString() + ":" + hCol.toString() + ": expected expression in interpolation hole");
+            Node empty = new Node(ND_STRING_LIT, hLine, hCol);
+            empty.strVal = "";
+            return empty;
+        }
+        if (this.holeFullyParenthesized(h)) {
+            string inner = this.ipTrim(this.ipSlice(h, 1, h.length - 2));
+            if (inner.length == 0) {
+                this.recordError("Parse error at " + hLine.toString() + ":" + hCol.toString() + ": expected expression in interpolation hole");
+                Node empty = new Node(ND_STRING_LIT, hLine, hCol);
+                empty.strVal = "";
+                return empty;
+            }
+            return this.parseHoleExpr(inner, hLine, hCol);
+        }
+        Node en = this.parseHoleExpr(h, hLine, hCol);
+        if (!this.isValueRefNode(en)) {
+            this.recordError("Parse error at " + hLine.toString() + ":" + hCol.toString() + ": expression interpolation must be wrapped in parentheses: use {(" + h + ")} for \"" + h + "\"");
+            Node empty = new Node(ND_STRING_LIT, hLine, hCol);
+            empty.strVal = "";
+            return empty;
+        }
+        return en;
+    }
+
+    // Re-lex and parse one hole body as a single complete expression, forwarding
+    // any diagnostics the sub-parser records and rejecting trailing tokens
+    // (mirrors silverc's Parser::parseHoleExpr / silverc-rs parse_hole_expr).
+    private Node parseHoleExpr(string text, int hLine, int hCol) {
+        Lexer subLexer = new Lexer(text);
+        Token[] subTokens = subLexer.tokenize();
+        Parser subParser = new Parser(subTokens);
+        Node exprNode = subParser.parseExpr(0);
+        if (subParser.errorCount() > 0) {
+            this.parseErrors += subParser.errorCount();
+        }
+        if (!subParser.atEnd()) {
+            this.recordError("Parse error at " + hLine.toString() + ":" + hCol.toString() + ": expected end of interpolation hole");
+        }
+        return exprNode;
+    }
+
+    // True when the trimmed hole body `h` is entirely wrapped in one matching
+    // pair of parentheses: it starts with `(` whose partner `)` is the final
+    // character. Nested string/char literals are skipped so parens inside
+    // literals never count (mirrors silverc's holeFullyParenthesized).
+    private bool holeFullyParenthesized(string h) {
+        int n = h.length;
+        if (n < 2) { return false; }
+        if (h[0] != '(' || h[n - 1] != ')') { return false; }
+        int depth = 0;
+        int i = 0;
+        while (i < n) {
+            char c = h[i];
+            if (c == '(') {
+                depth++;
+            } else if (c == ')') {
+                depth--;
+                if (depth == 0) { return i == n - 1; }
+                if (depth < 0) { return false; }
+            } else if (c == '"' || c == '\'') {
+                char q = c;
+                int j = i + 1;
+                while (j < n) {
+                    if (h[j] == '\\') { j += 2; continue; }
+                    if (h[j] == q) { break; }
+                    j++;
+                }
+                i = j;
+            }
+            i++;
+        }
+        return false;
+    }
+
+    // Value-form interpolation check (SPEC 12.2): an identifier optionally
+    // followed by `.member` and/or `[index]` postfixes -- no operators, calls
+    // or literals. The bracket contents of an index may be any expression.
+    // Mirrors silverc's isValueRefNode using silveri's node kinds (ND_IDENT=6,
+    // ND_MEMBER=13, ND_INDEX=11, ND_PAREN=23).
+    private bool isValueRefNode(Node e) {
+        if (e.kind == ND_IDENT) { return true; }
+        if (e.kind == ND_MEMBER && e.childCount() > 0) { return this.isValueRefNode(e.child(0)); }
+        if (e.kind == ND_INDEX && e.childCount() > 0) { return this.isValueRefNode(e.child(0)); }
+        if (e.kind == ND_PAREN && e.childCount() > 0) { return this.isValueRefNode(e.child(0)); }
+        return false;
+    }
+
+    private bool ipIsSpace(char c) {
+        return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+    }
+
+    private string ipTrim(string s) {
+        int a = 0;
+        int b = s.length - 1;
+        while (a <= b && this.ipIsSpace(s[a])) { a++; }
+        while (b >= a && this.ipIsSpace(s[b])) { b--; }
+        return this.ipSlice(s, a, b);
+    }
+
+    // Characters s[a]..s[b] inclusive, clamped to the string bounds.
+    private string ipSlice(string s, int a, int b) {
+        string r = "";
+        if (a < 0) { a = 0; }
+        int i = a;
+        while (i <= b && i < s.length) { r += s[i].toString(); i++; }
+        return r;
+    }
+
+    // True when the parser is at the end of its token stream (EOF). Used by
+    // parseHoleExpr to reject trailing tokens after a hole's expression.
+    public bool atEnd() {
+        return this.peekKind() == TK_EOF;
     }
 
     private string parseTypeStr() {
