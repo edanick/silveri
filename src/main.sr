@@ -124,6 +124,55 @@ string interpTargetOsFor(string overrideOs) {
     return interpHostOs();
 }
 
+// True when `name` is a build-mode `#on` name (`DEBUG` / `RELEASE`,
+// case-sensitive, DOCS/253). Build-mode names test the build mode, not
+// the target OS (mirrors silverc/compiler/preprocess.sr ppIsBuildModeName).
+bool stdRegionIsBuildModeName(string name) {
+    return name == "DEBUG" || name == "RELEASE";
+}
+
+// True when a single `#on` name feeds for the given target OS. OS names
+// test `target`; build-mode names test the build mode, which is always
+// RELEASE in the interpreter (no `--debug` flag): `RELEASE` feeds by
+// default, `DEBUG` is blanked (mirrors silverc ppNameMatches with
+// debugBuild=false, per DOCS/253).
+bool stdRegionNameMatches(string name, string target) {
+    if (stdRegionIsBuildModeName(name)) {
+        return name == "RELEASE";
+    }
+    return name == target;
+}
+
+// A `#on` branch's match: the first name plus every ` or <name>` entry
+// that follows it on the same directive line (lowercase `or` separator,
+// UPPERCASE-only names, mirroring the compilers' OR-lists in DOCS/253).
+// The branch feeds when ANY listed name matches its own axis (OS names
+// test the target, DEBUG/RELEASE test the build mode). Lenient like the
+// rest of this filter: a missing name or non-`or` tail just ends the
+// list, and unknown names never match (their body stays stripped).
+bool stdRegionBranchMatches(string src, int nameStart, int contentEnd, string target) {
+    int nameEnd = nameStart;
+    while (nameEnd < contentEnd && src[nameEnd] != ' ' && src[nameEnd] != '\t') { nameEnd++; }
+    bool feeds = stdRegionNameMatches(stdRegionSlice(src, nameStart, nameEnd), target);
+    int cursor = nameEnd;
+    while (cursor < contentEnd) {
+        int sepSkip = cursor;
+        while (sepSkip < contentEnd && (src[sepSkip] == ' ' || src[sepSkip] == '\t')) { sepSkip++; }
+        if (sepSkip >= contentEnd) { break; }
+        int sepEnd = sepSkip;
+        while (sepEnd < contentEnd && src[sepEnd] != ' ' && src[sepEnd] != '\t') { sepEnd++; }
+        if (stdRegionSlice(src, sepSkip, sepEnd) != "or") { break; }
+        int nextSkip = sepEnd;
+        while (nextSkip < contentEnd && (src[nextSkip] == ' ' || src[nextSkip] == '\t')) { nextSkip++; }
+        int nextEnd = nextSkip;
+        while (nextEnd < contentEnd && src[nextEnd] != ' ' && src[nextEnd] != '\t') { nextEnd++; }
+        if (nextEnd <= nextSkip) { break; }
+        if (stdRegionNameMatches(stdRegionSlice(src, nextSkip, nextEnd), target)) { feeds = true; }
+        cursor = nextEnd;
+    }
+    return feeds;
+}
+
 // DOCS/260 — the preprocessor filter for prepended std module sources,
 // reduced for the interpreter. The interpreter deliberately does NOT
 // implement the preprocessor as a language feature, but the v2 unified core
@@ -133,6 +182,11 @@ string interpTargetOsFor(string overrideOs) {
 // the aggregate:
 //   - `#on <target>` region bodies are kept, where target is the host OS
 //     default (interpHostOs) unless `--os windows|linux|mac` overrides it.
+//     Build-mode names test their own axis (DOCS/253): `RELEASE` feeds by
+//     default (no flag; the interpreter has no `--debug` flag) while
+//     `DEBUG` bodies stay blanked. Each name is tested against its own
+//     axis, so `#on LINUX or DEBUG`-style OR-lists (lowercase `or`,
+//     UPPERCASE-only names) feed when ANY listed name matches.
 //   - A `#on` inside an open region does NOT nest: it closes the previous
 //     branch and opens the next branch of the SAME region (chained-branch
 //     rule, mirroring the compilers). First-match-wins: a branch body feeds
@@ -147,12 +201,12 @@ string interpTargetOsFor(string overrideOs) {
 // Directive names stay `#on`-UPPERCASE-only (like the compilers); only the
 // `--os` flag values accept lowercase. Lenient by design (this is not the
 // compiler's strict validator): the filter NEVER errors. An `#else`/`#off`
-// without an open region, an unknown or missing OS name, an unclosed region
+// without an open region, an unknown or missing OS or build-mode name, an unclosed region
 // at EOF, or a `#on` after `#else` just drops the directive line and the
 // scan continues — with one deliberate leniency gap vs the compilers (which
 // error on `#on` after `#else`, since `#else` must be last): here the same
 // branch-switch math applies without erroring, and `sawElse` (set by `#else`,
-// reset on region open and on `#off`) is tracked but never fatal.
+ // reset on region open and on `#off`) is tracked but never fatal.
 string filterStdRegions(string src, string target) {
     if (src.length == 0) { return src; }
     // Files without a single `#` cannot carry directives: return untouched.
@@ -201,15 +255,17 @@ string filterStdRegions(string src, string target) {
                 drop = true;
                 int nameStart = wordEnd;
                 while (nameStart < contentEnd && (src[nameStart] == ' ' || src[nameStart] == '\t')) { nameStart++; }
-                int nameEnd = nameStart;
-                while (nameEnd < contentEnd && src[nameEnd] != ' ' && src[nameEnd] != '\t') { nameEnd++; }
-                string osName = stdRegionSlice(src, nameStart, nameEnd);
+                // OR-list aware (DOCS/253): the branch feeds when ANY listed
+                // name matches its own axis — OS names test the target,
+                // RELEASE feeds by default while DEBUG stays blanked (the
+                // build mode defaults to RELEASE with no flag).
+                bool matchesTarget = stdRegionBranchMatches(src, nameStart, contentEnd, target);
                 if (mode == 0) {
                     mode = 1;
-                    // Unknown or missing OS names strip their body too
-                    // (active stays false); only the target's regions
-                    // survive (directive names are UPPERCASE-only).
-                    active = osName == target;
+                    // Unknown or missing OS/build-mode names strip their body
+                    // too (match stays false); only matching regions survive
+                    // (directive names are UPPERCASE-only).
+                    active = matchesTarget;
                     matchedAny = active;
                     sawElse = false;
                 } else {
@@ -217,11 +273,11 @@ string filterStdRegions(string src, string target) {
                     // the previous branch and opens the next one of the SAME
                     // region (never nests). First-match-wins — the same
                     // `matchedAny` math `#else` uses — so only the first
-                    // matching branch feeds. Unknown or missing OS names keep
-                    // stripping (the match stays false), exactly like a
-                    // top-level `#on`.
-                    active = osName == target && !matchedAny;
-                    matchedAny = matchedAny || osName == target;
+                    // matching branch feeds. Unknown or missing OS/build-mode
+                    // names keep stripping (the match stays false), exactly
+                    // like a top-level `#on`.
+                    active = matchesTarget && !matchedAny;
+                    matchedAny = matchedAny || matchesTarget;
                 }
             } else if (word == "else") {
                 drop = true;
