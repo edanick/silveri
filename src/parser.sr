@@ -83,6 +83,10 @@ class Parser {
     // prepended standard-library modules). Anonymous body identifier checks
     // accept these as module receivers (`time.now()` inside a body).
     private string[] modExportNames;
+    // Buffered diagnostic bodies in source order. The driver prints them
+    // grouped under a single `[file]` header (mirroring silverc-rs 861d2e7
+    // and the self-host 3291b66 unmarked path); bodies stay byte-identical.
+    private string[] parseMessages;
 
     construct (Token[] toks) {
         file.writeBytes("build/diag/TP_c.txt", [49]);
@@ -118,10 +122,18 @@ class Parser {
         this.anonKnownGlobals = [];
         this.anonWalkDepth = 0;
         this.modExportNames = [];
+        this.parseMessages = [];
     }
 
     public int errorCount() {
         return this.parseErrors;
+    }
+
+    // Buffered diagnostic bodies, in the order they were recorded. The
+    // driver flushes them under the `[file]` header; parsing itself prints
+    // nothing so headers print exactly once per file.
+    public string[] messages() {
+        return this.parseMessages;
     }
 
     // Provide per-line character lengths so bracket diagnostics can point
@@ -139,7 +151,7 @@ class Parser {
     // Record a diagnostic and keep going (one message per line, source order).
     private void recordError(string msg) {
         this.parseErrors++;
-        printline(msg);
+        this.parseMessages.add(msg);
     }
 
     // Source width of a token (quotes included for literals), used for
@@ -543,8 +555,7 @@ class Parser {
             return this.advance();
         }
         Token t = this.peek();
-        this.parseErrors++;
-        printline("Parse error at " + t.line.toString() + ":" + t.col.toString() + ": expected " + kindToString(kind) + " but got " + kindToString(t.kind) + " '" + t.text + "'");
+        this.recordError("Parse error at " + t.line.toString() + ":" + t.col.toString() + ": expected " + kindToString(kind) + " but got " + kindToString(t.kind) + " '" + t.text + "'");
         return t;
     }
 
@@ -560,8 +571,7 @@ class Parser {
             this.advance();
             return t.text;
         }
-        this.parseErrors++;
-        printline("Parse error: expected identifier at " + t.line.toString() + ":" + t.col.toString());
+        this.recordError("Parse error: expected identifier at " + t.line.toString() + ":" + t.col.toString());
         return "_err";
     }
 
@@ -2810,13 +2820,11 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
                 if (ftext.length > 1 && ftext[ftext.length - 1] == '.') {
                     member = ftext.substr(0, ftext.length - 1);
                 } else {
-                    this.parseErrors++;
-                    printline("Parse error: expected identifier or integer literal after '.' at " + this.peek().line.toString() + ":" + this.peek().col.toString());
+                    this.recordError("Parse error: expected identifier or integer literal after '.' at " + this.peek().line.toString() + ":" + this.peek().col.toString());
                     member = "_err";
                 }
             } else {
-                this.parseErrors++;
-                printline("Parse error: expected identifier or integer literal after '.' at " + this.peek().line.toString() + ":" + this.peek().col.toString());
+                this.recordError("Parse error: expected identifier or integer literal after '.' at " + this.peek().line.toString() + ":" + this.peek().col.toString());
                 member = "_err";
             }
             Node n = new Node(ND_MEMBER, ln, c);
@@ -3039,8 +3047,20 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
     private Node parseHoleExpr(string text, int hLine, int hCol) {
         Lexer subLexer = new Lexer(text);
         Token[] subTokens = subLexer.tokenize();
+        // Forward the hole's own lex/parse diagnostics into this buffer, in
+        // order, so the driver prints them under the `[file]` header with
+        // every other diagnostic (bodies byte-identical).
+        string[] subLexMsgs = subLexer.messages();
+        for (int sli = 0; sli < subLexMsgs.length; sli++) {
+            this.parseMessages.add(subLexMsgs[sli]);
+        }
+        this.parseErrors += subLexer.errorCount();
         Parser subParser = new Parser(subTokens);
         Node exprNode = subParser.parseExpr(0);
+        string[] subParseMsgs = subParser.messages();
+        for (int spi = 0; spi < subParseMsgs.length; spi++) {
+            this.parseMessages.add(subParseMsgs[spi]);
+        }
         if (subParser.errorCount() > 0) {
             this.parseErrors += subParser.errorCount();
         }

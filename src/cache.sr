@@ -72,6 +72,10 @@ class CacheSession {
     public prop string oldIndexText;
     public prop int dirtyCount;
     public prop int lexErrors;
+    // Buffered lex diagnostic bodies from the last tokensFor lexing, in
+    // source order. Surfaced so the driver can print them under the `[file]`
+    // header exactly like the non-cached path (bodies byte-identical).
+    public prop string[] lexMessages;
 
     construct (string rootDir, string projName) {
         this.ok = false;
@@ -87,6 +91,7 @@ class CacheSession {
         this.oldIndexText = "";
         this.dirtyCount = 0;
         this.lexErrors = 0;
+        this.lexMessages = [];
         // Linux cache root (mirrors silverc/compiler/bcache.sr): same
         // .sbcr/.srbc formats under /var/cache/silver/<project>/ with `/`
         // separators. The WINDOWS APPDATA construction below is untouched.
@@ -143,6 +148,7 @@ class CacheSession {
                 Token[] cached = this.loadSrbcText(absPath, hashKey);
                 if (cached.length > 0) {
                     this.lexErrors = 0;
+                    this.lexMessages = [];
                     return cached;
                 }
             }
@@ -512,6 +518,7 @@ class CacheSession {
         Lexer lx = new Lexer(source);
         Token[] toks = lx.tokenize();
         this.lexErrors = lx.errorCount();
+        this.lexMessages = lx.messages();
         return toks;
     }
 

@@ -694,6 +694,49 @@ bool natInBundle(int[] spans, int line) {
     return false;
 }
 
+// Grouped interpreter diagnostics: `[file]` headers over unchanged bodies.
+//
+// silverc-rs prints one `[file]` header per file on the error stream and keeps
+// every error body byte-identical; the self-host mirrors that shape on the
+// stream its diagnostics already use (stdout via printline), and so does the
+// interpreter here: headers and bodies all go through printline, the stream
+// these diagnostics already use.
+//
+// The interpreter lexes and parses the import-resolved program as ONE unit,
+// so per-file attribution is impossible and every diagnostic belongs to the
+// entry file: a single `[input-as-given]` header, bodies untouched. Errors
+// with no attributable file likewise fall under the entry header. The
+// per-file owner list stays explicit (stable grouping: first-seen file order,
+// source order within a file) so the shape matches the reference printers.
+void printGroupedDiagnostics(string[] msgs, string entryName) {
+    if (msgs.length == 0) { return; }
+    string[] owners = [];
+    for (int m = 0; m < msgs.length; m++) { owners.add(entryName); }
+    string[] order = [];
+    for (int m = 0; m < owners.length; m++) {
+        bool seen = false;
+        for (int o = 0; o < order.length; o++) {
+            if (order[o] == owners[m]) { seen = true; break; }
+        }
+        if (!seen) { order.add(owners[m]); }
+    }
+    for (int o = 0; o < order.length; o++) {
+        printline("[" + order[o] + "]");
+        for (int m = 0; m < msgs.length; m++) {
+            if (owners[m] == order[o]) { printline(msgs[m]); }
+        }
+    }
+}
+
+// A file-attributable native/import diagnostic: single `[input-as-given]`
+// header with the unchanged body, then abort (these sites always exited
+// right after printing).
+void failEntryDiagnostic(string msg, string entryName) {
+    printline("[" + entryName + "]");
+    printline(msg);
+    exit(1);
+}
+
 // DOCS/261 -- validate one parsed import against the fixed tables plus the
 // manifest's custom declarations. Failures print the contract message and
 // exit, mirroring the compilers' import-site errors in interpreter style.
@@ -708,11 +751,9 @@ void checkOneNativeImport(string origin, string[] names, bool star, bool inBundl
             if (natSilverResolves(n, source, inputFile, target)) { continue; }
             if (!customNativeDeclared(n)) { continue; }
             if (customNativeFileFor(n, target) == "") {
-                printline(customNativeSideError(n, target));
-                exit(1);
+                failEntryDiagnostic(customNativeSideError(n, target), inputFile);
             }
-            printline(customNativeStarMsg(n));
-            exit(1);
+            failEntryDiagnostic(customNativeStarMsg(n), inputFile);
         }
         return;
     }
@@ -725,11 +766,9 @@ void checkOneNativeImport(string origin, string[] names, bool star, bool inBundl
                 string full = "win32." + names[i];
                 if (fixedWin32Module(full)) { continue; }
                 if (customNativeHasWin(names[i])) {
-                    printline(customNativeStarMsg(full));
-                    exit(1);
+                    failEntryDiagnostic(customNativeStarMsg(full), inputFile);
                 }
-                printline(customNativeUndeclaredMsg(full));
-                exit(1);
+                failEntryDiagnostic(customNativeUndeclaredMsg(full), inputFile);
             }
             return;
         }
@@ -737,13 +776,11 @@ void checkOneNativeImport(string origin, string[] names, bool star, bool inBundl
         // A custom name colliding with a fixed module resolves to fixed.
         if (fixedWin32Module(origin)) { return; }
         if (!customNativeHasWin(winMod)) {
-            printline(customNativeUndeclaredMsg(origin));
-            exit(1);
+            failEntryDiagnostic(customNativeUndeclaredMsg(origin), inputFile);
         }
         // Declared custom modules take single-export grants only.
         if (star) {
-            printline(customNativeStarMsg(origin));
-            exit(1);
+            failEntryDiagnostic(customNativeStarMsg(origin), inputFile);
         }
         return;
     }
@@ -754,23 +791,19 @@ void checkOneNativeImport(string origin, string[] names, bool star, bool inBundl
                 string full = "linux." + names[j];
                 if (fixedLinuxModule(full)) { continue; }
                 if (customNativeHasLin(names[j])) {
-                    printline(customNativeStarMsg(full));
-                    exit(1);
+                    failEntryDiagnostic(customNativeStarMsg(full), inputFile);
                 }
-                printline(customNativeUndeclaredMsg(full));
-                exit(1);
+                failEntryDiagnostic(customNativeUndeclaredMsg(full), inputFile);
             }
             return;
         }
         string linMod = origin.substr(6);
         if (fixedLinuxModule(origin)) { return; }
         if (!customNativeHasLin(linMod)) {
-            printline(customNativeUndeclaredMsg(origin));
-            exit(1);
+            failEntryDiagnostic(customNativeUndeclaredMsg(origin), inputFile);
         }
         if (star) {
-            printline(customNativeStarMsg(origin));
-            exit(1);
+            failEntryDiagnostic(customNativeStarMsg(origin), inputFile);
         }
         return;
     }
@@ -785,14 +818,12 @@ void checkOneNativeImport(string origin, string[] names, bool star, bool inBundl
             for (int k = 0; k < names.length; k++) {
                 string full = "mac." + names[k];
                 if (fixedMacModule(full)) { continue; }
-                printline(customNativeUndeclaredMsg(full));
-                exit(1);
+                failEntryDiagnostic(customNativeUndeclaredMsg(full), inputFile);
             }
             return;
         }
         if (fixedMacModule(origin)) { return; }
-        printline(customNativeUndeclaredMsg(origin));
-        exit(1);
+        failEntryDiagnostic(customNativeUndeclaredMsg(origin), inputFile);
     }
     if (nativeModule(origin) || moduleAlwaysResolvable(origin)) { return; }
     // Bare-name precedence: project-local sources, `.qs` bundle modules,
@@ -804,18 +835,15 @@ void checkOneNativeImport(string origin, string[] names, bool star, bool inBundl
         // unresolvable bare source names the declaration to add;
         // standalone runs keep the driver's historical diagnostics.
         if (inBundle || customNativeOptIn()) {
-            printline(customNativeUndeclaredMsg(origin));
-            exit(1);
+            failEntryDiagnostic(customNativeUndeclaredMsg(origin), inputFile);
         }
         return;
     }
     if (customNativeFileFor(origin, target) == "") {
-        printline(customNativeSideError(origin, target));
-        exit(1);
+        failEntryDiagnostic(customNativeSideError(origin, target), inputFile);
     }
     if (star && customNativeStarExports(origin, target).length == 0) {
-        printline(customNativeStarMsg(origin));
-        exit(1);
+        failEntryDiagnostic(customNativeStarMsg(origin), inputFile);
     }
 }
 
@@ -975,6 +1003,9 @@ bool matchFromImport(string source, int pos, int[] bounds) {
 string resolveImports(string source, string inputFile, int[] prependLen, string target) {    if (prependLen.length == 0) { prependLen.add(0); } else { prependLen[0] = 0; }
     string prepend = "";
     bool badModule = false;
+    // Unknown-module bodies buffered in source order; the driver prints them
+    // grouped under the single `[input-as-given]` header below.
+    string[] unknownModMsgs = [];
     // DOCS/259 -- fixpoint star-import resolution: pass 1 scans the user
     // source; later passes re-scan the accumulated prepend, so nested
     // source imports (dialogs -> msgbox, ftps -> net, sysinfo -> env, ...)
@@ -1062,19 +1093,16 @@ string resolveImports(string source, string inputFile, int[] prependLen, string 
                 // wrong-target side and missing export list fail here with
                 // the contract message; the grant itself registers later.
                 if (customNativeFileFor(module, target) == "") {
-                    printline(customNativeSideError(module, target));
-                    exit(1);
+                    failEntryDiagnostic(customNativeSideError(module, target), inputFile);
                 }
                 if (customNativeStarExports(module, target).length == 0) {
-                    printline(customNativeStarMsg(module));
-                    exit(1);
+                    failEntryDiagnostic(customNativeStarMsg(module), inputFile);
                 }
             } else if (natInBundle(aggSpans, natImportLine(aggregate, importPos)) || customNativeOptIn()) {
                 // The manifest opts into custom natives (or the star comes
                 // from a consumed `.qs` bundle): an unresolvable star
                 // source names the declaration to add.
-                printline(customNativeUndeclaredMsg(module));
-                exit(1);
+                failEntryDiagnostic(customNativeUndeclaredMsg(module), inputFile);
             } else {
                 // SYNTAX_EXCEPTIONS.md ? unknown module, with a did-you-mean
                 // suggestion when it resembles a known one.
@@ -1082,9 +1110,9 @@ string resolveImports(string source, string inputFile, int[] prependLen, string 
                 int[] loc = diagSourceLoc(aggregate, nameStart);
                 string sugg = diagClosestMatch(module, knownModuleNames());
                 if (sugg.length > 0) {
-                    printline("did you mean to import the module \"" + sugg + "\"?, unknown module \"" + module + "\" was found at line " + loc[0].toString() + " column " + loc[1].toString());
+                    unknownModMsgs.add("did you mean to import the module \"" + sugg + "\"?, unknown module \"" + module + "\" was found at line " + loc[0].toString() + " column " + loc[1].toString());
                 } else {
-                    printline("unknown module \"" + module + "\" was found at line " + loc[0].toString() + ", column " + loc[1].toString() + ". module either doesn't exist or not installed.");
+                    unknownModMsgs.add("unknown module \"" + module + "\" was found at line " + loc[0].toString() + ", column " + loc[1].toString() + ". module either doesn't exist or not installed.");
                 }
             }
         }
@@ -1092,6 +1120,7 @@ string resolveImports(string source, string inputFile, int[] prependLen, string 
     }
     }
     if (badModule) {
+        printGroupedDiagnostics(unknownModMsgs, inputFile);
         exit(1);
     }
     // Plain source-module imports (`import helper_suite;`) load the module's
@@ -1331,6 +1360,12 @@ void main() {
         CacheSession cache = new CacheSession(cacheRoot, cacheProject);
         tokens = cache.tokensFor(filename, inputSource);
         cache.flush();
+        // Cached-path lex diagnostics print grouped under the entry header
+        // like the direct path; control flow is unchanged (historically the
+        // cached path continued past lex errors).
+        if (cache.lexErrors > 0) {
+            printGroupedDiagnostics(cache.lexMessages, filename);
+        }
         // Compute line lengths from the source for bracket diagnostics.
         int current = 0;
         for (int i = 0; i < inputSource.length; i++) {
@@ -1347,6 +1382,7 @@ void main() {
         Lexer lexer = new Lexer(inputSource);
         tokens = lexer.tokenize();
         if (lexer.errorCount() > 0) {
+            printGroupedDiagnostics(lexer.messages(), filename);
             exit(1);
         }
         lineLens = lexer.lineLengths();
@@ -1357,6 +1393,7 @@ void main() {
     p.setCustomTarget(target);
     Node[] program = p.parseProgram();
     if (p.errorCount() > 0) {
+        printGroupedDiagnostics(p.messages(), filename);
         exit(1);
     }
 
@@ -1372,10 +1409,16 @@ void main() {
     string preludeSrc = source();
     Lexer preludeLexer = new Lexer(preludeSrc);
     Token[] preludeTokens = preludeLexer.tokenize();
+    // Prelude lex diagnostics print grouped under the entry header;
+    // control flow is unchanged (historically non-fatal here).
+    if (preludeLexer.errorCount() > 0) {
+        printGroupedDiagnostics(preludeLexer.messages(), filename);
+    }
     Parser preludeParser = new Parser(preludeTokens);
     preludeParser.setLineLengths(preludeLexer.lineLengths());
     Node[] llmaiPrelude = preludeParser.parseProgram();
     if (preludeParser.errorCount() > 0) {
+        printGroupedDiagnostics(preludeParser.messages(), filename);
         exit(1);
     }
     evaluator.register(llmaiPrelude);
@@ -1383,10 +1426,15 @@ void main() {
     string excSrc = exceptionSource();
     Lexer excLexer = new Lexer(excSrc);
     Token[] excTokens = excLexer.tokenize();
+    // Exception-prelude lex diagnostics: same grouped, non-fatal treatment.
+    if (excLexer.errorCount() > 0) {
+        printGroupedDiagnostics(excLexer.messages(), filename);
+    }
     Parser excParser = new Parser(excTokens);
     excParser.setLineLengths(excLexer.lineLengths());
     Node[] excPrelude = excParser.parseProgram();
     if (excParser.errorCount() > 0) {
+        printGroupedDiagnostics(excParser.messages(), filename);
         exit(1);
     }
     evaluator.register(excPrelude);
@@ -1396,6 +1444,7 @@ void main() {
     // once the whole symbol table is visible.
     p.checkCallDiagnostics(program);
     if (p.errorCount() > 0) {
+        printGroupedDiagnostics(p.messages(), filename);
         exit(1);
     }
 

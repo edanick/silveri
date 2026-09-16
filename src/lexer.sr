@@ -13,6 +13,10 @@ class Lexer {
     private prop int[] lineLens;
     // Recoverable lex diagnostics count (SYNTAX_EXCEPTIONS.md).
     private prop int lexErrors;
+    // Buffered diagnostic bodies in source order. The driver prints them
+    // grouped under a single `[file]` header (mirroring silverc-rs 861d2e7
+    // and the self-host 3291b66 unmarked path); bodies stay byte-identical.
+    private prop string[] lexMessages;
 
     construct (string source) {
         this.src = source;
@@ -21,6 +25,7 @@ class Lexer {
         this.col = 1;
         this.lineLens = [];
         this.lexErrors = 0;
+        this.lexMessages = [];
         int current = 0;
         for (int i = 0; i < source.length; i++) {
             char c = source[i];
@@ -42,6 +47,13 @@ class Lexer {
         return this.lexErrors;
     }
 
+    // Buffered diagnostic bodies, in the order they were recorded. The
+    // driver flushes them under the `[file]` header; lexing itself prints
+    // nothing so headers print exactly once per file.
+    public string[] messages() {
+        return this.lexMessages;
+    }
+
     // Character length of the given 1-based line (0 when out of range).
     private int lineCharLen(int ln) {
         if (ln >= 1 && ln <= this.lineLens.length) { return this.lineLens[ln - 1]; }
@@ -50,7 +62,7 @@ class Lexer {
 
     private void recordLexError(string msg) {
         this.lexErrors++;
-        printline(msg);
+        this.lexMessages.add(msg);
     }
 
     private char? peek() {
