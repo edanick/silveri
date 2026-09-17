@@ -265,11 +265,12 @@ class Parser {
     private bool identShouldFlag(Token cur, int nk) {
         if (!this.identStartsLower(cur.text)) { return false; }
         // Primitive type words that lex as identifiers head declarations,
-        // never unknown keywords.
+        // never unknown keywords (`object` declares dynamic records).
         if (cur.text == "double" || cur.text == "long"
             || cur.text == "uint" || cur.text == "byte"
             || cur.text == "int32" || cur.text == "int64"
-            || cur.text == "float64" || cur.text == "boolean") { return false; }
+            || cur.text == "float64" || cur.text == "boolean"
+            || cur.text == "object") { return false; }
         bool declShape = nk == TK_IDENT || nk == TK_LBRACKET || nk == TK_LESS || nk == TK_COLON;
         if (declShape) {
             // `T name (` is a function-signature shape — legacy sources use
