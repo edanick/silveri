@@ -363,7 +363,7 @@ class CacheSession {
             && dotted[dotted.length - 2] == 's' && dotted[dotted.length - 3] == '.') {
             dotted = icSliceRange(dotted, 0, dotted.length - 3);
         }
-        return this.dir + "\\" + icReplaceAll(dotted, "/", "\\") + ".srbc";
+        return this.dir + "\\" + dotted.replaceAll("/", "\\") + ".srbc";
     }
 
     private void storeSrbc(string absPath, Token[] tokens, int stamp, string hashKey, string sizeKey) {
@@ -848,7 +848,7 @@ public string icResolveRel(string root, string rel) {
     if (root.length == 0 || root == ".") { return rel; }
     return root + "/" + rel;
     #off
-    string winRel = icReplaceAll(rel, "/", "\\");
+    string winRel = rel.replaceAll("/", "\\");
     if (root.length == 0 || root == ".") { return winRel; }
     return root + "\\" + winRel;
 }

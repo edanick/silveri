@@ -204,6 +204,16 @@ class BuiltinMethods {
             string a1 = args[1].strVal;
             return makeString(s.strVal.replace(a0, a1));
         }
+        // replaceAll(old, new): same replace-every-match lowering as
+        // replace, but an empty (or missing) needle replaces nothing and
+        // returns the receiver unchanged (DOCS/113).
+        if (method == "replaceAll") {
+            if (args.length < 2) { return s; }
+            string b0 = args[0].strVal;
+            if (b0.length == 0) { return s; }
+            string b1 = args[1].strVal;
+            return makeString(s.strVal.replace(b0, b1));
+        }
         if (method == "upper" || method == "toUpper") { return makeString(s.strVal.upper()); }
         if (method == "lower" || method == "toLower") { return makeString(s.strVal.lower()); }
         if (method == "substr" || method == "substring") {
@@ -2327,6 +2337,22 @@ Value callBuiltin(string name, Value[] args) {
     if (name == "char") {
         if (args.length == 0) { return makeChar(char(0)); }
         return makeChar(char(args[0].toInt()));
+    }
+    // bool(...) conversion: truthiness — false for false, 0 (all int
+    // widths), 0.0, "" and null; true otherwise (DOCS/113). Chars compare
+    // by code point, matching the compilers (note: `if (c)` keeps the
+    // legacy always-true rule for chars — only the explicit conversion
+    // uses the numeric test).
+    if (name == "bool") {
+        if (args.length == 0) { return makeBool(false); }
+        Value v = args[0];
+        if (v.tag == VAL_BOOL) { return v; }
+        if (v.tag == VAL_INT || v.tag == VAL_BYTE) { return makeBool(v.intVal != 0); }
+        if (v.tag == VAL_FLOAT) { return makeBool(valueToFloat(v) != 0.0); }
+        if (v.tag == VAL_STRING) { return makeBool(v.strVal.length > 0); }
+        if (v.tag == VAL_CHAR) { return makeBool(v.charVal.toInt64() != 0); }
+        if (v.tag == VAL_NULL) { return makeBool(false); }
+        return makeBool(true);
     }
     if (name == "string_cast") {
         if (args.length > 0) { return makeString(args[0].toString()); }

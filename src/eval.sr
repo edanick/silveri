@@ -332,7 +332,9 @@ class Evaluator {
         this.globals.define("float64", makeBuiltin("float"));
         this.globals.define("byte", makeBuiltin("byte"));
         this.globals.define("char", makeBuiltin("char"));
+        this.globals.define("bool", makeBuiltin("bool"));
         this.globals.define("string", makeBuiltin("string_cast"));
+        this.globals.define("string_cast", makeBuiltin("string_cast"));
         this.globals.define("now", makeBuiltin("now"));
         this.globals.define("time", makeBuiltin("time_module"));
         this.globals.define("url", makeBuiltin("url_module"));
@@ -1370,10 +1372,31 @@ class Evaluator {
         if (node.kind == ND_NULL_LIT) { return makeNull(); }
 
         if (node.kind == ND_CAST) {
+            // C-style casts convert through the same builtins as the
+            // matching conversion calls (DOCS/113), so `(T) x` and `T(x)`
+            // agree on every target. Anything else (void/var/user types)
+            // keeps the legacy pass-through.
             Value operand = this.evalExpr(node.child(0), env);
+            Value[] castArgs = [];
+            castArgs.add(operand);
             if (node.typeHint == "int" || node.typeHint == "int32" || node.typeHint == "int64"
-                || node.typeHint == "byte") {
-                return makeInt(operand.toInt());
+                || node.typeHint == "uint") {
+                return callBuiltin("int", castArgs);
+            }
+            if (node.typeHint == "float" || node.typeHint == "float64" || node.typeHint == "double") {
+                return callBuiltin("float", castArgs);
+            }
+            if (node.typeHint == "byte") {
+                return callBuiltin("byte", castArgs);
+            }
+            if (node.typeHint == "char") {
+                return callBuiltin("char", castArgs);
+            }
+            if (node.typeHint == "string") {
+                return callBuiltin("string_cast", castArgs);
+            }
+            if (node.typeHint == "bool") {
+                return callBuiltin("bool", castArgs);
             }
             return operand;
         }

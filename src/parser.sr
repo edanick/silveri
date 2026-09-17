@@ -3656,6 +3656,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         cands.add("int"); cands.add("float"); cands.add("double");
         cands.add("int64"); cands.add("uint"); cands.add("float64");
         cands.add("char"); cands.add("byte"); cands.add("string_cast");
+        cands.add("bool");
         cands.add("now"); cands.add("cargs");
         cands.add("getCommandLine");
         cands.add("readFile"); cands.add("readString");
