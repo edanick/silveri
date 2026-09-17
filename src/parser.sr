@@ -962,6 +962,17 @@ private Node? parseItem() {
                 else if (this.check(TK_INTERNAL)) { this.advance(); isInt = true; sawModifier = true; }
                 else if (this.check(TK_STATIC)) { this.advance(); isStat = true; sawModifier = true; }
             }
+            // `read only` contextual modifier pair directly before `prop`.
+            // `read`/`only` are plain identifiers (TK_IDENT) and stay usable
+            // as ordinary names everywhere else.
+            bool isRO = false;
+            if (this.check(TK_IDENT) && this.peek().text == "read"
+                && this.pos + 1 < this.tokens.length && this.tokens[this.pos + 1].kind == TK_IDENT && this.tokens[this.pos + 1].text == "only"
+                && this.pos + 2 < this.tokens.length && this.tokens[this.pos + 2].kind == TK_PROP) {
+                this.advance();
+                this.advance();
+                isRO = true;
+            }
             if (this.check(TK_DEF)) {
                 this.advance();
                 int dln = this.line(); int dc = this.col();
@@ -1036,12 +1047,31 @@ private Node? parseItem() {
                     }
                 }
                 string fieldName = this.expectIdent();
-                this.expectSemi();
                 Node field = new Node(ND_VAR_DECL, ln, c);
                 field.name = fieldName;
                 field.typeHint = typ;
                 field.isPublic = isPub;
                 field.isInternal = isInt;
+                field.isReadOnly = isRO;
+                // Read-only props are set exactly once, by the declaration
+                // initializer. Mutable props take no initializer.
+                if (isRO) {
+                    if (!this.check(TK_ASSIGN)) {
+                        Token roTok = this.peek();
+                        this.recordError(roTok.line.toString() + ":" + roTok.col.toString() + ": read-only prop \"" + fieldName + "\" must be declared with a value");
+                        this.expectSemi();
+                        n.addChild(field);
+                        continue;
+                    }
+                    this.advance();
+                    field.addChild(this.parseExpr(0));
+                } else if (this.check(TK_ASSIGN)) {
+                    Token mutTok = this.peek();
+                    this.recordError(mutTok.line.toString() + ":" + mutTok.col.toString() + ": prop \"" + fieldName + "\" takes an initializer only as `read only prop`");
+                    this.advance();
+                    field.addChild(this.parseExpr(0));
+                }
+                this.expectSemi();
                 n.addChild(field);
                 continue;
             }

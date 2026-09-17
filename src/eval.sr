@@ -1734,6 +1734,32 @@ class Evaluator {
         return makeNull();
     }
 
+    // True when `fieldName` of class `className` (or any ancestor) is a
+    // read-only prop (DOCS/264). Walks the same leaf-to-root chain as
+    // constructClass.
+    private bool isReadOnlyField(string className, string fieldName) {
+        string cur = className;
+        int guard = 0;
+        while (this.classes.contains(cur) && guard < 64) {
+            Node classDef = this.classes[cur];
+            for (int i = 0; i < classDef.childCount(); i++) {
+                Node child = classDef.child(i);
+                if (child.kindOf() == ND_VAR_DECL && child.name == fieldName) {
+                    return child.isReadOnly;
+                }
+            }
+            Node pn = this.classes[cur];
+            cur = pn.parentClass;
+            guard++;
+        }
+        return false;
+    }
+
+    private void rejectReadOnlyAssign(string className, string fieldName, Node target) {
+        printline("cannot assign to read-only prop '" + className + "." + fieldName + "' at line " + target.line.toString() + ", column " + target.col.toString());
+        exit(1);
+    }
+
     private Value assignTo(Node target, Value val, Env env) {
         if (target.kind == ND_IDENT) {
             // Inside a class method, a bare field assignment (`msg = val`)
@@ -1748,6 +1774,10 @@ class Evaluator {
                     if (this.inStaticMethod && thisVal.tag == VAL_CLASS_INST
                         && this.isStringField(thisVal.typeName, target.name)) {
                         return val;
+                    }
+                    if (this.isReadOnlyField(thisVal.typeName, target.name)) {
+                        this.rejectReadOnlyAssign(thisVal.typeName, target.name, target);
+                        return makeNull();
                     }
                     mirrorPut(thisVal, target.name, val);
                     return val;
@@ -1773,6 +1803,10 @@ class Evaluator {
                 if (this.inStaticMethod && obj.tag == VAL_CLASS_INST
                     && this.isStringField(obj.typeName, target.name)) {
                     return val;
+                }
+                if (this.isReadOnlyField(obj.typeName, target.name)) {
+                    this.rejectReadOnlyAssign(obj.typeName, target.name, target);
+                    return makeNull();
                 }
 mirrorPut(obj, target.name, val);
                 return val;
