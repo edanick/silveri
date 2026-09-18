@@ -443,20 +443,66 @@ Value makeDict(dict<string, Value> v) {
 // by the compiler, so their results flow through as proper bit patterns).
 // ---------------------------------------------------------------------------
 
-// Safe strtoll(base 10) wrapper: skips leading whitespace and an optional
-// sign, and requires at least one leading digit before calling the native
-// toInt64. Without the leading-digit guard the compiled runtime's toInt64
-// throws an uncatchable native exception on strings like "a", crashing the
-// interpreter with "Unhandled exception". Non-numeric input returns 0, which
-// matches the compiled strtoll behavior.
+// Safe decimal parse: skips leading whitespace and an optional sign, and
+// requires at least one leading digit (else 0, which also keeps the native
+// toInt64 from throwing an uncatchable exception). Digits accumulate until
+// the first non-digit and overflow WRAPS in two's-complement arithmetic
+// (DOCS/113), matching the compilers' inline loops; it never saturates.
 int64 strToInt64Safe(string s) {
     int i = 0;
     while (i < s.length && (s[i] == ' ' || s[i] == '\t')) { i++; }
-    if (i < s.length && (s[i] == '-' || s[i] == '+')) { i++; }
-    if (i < s.length && s[i] >= '0' && s[i] <= '9') {
-        return s.toInt64();
+    bool neg = false;
+    if (i < s.length && (s[i] == '-' || s[i] == '+')) {
+        if (s[i] == '-') { neg = true; }
+        i++;
     }
-    return 0;
+    if (i >= s.length || s[i] < '0' || s[i] > '9') { return 0; }
+    int64 v = 0;
+    while (i < s.length && s[i] >= '0' && s[i] <= '9') {
+        int64 d = s[i] - '0';
+        v = v * 10 + d;
+        i++;
+    }
+    if (neg) { v = -v; }
+    return v;
+}
+
+// DOCS/113 — digit value for `int(s, base)` radix parsing: 0-9 -> 0-9,
+// a-z -> 10-35, A-Z -> 10-35 (case-insensitive); -1 for any other char.
+int64 radixDigitVal(char c) {
+    if (c >= '0' && c <= '9') { return c - '0'; }
+    if (c >= 'a' && c <= 'z') { return c - 'a' + 10; }
+    if (c >= 'A' && c <= 'Z') { return c - 'A' + 10; }
+    return -1;
+}
+
+// DOCS/113 — `int(s, base)` string form: base 2..36 (else 0); an optional
+// leading '-' (first char only: no whitespace skipping, no '+'); digits
+// accumulate only while their value stays below the base (prefix stop); no
+// valid digits yields 0; overflow wraps; negate last.
+int64 strToIntRadix(string s, int64 base) {
+    if (base < 2 || base > 36) { return 0; }
+    int i = 0;
+    bool neg = false;
+    if (s.length > 0 && s[0] == '-') { neg = true; i = 1; }
+    int64 v = 0;
+    while (i < s.length) {
+        int64 d = radixDigitVal(s[i]);
+        if (d < 0 || d >= base) { break; }
+        v = v * base + d;
+        i++;
+    }
+    if (neg) { v = -v; }
+    return v;
+}
+
+// DOCS/113 — `int(c, base)` char form: the single digit value, or -1 when
+// the char is not a digit below the base; out-of-range base yields 0.
+int64 charDigitRadix(char c, int64 base) {
+    if (base < 2 || base > 36) { return 0; }
+    int64 d = radixDigitVal(c);
+    if (d < 0 || d >= base) { return -1; }
+    return d;
 }
 
 // Parse the integer part of a decimal float string ("3.14" -> 3, "-2.5" -> -2).

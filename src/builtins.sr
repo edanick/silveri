@@ -811,6 +811,14 @@ class BuiltinMethods {
         // string raises a ValueException pointing at the argument.
         if (mod == "int") {
             if (method == "parseInt" || method == "toInt" || method == "parseLong" || method == "toInt64") {
+                // DOCS/113 — `int.parseInt(s, base)` rides the `int(s, base)`
+                // radix routine: prefix-parse, 0 on no digits, wrap, '-' last.
+                if (args.length >= 2) {
+                    int64 base = args[1].toInt();
+                    if (args[0].tag == VAL_STRING) { return makeInt(strToIntRadix(args[0].strVal, base)); }
+                    if (args[0].tag == VAL_CHAR) { return makeInt(charDigitRadix(args[0].charVal, base)); }
+                    return makeInt(args[0].toInt());
+                }
                 string s = args.length > 0 && args[0].tag == VAL_STRING ? args[0].strVal : "";
                 if (!stringIsNumericRT(s, true)) {
                     ev.throwException("ValueException", "expected a string of a number at line " + ev.diagLine.toString() + ", column " + ev.diagCol.toString() + ", got \"" + s + "\"");
@@ -1055,7 +1063,7 @@ class BuiltinMethods {
                 return makeBool(fs.isFile(path));
             }
             if (method == "isDriveRoot") { return makeBool(fs.isDriveRoot(path)); }
-            if (method == "getSize") {
+            if (method == "getSize" || method == "size") {
                 #on LINUX
                 int[] stSzFs = new int[18];
                 int rcSzFs = stat(path, stSzFs);
@@ -1170,7 +1178,7 @@ class BuiltinMethods {
             string path = "";
             if (args.length > 0) { path = args[0].strVal; }
             if (method == "exists") { return makeBool(file.exists(path)); }
-            if (method == "getSize") {
+            if (method == "getSize" || method == "size") {
                 #on LINUX
                 int[] stSzFile = new int[18];
                 int rcSzFile = stat(path, stSzFile);
@@ -1281,7 +1289,7 @@ class BuiltinMethods {
             string path = "";
             if (args.length > 0) { path = args[0].strVal; }
             if (method == "exists") { return makeBool(folder.exists(path)); }
-            if (method == "getSize") {
+            if (method == "getSize" || method == "size") {
                 #on LINUX
                 int[] stSzFolder = new int[18];
                 int rcSzFolder = stat(path, stSzFolder);
@@ -2312,6 +2320,16 @@ Value callBuiltin(string name, Value[] args) {
         return makeNull();
     }
     if (name == "int") {
+        // DOCS/113 — `int(s, base)` parses in radix 2..36 (else 0) with the
+        // compilers' prefix/wrap/negate-last contract; `int(c, base)` on a
+        // char is the single digit value or -1. Non-string/non-char inputs
+        // ignore the base. The 1-arg path below is unchanged.
+        if (args.length >= 2) {
+            int64 base = args[1].toInt();
+            if (args[0].tag == VAL_STRING) { return makeInt(strToIntRadix(args[0].strVal, base)); }
+            if (args[0].tag == VAL_CHAR) { return makeInt(charDigitRadix(args[0].charVal, base)); }
+            return makeInt(args[0].toInt());
+        }
         if (args.length > 0) {
             if (args[0].tag == VAL_STRING) { return makeInt(strToInt64Safe(args[0].strVal)); }
             return makeInt(args[0].toInt());
