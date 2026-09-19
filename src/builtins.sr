@@ -865,6 +865,23 @@ class BuiltinMethods {
             }
             if (method == "fnv1" || method == "fnv1File") {
                 if (method == "fnv1File") { data = file.readString(data); }
+                // Kind-selected + array overloads (bootstrap parity with
+                // silverc/std/hash.sr): FNV-1 unless kind == 1 selects
+                // FNV-1a (xor-then-multiply). Raw ints (1 == FNV1A, the
+                // compilers' enum value) and interpreter enum values both
+                // select the 1a path — exactly like string.equals handles
+                // StringCase. Array checks come before the string shape
+                // (the self-host overload-ordering rule); the single-string
+                // shape below stays on the frozen fnv1Hash.
+                if (method == "fnv1" && args.length >= 2) {
+                    int fnvKind = args[1].toInt();
+                    if (args[1].tag == VAL_ENUM_VAL) { fnvKind = args[1].strVal == "FNV1A" ? 1 : 0; }
+                    if (args[0].tag == VAL_ARRAY) { return makeInt(fnv1ArrKind(args[0], fnvKind)); }
+                    return makeInt(fnv1StrKind(data, fnvKind));
+                }
+                if (method == "fnv1" && args.length == 1 && args[0].tag == VAL_ARRAY) {
+                    return makeInt(fnv1ArrHash(args[0]));
+                }
                 return makeInt(fnv1Hash(data));
             }
             return makeNull();
@@ -3465,6 +3482,67 @@ int64 fnv1Hash(string data) {
         result = result ^ int64(data[i]);
     }
     return result;
+}
+
+// FNV-1a (xor-then-multiply) and array overloads (bootstrap parity with
+// silverc/std/hash.sr). The string shapes hash string bytes; the array
+// shapes hash each element's low byte (`& 0xFF`, so embedded NULs hash
+// instead of truncating — byte[] and char[] share one array path since the
+// interpreter stores both as Value arrays). FNV-1a core is
+// `h = (h ^ byte) * prime` with basis 14695981039346656037 (signed
+// spelling -3750763034362895579 — the unsigned literal is rejected by the
+// parser, see fnv1Hash) and prime 1099511628211, u64 wrap. Every overload
+// carries its own loop body — no delegating wrappers — and loops never
+// inline in BuiltinMethods.moduleMethod (the compiled loop's result update
+// drops there), so the hash arm only dispatches.
+enum FnvKind {
+    FNV1,
+    FNV1A
+}
+
+int64 fnv1StrKind(string data, int kind) {
+    int64 fnvResult = -3750763034362895579;
+    if (kind == 1) {
+        for (int fnvI = 0; fnvI < data.length; fnvI++) {
+            // Same char-cast gap as fnv1Hash above: keep int64() call-form.
+            fnvResult = fnvResult ^ int64(data[fnvI]);
+            fnvResult = fnvResult * 1099511628211;
+        }
+    } else {
+        for (int fnvI = 0; fnvI < data.length; fnvI++) {
+            fnvResult = fnvResult * 1099511628211;
+            // Same char-cast gap as fnv1Hash above: keep int64() call-form.
+            fnvResult = fnvResult ^ int64(data[fnvI]);
+        }
+    }
+    return fnvResult;
+}
+
+int64 fnv1ArrHash(Value data) {
+    int64 fnvResult = -3750763034362895579;
+    int fnvCount = arrValLen(data);
+    for (int fnvI = 0; fnvI < fnvCount; fnvI++) {
+        fnvResult = fnvResult * 1099511628211;
+        fnvResult = fnvResult ^ int64(arrValIntAt(data, fnvI) & 0xFF);
+    }
+    return fnvResult;
+}
+
+int64 fnv1ArrKind(Value data, int kind) {
+    int64 fnvResult = -3750763034362895579;
+    int fnvCount = arrValLen(data);
+    if (kind == 1) {
+        for (int fnvI = 0; fnvI < fnvCount; fnvI++) {
+            fnvResult = fnvResult ^ int64(arrValIntAt(data, fnvI) & 0xFF);
+            fnvResult = fnvResult * 1099511628211;
+        }
+    } else {
+        for (int fnvI = 0; fnvI < fnvCount; fnvI++) {
+            fnvResult = fnvResult * 1099511628211;
+            fnvResult = fnvResult ^ int64(arrValIntAt(data, fnvI) & 0xFF);
+        }
+    }
+    return fnvResult;
 }
 
 // The module-level LCG state keeps successive math.random() calls different.
