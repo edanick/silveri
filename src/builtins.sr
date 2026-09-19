@@ -270,6 +270,14 @@ class BuiltinMethods {
         if (method == "isEmpty") {
             return makeBool(s.strVal.length == 0);
         }
+        if (method == "isDigits") {
+            if (s.strVal.length == 0) { return makeBool(false); }
+            for (int i = 0; i < s.strVal.length; i++) {
+                char c = s.strVal[i];
+                if (c < '0' || c > '9') { return makeBool(false); }
+            }
+            return makeBool(true);
+        }
         if (method == "toChars") {
             Value[] result = [];
             for (int i = 0; i < s.strVal.length; i++) {
