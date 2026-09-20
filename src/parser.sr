@@ -3045,7 +3045,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
     // or it is a parse error telling the user to parenthesize. Mirrors
     // silverc's Parser::classifyHole (and silverc-rs Parser::parse_interp_hole).
     private Node classifyHole(string raw, int hLine, int hCol) {
-        string h = this.ipTrim(raw);
+        string h = raw.trim();
         if (h.length == 0) {
             this.recordError("Parse error at " + hLine.toString() + ":" + hCol.toString() + ": expected expression in interpolation hole");
             Node empty = new Node(ND_STRING_LIT, hLine, hCol);
@@ -3053,7 +3053,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             return empty;
         }
         if (this.holeFullyParenthesized(h)) {
-            string inner = this.ipTrim(this.ipSlice(h, 1, h.length - 2));
+            string inner = this.ipSlice(h, 1, h.length - 2).trim();
             if (inner.length == 0) {
                 this.recordError("Parse error at " + hLine.toString() + ":" + hCol.toString() + ": expected expression in interpolation hole");
                 Node empty = new Node(ND_STRING_LIT, hLine, hCol);
@@ -3147,19 +3147,15 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         return false;
     }
 
-    private bool ipIsSpace(char c) {
-        return c == ' ' || c == '\t' || c == '\n' || c == '\r';
-    }
-
-    private string ipTrim(string s) {
-        int a = 0;
-        int b = s.length - 1;
-        while (a <= b && this.ipIsSpace(s[a])) { a++; }
-        while (b >= a && this.ipIsSpace(s[b])) { b--; }
-        return this.ipSlice(s, a, b);
-    }
-
     // Characters s[a]..s[b] inclusive, clamped to the string bounds.
+    // Twin-sweep verdict: KEPT (no migration). The 23-vector slice
+    // differential proved s.slice(a, b + 1) identical in isolation on both
+    // engines, but inside THIS aggregate bootstrap miscompiles the two-int
+    // member call to "" (repro: probe_aggctx.sr prints [a + b] alone but []
+    // with `import * from string` in scope -- silverc-rs/std/string.sr rides
+    // the build via cache.sr, same silent-miscompile class as the isDigits
+    // `_ => {}` trap). classifyHole's strip is parse-critical, so the local
+    // inclusive helper stays until the compiler quirk is fixed.
     private string ipSlice(string s, int a, int b) {
         string r = "";
         if (a < 0) { a = 0; }
@@ -3999,7 +3995,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
     }
 
     private bool looksLikeUrl(string s) {
-        string lo = diagToLower(s);
+        string lo = s.toLower();
         if (lo.startsWith("http://") || lo.startsWith("https://")) { return true; }
         if (lo.startsWith("http:") || lo.startsWith("https:")) { return true; }
         if (lo.startsWith("ftp://") || lo.startsWith("ftps://")) { return true; }
@@ -4052,16 +4048,18 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
 }
 
 // ---- Suggestion helpers (SYNTAX_EXCEPTIONS.md did-you-mean) ---------------
-
-string diagToLower(string word) {
-    string lo = "";
-    for (int i = 0; i < word.length; i++) {
-        char c = word[i];
-        if (c >= 'A' && c <= 'Z') { c += 32; }
-        lo += c.toString();
-    }
-    return lo;
-}
+// Twin-sweep verdict: the diagToLower fold twin lived here; its callers
+// (looksLikeUrl, diagClosestMatch) now use s.toLower() (stringMethod
+// lower/toUpper arm) -- the same home silverc migrated to (972e4e8). The
+// 13-vector lower differential proved the member identical on bootstrap
+// silverc and on the interpreter's member dispatch; the twin's `c += 32`
+// loop additionally widens char->int when run through the interpreter,
+// emitting numerics for uppercase input, so the member is the only spelling
+// correct on every engine.
+// diagLevenshtein + diagClosestMatch STAY: no member home exists, each def is
+// single-copy, and builtins.sr (Evaluator/Value runtime dispatch) is the
+// wrong layer for parse-time diagnostics; main.sr resolves diagClosestMatch
+// via `import parser` unchanged.
 
 int diagLevenshtein(string a, string b) {
     int alen = a.length;
@@ -4093,12 +4091,12 @@ int diagLevenshtein(string a, string b) {
 // qualifies when it differs by one edit, or by two edits with the same first
 // two letters (a real typo shape, not merely similar junk).
 string diagClosestMatch(string needle, string[] candidates) {
-    string needleLc = diagToLower(needle);
+    string needleLc = needle.toLower();
     if (needleLc.length == 0) { return ""; }
     string best = "";
     int bestDist = 0;
     for (int i = 0; i < candidates.length; i++) {
-        string candLc = diagToLower(candidates[i]);
+        string candLc = candidates[i].toLower();
         if (candLc.length == 0) { continue; }
         int d = diagLevenshtein(needleLc, candLc);
         bool acceptable = false;
