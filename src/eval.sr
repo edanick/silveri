@@ -330,10 +330,6 @@ class Evaluator {
         this.globals.define("int64", makeBuiltin("int"));
         this.globals.define("uint", makeBuiltin("int"));
         this.globals.define("float64", makeBuiltin("float"));
-        // Unsigned 64-bit compare intrinsics (ja/jb on the compilers;
-        // sign-branch logic in builtins.sr callBuiltin).
-        this.globals.define("uint64Gt", makeBuiltin("uint64Gt"));
-        this.globals.define("uint64Lt", makeBuiltin("uint64Lt"));
         this.globals.define("byte", makeBuiltin("byte"));
         this.globals.define("char", makeBuiltin("char"));
         this.globals.define("bool", makeBuiltin("bool"));
