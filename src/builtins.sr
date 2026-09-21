@@ -2387,6 +2387,24 @@ Value callBuiltin(string name, Value[] args) {
         }
         return makeFloat(0.0);
     }
+    // uint64Gt(a, b) / uint64Lt(a, b): unsigned 64-bit comparison of the
+    // two's-complement bit patterns (all Silver ints are signed at
+    // runtime, so plain >/< cannot spell this). The sign-branch form
+    // mirrors the compilers' ja/jb lowering; missing operands read 0.
+    if (name == "uint64Gt") {
+        if (args.length < 2) { return makeInt(0); }
+        int64 a = args[0].toInt();
+        int64 b = args[1].toInt();
+        if ((a < 0) != (b < 0)) { return makeInt(a < 0 ? 1 : 0); }
+        return makeInt(a > b ? 1 : 0);
+    }
+    if (name == "uint64Lt") {
+        if (args.length < 2) { return makeInt(0); }
+        int64 a = args[0].toInt();
+        int64 b = args[1].toInt();
+        if ((a < 0) != (b < 0)) { return makeInt(b < 0 ? 1 : 0); }
+        return makeInt(a < b ? 1 : 0);
+    }
     if (name == "byte") {
         if (args.length == 0) { return makeByte(0); }
         int64 n = args[0].toInt();

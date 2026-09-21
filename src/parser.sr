@@ -3621,6 +3621,10 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             // so all three must be callable in expression position here.
             || name == "int64" || name == "uint"
             || name == "float64"
+            // Unsigned 64-bit compare intrinsics (served by builtins.sr
+            // callBuiltin + Evaluator.registerBuiltins; ja/jb on the
+            // compilers, sign-branch logic here).
+            || name == "uint64Gt" || name == "uint64Lt"
             || name == "byte" || name == "string"
             || name == "bool" || name == "void"
             || name == "main" || name == "super"
