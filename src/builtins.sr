@@ -728,17 +728,15 @@ class BuiltinMethods {
         if (selector != "x" && selector != "X") { return n.toString(); }
         string digits = selector == "X" ? "0123456789ABCDEF" : "0123456789abcdef";
         int64 value = n.intVal;
-        bool negative = value < 0;
-        if (negative) { value = -value; }
-        if (value == 0) { return "0"; }
-        string result = "";
-        while (value > 0) {
-            int digit = (value % 16).toInt();
-            result = digits[digit].toString() + result;
-            value = value / 16;
+        string r = "";
+        for (int i = 0; i < 16; i++) {
+            int shift = (15 - i) * 4;
+            int nib = int((value >> shift) & 15);
+            r += digits[nib].toString();
         }
-        if (negative) { result = "-" + result; }
-        return result;
+        int start = 0;
+        while (start < 15 && r[start] == '0') { start++; }
+        return r.substr(start);
     }
 
     private static Value numberMethod(Value n, string method, Value[] args) {
