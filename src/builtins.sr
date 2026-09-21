@@ -225,6 +225,25 @@ class BuiltinMethods {
         if (method == "length") { return makeInt(s.strVal.length.toInt64()); }
         if (method == "indexOf" || method == "find") {
             if (args.length < 1) { return makeInt(-1); }
+            if (args[0].tag == VAL_CHAR) {
+                char needle = args[0].charVal;
+                int start = 0;
+                if (args.length > 1) { start = args[1].toInt(); }
+                if (start < 0) { start = 0; }
+                if (start > s.strVal.length) { start = s.strVal.length; }
+                for (int i = start; i < s.strVal.length; i++) {
+                    if (s.strVal[i] == needle) { return makeInt(i.toInt64()); }
+                }
+                return makeInt(-1);
+            }
+            if (args.length > 1) {
+                int start = args[1].toInt();
+                if (start < 0) { start = 0; }
+                if (start > s.strVal.length) { start = s.strVal.length; }
+                int at = s.strVal.substr(start).indexOf(args[0].strVal);
+                if (at < 0) { return makeInt(-1); }
+                return makeInt((at + start).toInt64());
+            }
             return makeInt(s.strVal.indexOf(args[0].strVal).toInt64());
         }
         if (method == "contains") {
