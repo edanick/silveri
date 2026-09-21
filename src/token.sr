@@ -9,6 +9,10 @@ const int TK_BOOL_LIT = 5;
 const int TK_NULL_LIT = 6;
 const int TK_IDENT = 7;
 const int TK_ANNOTATION = 8;
+// `uint64` (unsigned 64-bit): kind 9 is the first free keyword kind
+// (21 is TK_UINT on this toolchain, unlike the self-hosted compiler
+// where 21 was free; the bootstrap models it as TokenKind::Uint64).
+const int TK_UINT64 = 9;
 
 const int TK_IF = 10;
 const int TK_ELSE = 11;
@@ -201,6 +205,7 @@ string kindToString(int kind) {
     if (kind == TK_INT32) { return "int32"; }
     if (kind == TK_INT64) { return "int64"; }
     if (kind == TK_UINT) { return "uint"; }
+    if (kind == TK_UINT64) { return "uint64"; }
     if (kind == TK_FLOAT) { return "float"; }
     if (kind == TK_FLOAT64) { return "float64"; }
     if (kind == TK_DOUBLE) { return "double"; }

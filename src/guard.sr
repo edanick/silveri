@@ -361,7 +361,7 @@ class MemoryGuard {
     private bool isPrimitive(string t) {
         if (t == "int" || t == "string" || t == "bool" || t == "char") { return true; }
         if (t == "float" || t == "float64" || t == "int32" || t == "int64") { return true; }
-        if (t == "uint" || t == "double" || t == "void" || t == "var") { return true; }
+        if (t == "uint" || t == "uint64" || t == "double" || t == "void" || t == "var") { return true; }
         return false;
     }
 

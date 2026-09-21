@@ -197,7 +197,7 @@ class Parser {
         cands.add("if"); cands.add("else"); cands.add("elif"); cands.add("while");
         cands.add("for"); cands.add("foreach"); cands.add("return"); cands.add("match");
         cands.add("void"); cands.add("int"); cands.add("int32"); cands.add("int64");
-        cands.add("uint"); cands.add("float"); cands.add("float64"); cands.add("double");
+        cands.add("uint"); cands.add("uint64"); cands.add("float"); cands.add("float64"); cands.add("double");
         cands.add("bool"); cands.add("byte"); cands.add("char"); cands.add("string");
         cands.add("var"); cands.add("struct"); cands.add("class"); cands.add("enum");
         cands.add("def"); cands.add("found"); cands.add("collect"); cands.add("mod");
@@ -389,7 +389,7 @@ class Parser {
         if (this.pos + 1 >= this.tokens.length) { return false; }
         int nk = this.tokens[this.pos + 1].kind;
         return nk == TK_IDENT || nk == TK_INT || nk == TK_INT32 || nk == TK_INT64
-            || nk == TK_UINT || nk == TK_FLOAT || nk == TK_FLOAT64 || nk == TK_DOUBLE
+            || nk == TK_UINT || nk == TK_UINT64 || nk == TK_FLOAT || nk == TK_FLOAT64 || nk == TK_DOUBLE
             || nk == TK_BOOL || nk == TK_BYTE || nk == TK_CHAR || nk == TK_STRING
             || nk == TK_LESS;
     }
@@ -422,6 +422,7 @@ class Parser {
         if (t == "int32") { return true; }
         if (t == "int64") { return true; }
         if (t == "uint") { return true; }
+        if (t == "uint64") { return true; }
         if (t == "float") { return true; }
         if (t == "float64") { return true; }
         if (t == "double") { return true; }
@@ -441,7 +442,7 @@ class Parser {
         if (this.pos + 1 >= this.tokens.length) { return false; }
         Token kw = this.tokens[this.pos + 1];
         bool typeKw = kw.kind == TK_VOID || kw.kind == TK_INT || kw.kind == TK_INT32
-            || kw.kind == TK_INT64 || kw.kind == TK_FLOAT || kw.kind == TK_FLOAT64
+            || kw.kind == TK_INT64 || kw.kind == TK_UINT64 || kw.kind == TK_FLOAT || kw.kind == TK_FLOAT64
             || kw.kind == TK_BOOL || kw.kind == TK_CHAR || kw.kind == TK_STRING;
         if (!typeKw) {
             // uint/byte/double/long lex as identifiers in this grammar.
@@ -545,7 +546,7 @@ class Parser {
 
     private bool checkType() {
         int k = this.peekKind();
-        return k == TK_INT || k == TK_INT32 || k == TK_INT64 || k == TK_UINT
+        return k == TK_INT || k == TK_INT32 || k == TK_INT64 || k == TK_UINT || k == TK_UINT64
             || k == TK_FLOAT || k == TK_FLOAT64 || k == TK_DOUBLE
             || k == TK_BOOL || k == TK_CHAR || k == TK_STRING
             || k == TK_VOID;
@@ -1407,7 +1408,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
     // True when the token can begin a parameter type in a parameter list.
     // TK_VOID heads the function-typed parameter `void () name` (DOCS/259).
     private bool tokenStartsParam(int k) {
-        return k == TK_INT || k == TK_INT32 || k == TK_INT64 || k == TK_UINT
+        return k == TK_INT || k == TK_INT32 || k == TK_INT64 || k == TK_UINT || k == TK_UINT64
             || k == TK_FLOAT || k == TK_FLOAT64 || k == TK_DOUBLE
             || k == TK_BOOL || k == TK_CHAR || k == TK_STRING || k == TK_VAR
             || k == TK_VOID
@@ -2524,7 +2525,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             if (this.pos + 1 < this.tokens.length) {
                 TokenKind k2 = this.tokens[this.pos + 1].kind;
                 bool callShape = this.pos + 2 < this.tokens.length && this.tokens[this.pos + 2].kind == TK_LPAREN;
-                if (!callShape && (k2 == TK_INT || k2 == TK_INT32 || k2 == TK_INT64 || k2 == TK_UINT
+                if (!callShape && (k2 == TK_INT || k2 == TK_INT32 || k2 == TK_INT64 || k2 == TK_UINT || k2 == TK_UINT64
                     || k2 == TK_FLOAT || k2 == TK_FLOAT64 || k2 == TK_DOUBLE
                     || k2 == TK_BOOL || k2 == TK_CHAR || k2 == TK_BYTE || k2 == TK_STRING)) {
                     this.advance();
@@ -3175,6 +3176,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         if (this.check(TK_INT32)) { this.advance(); return this.applyTypeSuffix("int32"); }
         if (this.check(TK_INT64)) { this.advance(); return this.applyTypeSuffix("int64"); }
         if (this.check(TK_UINT)) { this.advance(); return this.applyTypeSuffix("uint"); }
+        if (this.check(TK_UINT64)) { this.advance(); return this.applyTypeSuffix("uint64"); }
         if (this.check(TK_FLOAT)) { this.advance(); return this.applyTypeSuffix("float"); }
         if (this.check(TK_FLOAT64)) { this.advance(); return this.applyTypeSuffix("float64"); }
         if (this.check(TK_DOUBLE)) { this.advance(); return this.applyTypeSuffix("double"); }
@@ -3239,7 +3241,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             if (c == '[' || c == ']' || c == '?' || c == '<' || c == '>' || c == '.' || c == ',') { return -1; }
         }
         if (t == "int" || t == "int32" || t == "int64"
-            || t == "uint" || t == "byte" || t == "float"
+            || t == "uint" || t == "uint64" || t == "byte" || t == "float"
             || t == "float64" || t == "double" || t == "char") { return 0; }
         if (t == "string") { return 1; }
         if (t == "bool") { return 2; }
@@ -3616,10 +3618,11 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             || name == "int" || name == "float"
             || name == "double" || name == "char"
             // Wide numeric cast-call spellings: the rs compiler maps
-            // int64(x)/uint(x) onto the int conversion and float64(x) onto
-            // the double conversion (parser.rs Int/Uint/Float token arms),
-            // so all three must be callable in expression position here.
-            || name == "int64" || name == "uint"
+            // int64(x)/uint(x)/uint64(x) onto the int conversion and
+            // float64(x) onto the double conversion (parser.rs
+            // Int/Uint/Float token arms), so all four must be callable
+            // in expression position here.
+            || name == "int64" || name == "uint" || name == "uint64"
             || name == "float64"
             || name == "byte" || name == "string"
             || name == "bool" || name == "void"
@@ -3681,7 +3684,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         cands.add("print"); cands.add("printline"); cands.add("eprint"); cands.add("eprintln"); cands.add("debug"); cands.add("debugline"); cands.add("exit");
         cands.add("input"); cands.add("sleep"); cands.add("assert");
         cands.add("int"); cands.add("float"); cands.add("double");
-        cands.add("int64"); cands.add("uint"); cands.add("float64");
+        cands.add("int64"); cands.add("uint"); cands.add("uint64"); cands.add("float64");
         cands.add("char"); cands.add("byte"); cands.add("string_cast");
         cands.add("bool");
         cands.add("now"); cands.add("cargs");

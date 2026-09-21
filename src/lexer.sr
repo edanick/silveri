@@ -677,6 +677,7 @@ int keywordKind(string s) {
     if (s == "int32") { return TK_INT32; }
     if (s == "int64") { return TK_INT64; }
     if (s == "uint") { return TK_UINT; }
+    if (s == "uint64") { return TK_UINT64; }
     if (s == "float") { return TK_FLOAT; }
     if (s == "float64") { return TK_FLOAT64; }
     if (s == "double") { return TK_DOUBLE; }
