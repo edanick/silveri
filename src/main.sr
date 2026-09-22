@@ -1224,18 +1224,18 @@ void main() {
 
     for (int i = 1; i < args.length; i++) {
         string arg = args[i];
-        if (cli.isFlag(arg, helpNames)) {
+        if (helpNames.contains(arg)) {
             printHelp();
             return;
         }
-        if (cli.isFlag(arg, versionNames)) {
+        if (versionNames.contains(arg)) {
             printline("silveri " + APP_VERSION);
             printline("Silver " + LANG_VERSION);
             printline("Copyright: © 2025 Edan M.");
             printline("License: " + APP_LICENSE);
             return;
         }
-        if (cli.isFlag(arg, ["--cache-bytecode"])) {
+        if (["--cache-bytecode"].contains(arg)) {
             cacheBytecode = true;
         } else if (arg == "--os") {
             // Preprocessor target override (lowercase windows/linux/mac is

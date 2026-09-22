@@ -1,15 +1,5 @@
 mod export cli;
 
-// Returns true if `arg` matches any of the listed option spellings.
-// Useful for accepting short and long forms together, e.g.
-// cli.isFlag(arg, ["-h", "--help", "/?"]).
-public bool isFlag(string arg, string[] names) {
-    for (int i = 0; i < names.length; i++) {
-        if (arg == names[i]) { return true; }
-    }
-    return false;
-}
-
 // Returns true if `arg` looks like an option. On WINDOWS a leading `-`
 // or `/` marks an option (so `/?`-style spellings keep working); on LINUX
 // only `-` does — absolute paths start with `/` there and must stay
@@ -27,16 +17,6 @@ public bool isOption(string arg) {
     return c == '-';
     #off
     return c == '-' || c == '/';
-}
-
-// Returns true if `arg` begins with `prefix`. Useful for combined short
-// options like `-vh`.
-public bool hasPrefix(string arg, string prefix) {
-    if (arg.length < prefix.length) { return false; }
-    for (int i = 0; i < prefix.length; i++) {
-        if (arg[i] != prefix[i]) { return false; }
-    }
-    return true;
 }
 
 // Returns the value following `args[idx]` for a value-taking option, or
