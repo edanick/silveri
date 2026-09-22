@@ -913,7 +913,7 @@ class BuiltinMethods {
             // silverc/std/hash.sr): crc32c hashes a string or a Value
             // array (byte[]/char[] share one array path, low byte per
             // element); hash(algo, data) selects 0=FNV-1, 1=FNV-1a,
-            // 2=DJB2, 3=CRC-32C, anything else yields 0. Raw ints (the
+            // 2=DJB2, 3=CRC-32C, 4=CRC-32, anything else yields 0. Raw ints (the
             // compilers' enum values) and interpreter enum values both
             // select — exactly like the fnv1 kind path above. Array
             // checks come before the string shape (the self-host
@@ -924,12 +924,19 @@ class BuiltinMethods {
             if (method == "crc32c") {
                 return makeInt(crc32cHash(data));
             }
+            if (method == "crc32" && args.length == 1 && args[0].tag == VAL_ARRAY) {
+                return makeInt(crc32ArrHash(args[0]));
+            }
+            if (method == "crc32") {
+                return makeInt(crc32Hash(data));
+            }
             if (method == "hash" && args.length >= 2) {
                 int hashAlgo = args[0].toInt();
                 if (args[0].tag == VAL_ENUM_VAL) {
                     if (args[0].strVal == "FNV1A") { hashAlgo = 1; }
                     else if (args[0].strVal == "DJB2") { hashAlgo = 2; }
                     else if (args[0].strVal == "CRC32C") { hashAlgo = 3; }
+                    else if (args[0].strVal == "CRC32") { hashAlgo = 4; }
                     else { hashAlgo = 0; }
                 }
                 if (args[1].tag == VAL_ARRAY) { return makeInt(hashArrAlgo(args[1], hashAlgo)); }
@@ -3553,7 +3560,8 @@ enum HashAlgorithms {
     FNV1,
     FNV1A,
     DJB2,
-    CRC32C
+    CRC32C,
+    CRC32
 }
 
 int64 fnv1StrKind(string data, int kind) {
@@ -3636,6 +3644,32 @@ int64 crc32cArrHash(Value data) {
     return (crcResult ^ 0xffffffff) & 0xffffffff;
 }
 
+int64 crc32Hash(string data) {
+    int64 crcResult = 0xffffffff;
+    for (int crcI = 0; crcI < data.length; crcI++) {
+        // Same char-cast gap as fnv1Hash above: keep int64() call-form.
+        crcResult = crcResult ^ int64(data[crcI]);
+        for (int crcBit = 0; crcBit < 8; crcBit++) {
+            int64 crcMask = -(crcResult & 1);
+            crcResult = ((crcResult >> 1) & 0x7fffffff) ^ (0xedb88320 & crcMask);
+        }
+    }
+    return (crcResult ^ 0xffffffff) & 0xffffffff;
+}
+
+int64 crc32ArrHash(Value data) {
+    int64 crcResult = 0xffffffff;
+    int crcCount = arrValLen(data);
+    for (int crcI = 0; crcI < crcCount; crcI++) {
+        crcResult = crcResult ^ int64(arrValIntAt(data, crcI) & 0xFF);
+        for (int crcBit = 0; crcBit < 8; crcBit++) {
+            int64 crcMask = -(crcResult & 1);
+            crcResult = ((crcResult >> 1) & 0x7fffffff) ^ (0xedb88320 & crcMask);
+        }
+    }
+    return (crcResult ^ 0xffffffff) & 0xffffffff;
+}
+
 int64 hashStrAlgo(string data, int algo) {
     if (algo == 0) {
         int64 hashResult = -3750763034362895579;
@@ -3668,6 +3702,17 @@ int64 hashStrAlgo(string data, int algo) {
             for (int hashBit = 0; hashBit < 8; hashBit++) {
                 int64 hashMask = -(hashResult & 1);
                 hashResult = ((hashResult >> 1) & 0x7fffffff) ^ (0x82f63b78 & hashMask);
+            }
+        }
+        return (hashResult ^ 0xffffffff) & 0xffffffff;
+    } else if (algo == 4 || algo == HashAlgorithms.CRC32) {
+        int64 hashResult = 0xffffffff;
+        for (int hashI = 0; hashI < data.length; hashI++) {
+            // Same char-cast gap as fnv1Hash above: keep int64() call-form.
+            hashResult = hashResult ^ int64(data[hashI]);
+            for (int hashBit = 0; hashBit < 8; hashBit++) {
+                int64 hashMask = -(hashResult & 1);
+                hashResult = ((hashResult >> 1) & 0x7fffffff) ^ (0xedb88320 & hashMask);
             }
         }
         return (hashResult ^ 0xffffffff) & 0xffffffff;
@@ -3708,6 +3753,17 @@ int64 hashArrAlgo(Value data, int algo) {
             for (int hashBit = 0; hashBit < 8; hashBit++) {
                 int64 hashMask = -(hashResult & 1);
                 hashResult = ((hashResult >> 1) & 0x7fffffff) ^ (0x82f63b78 & hashMask);
+            }
+        }
+        return (hashResult ^ 0xffffffff) & 0xffffffff;
+    } else if (algo == 4 || algo == HashAlgorithms.CRC32) {
+        int64 hashResult = 0xffffffff;
+        int hashCount = arrValLen(data);
+        for (int hashI = 0; hashI < hashCount; hashI++) {
+            hashResult = hashResult ^ int64(arrValIntAt(data, hashI) & 0xFF);
+            for (int hashBit = 0; hashBit < 8; hashBit++) {
+                int64 hashMask = -(hashResult & 1);
+                hashResult = ((hashResult >> 1) & 0x7fffffff) ^ (0xedb88320 & hashMask);
             }
         }
         return (hashResult ^ 0xffffffff) & 0xffffffff;
