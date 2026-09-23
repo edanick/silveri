@@ -208,7 +208,7 @@ class BuiltinMethods {
         return nowValueFromEpochMs(modFt / 10000 - 11644473600000);
     }
 
-    // Epoch-milliseconds to the 7-field `now` CLASS_INST (typeName "now" so
+    // Epoch-milliseconds to the 7-field `DateTime` CLASS_INST (typeName "DateTime" so
     // member reads (`m.year`) and interpreted method dispatch
     // (`m.milliseconds()` via the prepended datetime.sr body when imported,
     // via the dictMethod fallback when not) both resolve). Mirrors
@@ -245,7 +245,7 @@ class BuiltinMethods {
         dictSet(nowFields, nowValues, nowKeys, "minute", makeInt(miPart));
         dictSet(nowFields, nowValues, nowKeys, "second", makeInt(sPart));
         dictSet(nowFields, nowValues, nowKeys, "millisecond", makeInt(msecPart));
-        Value stamp = makeClassInst(nowFields, "now");
+        Value stamp = makeClassInst(nowFields, "DateTime");
         setObjVals(stamp, nowValues, nowKeys);
         return stamp;
     }
@@ -822,7 +822,7 @@ class BuiltinMethods {
         // with the interpreted body whenever both could answer. When
         // datetime IS imported this arm never fires (evalMethodCall reaches
         // the class body first).
-        if (method == "milliseconds" && d.typeName == "now") {
+        if (method == "milliseconds" && d.typeName == "DateTime") {
             // Temp-local fetch before `.toInt()`: a method call on an inline
             // dict-index receiver (`d.objVal["year"].toInt()`) miscompiles
             // in bootstrap-built code (inline-operand leak family -- yields
