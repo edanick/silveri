@@ -97,7 +97,7 @@ class BuiltinMethods {
         if (m == "createDirectory" || m == "createDir") { return true; }
         if (m == "directoryExists" || m == "folderExists") { return true; }
         if (m == "isFile" || m == "isDirectory" || m == "isDir") { return true; }
-        if (m == "size" || m == "getSize" || m == "listFiles") { return true; }
+        if (m == "size" || m == "getSize" || m == "modification" || m == "listFiles") { return true; }
         if (m == "getEntries" || m == "entries" || m == "list") { return true; }
         if (m == "getFiles" || m == "files" || m == "getFolders" || m == "folders") { return true; }
         return false;
@@ -156,6 +156,98 @@ class BuiltinMethods {
             }
         }
         return true;
+    }
+
+    // file.modification(path) -> now-shaped CLASS_INST (single home for the
+    // fs_module and file_module `modification` arms below -- two dispatch
+    // callers, one implementation). Last-write time as the 7-field `now`
+    // shape (year/month/day/hour/minute/second/millisecond); a missing file
+    // (or failed stat) yields epoch-zero by construction (ms = 0 converts to
+    // 1970-01-01T00:00:00.000, never a hardcoded date), mirroring the
+    // bootstrap FileOps.modification contract (silverc-rs/src/stdlib/fs.rs
+    // gen_file_modification + gen_modification_from_ms).
+    //
+    // CLOCK SOURCE: the interpreter executable is itself native-compiled, so
+    // the host channel is a direct kernel32 call from this compiled arm --
+    // FindFirstFileA/FindClose on WINDOWS (real FILETIME, 100ns units ->
+    // millisecond-exact via ft/10000 - 11644473600000, exactly the .sr body
+    // arithmetic in silverc-rs/std/fs.sr). LINUX stats st_mtim (tv_sec slot
+    // 11, tv_nsec slot 12 of the int[18], sec*1000 + nsec/1000000) and MAC
+    // reads Darwin stat64 st_mtimespec (slots 6/7) -- both code-only
+    // UNVALIDATED until probed on their hardware, mirroring the neighboring
+    // getSize arms. PRECISION: millisecond-exact where the host channel
+    // carries sub-second data (WINDOWS FILETIME, LINUX tv_nsec); second
+    // precision + millisecond 0 where it does not.
+    //
+    // The civil conversion duplicates datetime.fromUnixTimestamp inline
+    // (statement-for-statement, negatives included) because this builtin must
+    // serve with zero imports (`file` is a predefined global -- no datetime
+    // module need be loaded), exactly like the bootstrap duplicates it in
+    // native code rather than calling the .sr function.
+    private static Value fileModificationNow(string path) {
+        #on LINUX
+        int[] modStLn = new int[18];
+        int modRcLn = stat(path, modStLn);
+        if (modRcLn != 0) { return nowValueFromEpochMs(0); }
+        return nowValueFromEpochMs(modStLn[11] * 1000 + modStLn[12] / 1000000);
+        #on MAC
+        // MAC (additive, code-only -- MAC.md section 10, UNVALIDATED until
+        // probed on Mac hardware): Darwin stat64 st_mtimespec at slots 6/7.
+        int[] modStMc = new int[18];
+        int modRcMc = stat(path, modStMc);
+        if (modRcMc != 0) { return nowValueFromEpochMs(0); }
+        return nowValueFromEpochMs(modStMc[6] * 1000 + modStMc[7] / 1000000);
+        #off
+        int[] modFd = new int[40];
+        int modH = FindFirstFileA(path, modFd);
+        if (modH == -1) { return nowValueFromEpochMs(0); }
+        FindClose(modH);
+        int modLow = (modFd[2] >> 32) & 0xFFFFFFFF;
+        int modHigh = modFd[3] & 0xFFFFFFFF;
+        int64 modFt = modHigh * 4294967296 + modLow;
+        return nowValueFromEpochMs(modFt / 10000 - 11644473600000);
+    }
+
+    // Epoch-milliseconds to the 7-field `now` CLASS_INST (typeName "now" so
+    // member reads (`m.year`) and interpreted method dispatch
+    // (`m.milliseconds()` via the prepended datetime.sr body when imported,
+    // via the dictMethod fallback when not) both resolve). Mirrors
+    // datetime.fromUnixTimestamp(sec) + `millisecond = ms % 1000`
+    // (silverc-rs/std/fs.sr FileOps.modification tail).
+    private static Value nowValueFromEpochMs(int64 ms) {
+        int64 secPart = ms / 1000;
+        int64 msecPart = ms % 1000;
+        int64 dayPart = secPart / 86400;
+        int64 remPart = secPart % 86400;
+        if (remPart < 0) { remPart = remPart + 86400; dayPart = dayPart - 1; }
+        int64 hPart = remPart / 3600;
+        int64 miPart = (remPart % 3600) / 60;
+        int64 sPart = remPart % 60;
+        int64 zPart = dayPart + 719468;
+        int64 eraPart = zPart / 146097;
+        if (zPart < 0) { eraPart = (zPart - 146096) / 146097; }
+        int64 doePart = zPart - eraPart * 146097;
+        int64 yoePart = (doePart - doePart / 1460 + doePart / 36524 - doePart / 146096) / 365;
+        int64 yPart = yoePart + eraPart * 400;
+        int64 doyPart = doePart - (365 * yoePart + yoePart / 4 - yoePart / 100);
+        int64 mpPart = (5 * doyPart + 2) / 153;
+        int64 dPart = doyPart - (153 * mpPart + 2) / 5 + 1;
+        int64 mPart = mpPart + 3;
+        if (mpPart >= 10) { mPart = mpPart - 9; }
+        if (mPart <= 2) { yPart = yPart + 1; }
+        dict<string, Value> nowFields = {};
+        Value[] nowValues = [];
+        string[] nowKeys = [];
+        dictSet(nowFields, nowValues, nowKeys, "year", makeInt(yPart));
+        dictSet(nowFields, nowValues, nowKeys, "month", makeInt(mPart));
+        dictSet(nowFields, nowValues, nowKeys, "day", makeInt(dPart));
+        dictSet(nowFields, nowValues, nowKeys, "hour", makeInt(hPart));
+        dictSet(nowFields, nowValues, nowKeys, "minute", makeInt(miPart));
+        dictSet(nowFields, nowValues, nowKeys, "second", makeInt(sPart));
+        dictSet(nowFields, nowValues, nowKeys, "millisecond", makeInt(msecPart));
+        Value stamp = makeClassInst(nowFields, "now");
+        setObjVals(stamp, nowValues, nowKeys);
+        return stamp;
     }
 
     private static Value[] splitValues(string text, string delim) {
@@ -721,6 +813,52 @@ class BuiltinMethods {
             setObjVals(d, [], []);
             return makeNull();
         }
+        // `.milliseconds()` on a `now`-shaped value when the datetime module
+        // is NOT imported (no interpreted `now.milliseconds` body to
+        // dispatch to -- e.g. bare `file.modification(p).milliseconds()`
+        // with zero imports). Epoch milliseconds of the fields read as UTC
+        // (unix()*1000 + millisecond), arithmetic identical to
+        // datetime.sr `unix()` + `milliseconds()` so the fallback agrees
+        // with the interpreted body whenever both could answer. When
+        // datetime IS imported this arm never fires (evalMethodCall reaches
+        // the class body first).
+        if (method == "milliseconds" && d.typeName == "now") {
+            // Temp-local fetch before `.toInt()`: a method call on an inline
+            // dict-index receiver (`d.objVal["year"].toInt()`) miscompiles
+            // in bootstrap-built code (inline-operand leak family -- yields
+            // pointer-sized garbage), while the same call on a materialized
+            // local is exact. Each temp has its own name (disjoint-branch
+            // same-name locals collide).
+            Value msYV = makeNull();
+            Value msMoV = makeNull();
+            Value msDV = makeNull();
+            Value msHV = makeNull();
+            Value msMiV = makeNull();
+            Value msSV = makeNull();
+            Value msMsV = makeNull();
+            if (d.objVal.contains("year")) { msYV = d.objVal["year"]; }
+            if (d.objVal.contains("month")) { msMoV = d.objVal["month"]; }
+            if (d.objVal.contains("day")) { msDV = d.objVal["day"]; }
+            if (d.objVal.contains("hour")) { msHV = d.objVal["hour"]; }
+            if (d.objVal.contains("minute")) { msMiV = d.objVal["minute"]; }
+            if (d.objVal.contains("second")) { msSV = d.objVal["second"]; }
+            if (d.objVal.contains("millisecond")) { msMsV = d.objVal["millisecond"]; }
+            int64 msY = msYV.toInt();
+            int64 msMo = msMoV.toInt();
+            int64 msD = msDV.toInt();
+            int64 msH = msHV.toInt();
+            int64 msMi = msMiV.toInt();
+            int64 msS = msSV.toInt();
+            int64 msMs = msMsV.toInt();
+            if (msMo <= 2) { msY = msY - 1; }
+            int64 msEra = msY / 400;
+            int64 msYoe = msY - msEra * 400;
+            int64 msMp = (msMo + 9) % 12;
+            int64 msDoy = (153 * msMp + 2) / 5 + msD - 1;
+            int64 msDoe = msYoe * 365 + msYoe / 4 - msYoe / 100 + msDoy;
+            int64 msDays = msEra * 146097 + msDoe - 719468;
+            return makeInt((msDays * 86400 + msH * 3600 + msMi * 60 + msS) * 1000 + msMs);
+        }
         return makeNull();
     }
 
@@ -1159,6 +1297,7 @@ class BuiltinMethods {
                 #off
                 return makeInt(fs.getSize(path));
             }
+            if (method == "modification") { return fileModificationNow(path); }
             if (method == "delete") {
                 #on LINUX
                 unlink(path);
@@ -1272,6 +1411,7 @@ class BuiltinMethods {
                 #off
                 return makeInt(file.getSize(path));
             }
+            if (method == "modification") { return fileModificationNow(path); }
             if (method == "delete") {
                 #on LINUX
                 unlink(path);

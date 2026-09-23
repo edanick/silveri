@@ -452,7 +452,10 @@ class Evaluator {
             // std/time.sr's folded WINDOWS now() body calls the QPC pair raw
             // (the v2 fold removed the time_win indirection); the interpreter
             // serves them from its own kernel32 grant like the other exports.
-            || fn == "QueryPerformanceCounter" || fn == "QueryPerformanceFrequency") { return "kernel32.dll"; }
+            // std/datetime.sr's wall-clock bodies call GetLocalTime (local)
+            // and GetSystemTime (UTC) raw the same way; the evalCall arm
+            // below serves both from the same grant (ms-clock parity turn).
+            || fn == "QueryPerformanceCounter" || fn == "QueryPerformanceFrequency" || fn == "GetLocalTime" || fn == "GetSystemTime") { return "kernel32.dll"; }
         return "";
     }
 
@@ -1997,7 +2000,7 @@ mirrorPut(obj, target.name, val);
         } else if (node.name == "cargs") {
             if (this.scriptCargs != null) { result = this.scriptCargs; }
             else { result = makeArray([]); }
-        } else if ((node.name == "QueryPerformanceFrequency" || node.name == "QueryPerformanceCounter")
+        } else if ((node.name == "QueryPerformanceFrequency" || node.name == "QueryPerformanceCounter" || node.name == "GetLocalTime" || node.name == "GetSystemTime")
             && this.win32HasExport("kernel32.dll", node.name)) {
             // std/time.sr's folded WINDOWS now() body calls the QPC pair raw
             // (the v2 fold removed the time_win indirection the interpreter
@@ -2009,7 +2012,78 @@ mirrorPut(obj, target.name, val);
             // compilers' real imports: the grant gate mirrors rs identifier
             // resolution, the env write-back mirrors callNodeWithRefs' ref
             // aliasing.
-            if (refNames.length > 0 && refNames[0] != "") {
+            // std/datetime.sr's wall-clock bodies call GetLocalTime (local
+            // time for `new now()` / `datetime.now()`) and GetSystemTime
+            // (UTC for `utcNow()`) raw with a packed-SYSTEMTIME int[2]
+            // (8 u16 words: year, month, dayOfWeek, day, hour, minute,
+            // second, milliseconds). Served from the same host channel:
+            // the real kernel32 call runs inline here and the two slots are
+            // written back into the caller's array, so the module's own
+            // unpack shifts read wall-clock fields (ms-clock parity turn).
+            // CLOCK SOURCE (documented): kernel32 GetLocalTime/GetSystemTime
+            // on WINDOWS (true wall-clock incl. milliseconds); LINUX fills
+            // the same SYSTEMTIME packing from clock_gettime(CLOCK_REALTIME)
+            // + localtime_r/gmtime_r, MAC the same via mac.libsystem
+            // (CLOCK_MONOTONIC id 6 is for QPC below, NOT here -- realtime 0
+            // on both) -- both code-only UNVALIDATED until probed on their
+            // hardware, mirroring the file's POSIX arms.
+            if (node.name == "GetLocalTime" || node.name == "GetSystemTime") {
+                if (args.length > 0 && args[0].tag == VAL_ARRAY && arrValLen(args[0]) >= 2) {
+                    int[] gltBuf = new int[2];
+                    #on WINDOWS
+                    if (node.name == "GetSystemTime") {
+                        GetSystemTime(gltBuf);
+                    } else {
+                        GetLocalTime(gltBuf);
+                    }
+                    #on LINUX
+                    int[] gltTs = new int[2];
+                    clock_gettime(0, gltTs);
+                    int64 gltSec = gltTs[0];
+                    int64 gltNsec = gltTs[1];
+                    int[] gltTm = new int[7];
+                    if (node.name == "GetSystemTime") {
+                        gmtime_r(&gltSec, gltTm);
+                    } else {
+                        localtime_r(&gltSec, gltTm);
+                    }
+                    int gltYr = 1900 + ((gltTm[2] >> 32) & 0xFFFFFFFF);
+                    int gltMo = 1 + (gltTm[2] & 0xFFFFFFFF);
+                    int gltDay = (gltTm[1] >> 32) & 0xFFFFFFFF;
+                    int gltHr = gltTm[1] & 0xFFFFFFFF;
+                    int gltMi = (gltTm[0] >> 32) & 0xFFFFFFFF;
+                    int gltSe = gltTm[0] & 0xFFFFFFFF;
+                    int gltMs = int(gltNsec / 1000000);
+                    gltBuf[0] = gltYr | (gltMo << 16) | (gltDay << 48);
+                    gltBuf[1] = gltHr | (gltMi << 16) | (gltSe << 32) | (gltMs << 48);
+                    #on MAC
+                    // MAC (additive, code-only -- MAC.md section 10,
+                    // UNVALIDATED until probed on Mac hardware): same shape
+                    // as LINUX but clock_gettime id 6 on Darwin (NOT 1).
+                    int[] gltTs = new int[2];
+                    clock_gettime(0, gltTs);
+                    int64 gltSec = gltTs[0];
+                    int64 gltNsec = gltTs[1];
+                    int[] gltTm = new int[7];
+                    if (node.name == "GetSystemTime") {
+                        gmtime_r(&gltSec, gltTm);
+                    } else {
+                        localtime_r(&gltSec, gltTm);
+                    }
+                    int gltYr = 1900 + ((gltTm[2] >> 32) & 0xFFFFFFFF);
+                    int gltMo = 1 + (gltTm[2] & 0xFFFFFFFF);
+                    int gltDay = (gltTm[1] >> 32) & 0xFFFFFFFF;
+                    int gltHr = gltTm[1] & 0xFFFFFFFF;
+                    int gltMi = (gltTm[0] >> 32) & 0xFFFFFFFF;
+                    int gltSe = gltTm[0] & 0xFFFFFFFF;
+                    int gltMs = int(gltNsec / 1000000);
+                    gltBuf[0] = gltYr | (gltMo << 16) | (gltDay << 48);
+                    gltBuf[1] = gltHr | (gltMi << 16) | (gltSe << 32) | (gltMs << 48);
+                    #off
+                    arrValSetAt(args[0], 0, makeInt(gltBuf[0]));
+                    arrValSetAt(args[0], 1, makeInt(gltBuf[1]));
+                }
+            } else if (refNames.length > 0 && refNames[0] != "") {
                 int64 ticks = 0;
                 #on WINDOWS
                 if (node.name == "QueryPerformanceCounter") {
