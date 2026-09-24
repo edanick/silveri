@@ -416,20 +416,7 @@ class Parser {
     // DOCS/259 G4 -- primitive type spellings rejected as cast targets (the
     // cast only asserts class-instance types; mirrors the rs type checker).
     private bool isPrimitiveTypeSpelling(string t) {
-        if (t == "int") { return true; }
-        if (t == "int32") { return true; }
-        if (t == "int64") { return true; }
-        if (t == "uint") { return true; }
-        if (t == "uint64") { return true; }
-        if (t == "float") { return true; }
-        if (t == "float64") { return true; }
-        if (t == "double") { return true; }
-        if (t == "bool") { return true; }
-        if (t == "byte") { return true; }
-        if (t == "char") { return true; }
-        if (t == "string") { return true; }
-        if (t == "void") { return true; }
-        return false;
+        return t == "int" || t == "int32" || t == "int64" || t == "uint" || t == "uint64" || t == "float" || t == "float64" || t == "double" || t == "bool" || t == "byte" || t == "char" || t == "string" || t == "void";
     }
 
     // With the current token on the outer `(` of a parenthesized expression,
