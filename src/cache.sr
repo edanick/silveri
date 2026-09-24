@@ -1,6 +1,7 @@
 mod export cache;
 
 import resource;
+import * from string;
 
 // Raw OS enablers for the cache writers and stamps (kernel32 handles/writes,
 // msvcrt time) — file-top grant, mirroring the unified std fold shape.
@@ -804,27 +805,6 @@ public string icNormalizeSlashes(string path) {
     for (int i = 0; i < path.length; i++) {
         if (path[i] == '\\') { r += '/'; }
         else { r += path[i]; }
-    }
-    return r;
-}
-
-public string icReplaceAll(string s, string what, string with) {
-    string r = "";
-    int i = 0;
-    while (i < s.length) {
-        if (i + what.length <= s.length) {
-            bool hit = true;
-            for (int j = 0; j < what.length; j++) {
-                if (s[i + j] != what[j]) { hit = false; break; }
-            }
-            if (hit) {
-                r += with;
-                i += what.length;
-                continue;
-            }
-        }
-        r += s[i];
-        i++;
     }
     return r;
 }
