@@ -192,8 +192,7 @@ class Parser {
     }
 
     // All Silver keywords, used for did-you-mean suggestions.
-    public read only prop string[] keywordCandidates =
-    [
+    public read only prop string[] keywordCandidates = [
         "if", "else", "elif", "while",
         "for", "foreach", "return", "match",
         "void", "int", "int32", "int64",

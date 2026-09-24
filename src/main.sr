@@ -903,8 +903,7 @@ void validateNativeImports(string source, string inputFile, string target) {
 
 // Known built-in module names used for did-you-mean suggestions on imports
 // (SYNTAX_EXCEPTIONS.md).
-string[] knownModuleNames =
-[
+string[] knownModuleNames = [
     "fs", "json", "yaml", "env",
     "url", "hash", "path", "bom",
     "console", "math", "http",
