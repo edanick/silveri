@@ -193,25 +193,25 @@ class Parser {
 
     // All Silver keywords, used for did-you-mean suggestions.
     public string[] keywordCandidates() {
-        string[] cands = [];
-        cands.add("if"); cands.add("else"); cands.add("elif"); cands.add("while");
-        cands.add("for"); cands.add("foreach"); cands.add("return"); cands.add("match");
-        cands.add("void"); cands.add("int"); cands.add("int32"); cands.add("int64");
-        cands.add("uint"); cands.add("uint64"); cands.add("float"); cands.add("float64"); cands.add("double");
-        cands.add("bool"); cands.add("byte"); cands.add("char"); cands.add("string");
-        cands.add("var"); cands.add("struct"); cands.add("class"); cands.add("enum");
-        cands.add("def"); cands.add("found"); cands.add("collect"); cands.add("mod");
-        cands.add("export"); cands.add("import"); cands.add("from"); cands.add("as");
-        cands.add("new"); cands.add("const"); cands.add("true"); cands.add("false");
-        cands.add("null"); cands.add("public"); cands.add("private"); cands.add("static");
-        cands.add("internal");
-        cands.add("prop"); cands.add("construct"); cands.add("unset"); cands.add("local");
-        cands.add("alias"); cands.add("fixed"); cands.add("live"); cands.add("once");
-        cands.add("shared"); cands.add("mut"); cands.add("ref"); cands.add("try");
-        cands.add("catch"); cands.add("finally"); cands.add("throw"); cands.add("to");
-        cands.add("in"); cands.add("break"); cands.add("continue"); cands.add("switch");
-        cands.add("case"); cands.add("typealias"); cands.add("loop");
-        return cands;
+        return [
+            "if", "else", "elif", "while",
+            "for", "foreach", "return", "match",
+            "void", "int", "int32", "int64",
+            "uint", "uint64", "float", "float64", "double",
+            "bool", "byte", "char", "string",
+            "var", "struct", "class", "enum",
+            "def", "found", "collect", "mod",
+            "export", "import", "from", "as",
+            "new", "const", "true", "false",
+            "null", "public", "private", "static",
+            "internal",
+            "prop", "construct", "unset", "local",
+            "alias", "fixed", "live", "once",
+            "shared", "mut", "ref", "try",
+            "catch", "finally", "throw", "to",
+            "in", "break", "continue", "switch",
+            "case", "typealias", "loop"
+        ];
     }
 
     private bool identStartsLower(string word) {

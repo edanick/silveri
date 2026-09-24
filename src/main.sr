@@ -904,16 +904,16 @@ void validateNativeImports(string source, string inputFile, string target) {
 // Known built-in module names used for did-you-mean suggestions on imports
 // (SYNTAX_EXCEPTIONS.md).
 string[] knownModuleNames() {
-    string[] known = [];
-    known.add("fs"); known.add("json"); known.add("yaml"); known.add("env");
-    known.add("url"); known.add("hash"); known.add("path"); known.add("bom");
-    known.add("console"); known.add("math"); known.add("http");
-    known.add("llmai"); known.add("os"); known.add("keyboard");
-    known.add("mouse"); known.add("time"); known.add("exception");
-    known.add("process"); known.add("notifications"); known.add("registry");
-    known.add("system_tray"); known.add("gui"); known.add("string");
-    known.add("cli"); known.add("win32");
-    return known;
+    return [
+        "fs", "json", "yaml", "env",
+        "url", "hash", "path", "bom",
+        "console", "math", "http",
+        "llmai", "os", "keyboard",
+        "mouse", "time", "exception",
+        "process", "notifications", "registry",
+        "system_tray", "gui", "string",
+        "cli", "win32"
+    ];
 }
 
 // Compute the 1-based line and column of a character offset in src.
