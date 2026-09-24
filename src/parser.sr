@@ -192,27 +192,26 @@ class Parser {
     }
 
     // All Silver keywords, used for did-you-mean suggestions.
-    public string[] keywordCandidates() {
-        return [
-            "if", "else", "elif", "while",
-            "for", "foreach", "return", "match",
-            "void", "int", "int32", "int64",
-            "uint", "uint64", "float", "float64", "double",
-            "bool", "byte", "char", "string",
-            "var", "struct", "class", "enum",
-            "def", "found", "collect", "mod",
-            "export", "import", "from", "as",
-            "new", "const", "true", "false",
-            "null", "public", "private", "static",
-            "internal",
-            "prop", "construct", "unset", "local",
-            "alias", "fixed", "live", "once",
-            "shared", "mut", "ref", "try",
-            "catch", "finally", "throw", "to",
-            "in", "break", "continue", "switch",
-            "case", "typealias", "loop"
-        ];
-    }
+    public read only prop string[] keywordCandidates =
+    [
+        "if", "else", "elif", "while",
+        "for", "foreach", "return", "match",
+        "void", "int", "int32", "int64",
+        "uint", "uint64", "float", "float64", "double",
+        "bool", "byte", "char", "string",
+        "var", "struct", "class", "enum",
+        "def", "found", "collect", "mod",
+        "export", "import", "from", "as",
+        "new", "const", "true", "false",
+        "null", "public", "private", "static",
+        "internal",
+        "prop", "construct", "unset", "local",
+        "alias", "fixed", "live", "once",
+        "shared", "mut", "ref", "try",
+        "catch", "finally", "throw", "to",
+        "in", "break", "continue", "switch",
+        "case", "typealias", "loop"
+    ];
 
     private bool identStartsLower(string word) {
         if (word.length == 0) { return false; }
@@ -298,7 +297,7 @@ class Parser {
 
     // Flag an unknown keyword / keyword typo at the token's position.
     private void flagUnknownKeywordAt(Token t) {
-        string sugg = diagClosestMatch(t.text, this.keywordCandidates());
+        string sugg = diagClosestMatch(t.text, this.keywordCandidates);
         if (sugg.length > 0) {
             this.recordError("did you mean \"" + sugg + "\"?, at line " + t.line.toString() + ", column " + t.col.toString());
         } else {

@@ -903,18 +903,17 @@ void validateNativeImports(string source, string inputFile, string target) {
 
 // Known built-in module names used for did-you-mean suggestions on imports
 // (SYNTAX_EXCEPTIONS.md).
-string[] knownModuleNames() {
-    return [
-        "fs", "json", "yaml", "env",
-        "url", "hash", "path", "bom",
-        "console", "math", "http",
-        "llmai", "os", "keyboard",
-        "mouse", "time", "exception",
-        "process", "notifications", "registry",
-        "system_tray", "gui", "string",
-        "cli", "win32"
-    ];
-}
+string[] knownModuleNames =
+[
+    "fs", "json", "yaml", "env",
+    "url", "hash", "path", "bom",
+    "console", "math", "http",
+    "llmai", "os", "keyboard",
+    "mouse", "time", "exception",
+    "process", "notifications", "registry",
+    "system_tray", "gui", "string",
+    "cli", "win32"
+];
 
 // Compute the 1-based line and column of a character offset in src.
 int[] diagSourceLoc(string src, int off) {
@@ -1108,7 +1107,7 @@ string resolveImports(string source, string inputFile, int[] prependLen, string 
                 // suggestion when it resembles a known one.
                 badModule = true;
                 int[] loc = diagSourceLoc(aggregate, nameStart);
-                string sugg = diagClosestMatch(module, knownModuleNames());
+                string sugg = diagClosestMatch(module, knownModuleNames);
                 if (sugg.length > 0) {
                     unknownModMsgs.add("did you mean to import the module \"" + sugg + "\"?, unknown module \"" + module + "\" was found at line " + loc[0].toString() + " column " + loc[1].toString());
                 } else {
