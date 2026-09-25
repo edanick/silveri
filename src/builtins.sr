@@ -333,11 +333,6 @@ class BuiltinMethods {
             if (args.length < 1) { return makeBool(false); }
             return makeBool(s.strVal.endsWith(args[0].strVal));
         }
-        if (method == "find") {
-            if (args.length < 1) { return makeInt(-1); }
-            int idx = s.strVal.indexOf(args[0].strVal);
-            return makeInt(idx.toInt64());
-        }
         if (method == "repeat") {
             if (args.length < 1) { return s; }
             string result = "";
@@ -561,10 +556,6 @@ class BuiltinMethods {
                 arr.arrVal.remove(arr.arrVal.length - 1);
                 return last;
             }
-            return makeNull();
-        }
-        if (method == "last") {
-            if (arr.arrVal.length > 0) { return arr.arrVal[arr.arrVal.length - 1]; }
             return makeNull();
         }
         if (method == "remove") {
@@ -892,8 +883,7 @@ class BuiltinMethods {
             char ch = c.charVal;
             return makeString("" + ch);
         }
-        if (method == "toInt64") { return makeInt(c.charVal.toInt64()); }
-        if (method == "toInt") { return makeInt(c.charVal.toInt64()); }
+        if (method == "toInt64" || method == "toInt") { return makeInt(c.charVal.toInt64()); }
         // char-typed member receivers (`c.charVal.isLower()`) miscompile in
         // the bootstrap codegen (the is_char_expr special case only matches
         // locals/params), silently yielding the raw code instead of a bool.
@@ -904,8 +894,7 @@ class BuiltinMethods {
         if (method == "isDigit") { return makeBool(ch.isDigit()); }
         if (method == "isLower") { return makeBool(ch.isLower()); }
         if (method == "isUpper") { return makeBool(ch.isUpper()); }
-        if (method == "isWhiteSpace") { return makeBool(ch.isWhiteSpace()); }
-        if (method == "isWhitespace") { return makeBool(ch.isWhiteSpace()); }
+        if (method == "isWhiteSpace" || method == "isWhitespace") { return makeBool(ch.isWhiteSpace()); }
         return makeNull();
     }
 
@@ -2189,7 +2178,6 @@ class BuiltinMethods {
             if (c == '\t') { return 0x09; }
         }
         if (name == "TAB")       { return 0x09; }
-        if (name == "SPACE")     { return 0x20; }
         if (name == "SPACE")     { return 0x20; }
         if (name == "ENTER" || name == "RETURN") { return 0x0D; }
         if (name == "ESC" || name == "ESCAPE") { return 0x1B; }
