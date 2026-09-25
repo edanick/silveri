@@ -1260,6 +1260,7 @@ class Evaluator {
         Node params = fn.child(0);
         Env fnEnv = this.globals.push();
         file.writeBytes("build/diag/TN1.txt", [49]);
+        GC.pushFrame(fnEnv);
         for (int i = 0; i < params.childCount(); i++) {
             Node param = params.child(i);
             if (i < args.length) {
@@ -1289,6 +1290,7 @@ class Evaluator {
         for (int i = 0; i < rooted; i++) {
             GC.popRoot();
         }
+        GC.popFrame();
         return result;
     }
 
@@ -1300,6 +1302,7 @@ class Evaluator {
         }
         Node params = fn.child(0);
         Env fnEnv = this.globals.push();
+        GC.pushFrame(fnEnv);
         for (int i = 0; i < params.childCount(); i++) {
             Node param = params.child(i);
             if (i < args.length) {
@@ -1338,6 +1341,7 @@ class Evaluator {
         for (int i = 0; i < rooted; i++) {
             GC.popRoot();
         }
+        GC.popFrame();
         return result;
     }
 
@@ -1350,6 +1354,7 @@ class Evaluator {
     private Value callAnonBody(string name) {
         Node body = this.anonBodies[name];
         Env fnEnv = this.globals.push();
+        GC.pushFrame(fnEnv);
         Value result = makeNull();
         this.hasReturned = false;
         this.hasBroken = false;
@@ -1363,6 +1368,7 @@ class Evaluator {
         this.hasBroken = false;
         this.hasContinued = false;
         this.returnValue = null;
+        GC.popFrame();
         return result;
     }
 
@@ -2973,10 +2979,12 @@ mirrorPut(obj, target.name, val);
     public void execBlock(Node block, Env env) {
         file.writeBytes("build/diag/TX0.txt", [49]);
         Env blockEnv = env.push();
+        GC.pushFrame(blockEnv);
         for (int i = 0; i < block.childCount(); i++) {
-            if (this.hasReturned || this.hasBroken || this.hasContinued || this.hasThrown) { return; }
+            if (this.hasReturned || this.hasBroken || this.hasContinued || this.hasThrown) { GC.popFrame(); return; }
             this.execStmt(block.child(i), blockEnv);
         }
+        GC.popFrame();
     }
 
     public void execBlockInto(Node block, Env env) {
@@ -3120,6 +3128,7 @@ mirrorPut(obj, target.name, val);
 
         if (stmt.kind == ND_WHILE) {
             Env loopEnv = env.push();
+            GC.pushFrame(loopEnv);
             while (true) {
                 if (this.hasReturned || this.hasThrown) { break; }
                 Value cond = this.evalExpr(stmt.child(0), env);
@@ -3129,11 +3138,13 @@ mirrorPut(obj, target.name, val);
                 if (this.hasContinued) { this.hasContinued = false; }
                 this.maybeGC(loopEnv);
             }
+            GC.popFrame();
             return;
         }
 
         if (stmt.kind == ND_LOOP) {
             Env loopEnv = env.push();
+            GC.pushFrame(loopEnv);
             while (true) {
                 if (this.hasReturned || this.hasThrown) { break; }
                 this.execBlockInto(stmt.child(0), loopEnv);
@@ -3141,12 +3152,14 @@ mirrorPut(obj, target.name, val);
                 if (this.hasContinued) { this.hasContinued = false; }
                 this.maybeGC(loopEnv);
             }
+            GC.popFrame();
             return;
         }
 
         if (stmt.kind == ND_FOR_C) {
             this.execStmt(stmt.child(0), env);
             Env loopEnv = env.push();
+            GC.pushFrame(loopEnv);
             while (true) {
                 if (this.hasReturned || this.hasThrown) { break; }
                 Value cond = this.evalExpr(stmt.child(1), env);
@@ -3157,6 +3170,7 @@ mirrorPut(obj, target.name, val);
                 this.maybeGC(loopEnv);
                 this.evalExpr(stmt.child(2), env);
             }
+            GC.popFrame();
             return;
         }
 
@@ -3164,6 +3178,7 @@ mirrorPut(obj, target.name, val);
             int64 start = this.evalExpr(stmt.child(0), env).toInt();
             int64 end = this.evalExpr(stmt.child(1), env).toInt();
             Env forEnv = env.push();
+            GC.pushFrame(forEnv);
             forEnv.define(stmt.name, makeInt(start));
             this.uint64Vars[stmt.name] = stmt.typeHint == "uint64";
             for (int64 i = start; i < end; i++) {
@@ -3174,6 +3189,7 @@ mirrorPut(obj, target.name, val);
                 if (this.hasContinued) { this.hasContinued = false; }
                 this.maybeGC(forEnv);
             }
+            GC.popFrame();
             return;
         }
 
@@ -3182,6 +3198,7 @@ mirrorPut(obj, target.name, val);
             if (collection.tag == VAL_ARRAY) {
                 GC.pushRoot(collection);
                 Env forEnv = env.push();
+                GC.pushFrame(forEnv);
                 for (int i = 0; i < collection.arrVal.length; i++) {
                     if (this.hasReturned || this.hasThrown) { break; }
                     forEnv.define(stmt.name, collection.arrVal[i]);
@@ -3193,6 +3210,7 @@ mirrorPut(obj, target.name, val);
                 }
                 GC.popRoot();
             }
+            GC.popFrame();
             return;
         }
 
@@ -3256,8 +3274,10 @@ mirrorPut(obj, target.name, val);
                     thrown = pendingThrowVal;
                 }
                 Env catchEnv = env.push();
+                GC.pushFrame(catchEnv);
                 catchEnv.define(stmt.name, thrown);
                 this.execBlock(stmt.child(1), catchEnv);
+                GC.popFrame();
                 pendingReturn = this.hasReturned;
                 pendingReturnVal = this.returnValue;
                 pendingThrow = this.hasThrown;

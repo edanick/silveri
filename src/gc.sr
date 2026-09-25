@@ -32,6 +32,8 @@ class GCState {
     public prop int envPoolCount;
     public prop Value[] roots;
     public prop int rootCount;
+    public prop Env[] frameStack;
+    public prop int frameCount;
     public prop int64 allocs;
     public prop int64 envAllocs;
     public prop int64 epoch;
@@ -56,6 +58,8 @@ class GCState {
         this.envPoolCount = 0;
         this.roots = [];
         this.rootCount = 0;
+        this.frameStack = [];
+        this.frameCount = 0;
         this.allocs = 0;
         this.envAllocs = 0;
         this.epoch = 0;
@@ -150,13 +154,13 @@ class GCState {
                 liveNames.pop();
             }
             e.parent = parent;
-            e.gcMark = false;
-            e.gcEpoch = this.epoch;
+            setEnvMarked(e, false);
+            setEnvEpoch(e, this.epoch);
             this.registerEnv(e);
             return e;
         }
         e = new Env(parent);
-        e.gcEpoch = this.epoch;
+        setEnvEpoch(e, this.epoch);
         this.registerEnv(e);
         return e;
     }
@@ -173,6 +177,31 @@ class GCState {
     public void popRoot() {
         if (this.rootCount > 0) {
             this.rootCount--;
+        }
+    }
+
+    // Live scope environments. Every scope parents its enclosing scope --
+    // except call frames, which parent the globals directly (never the
+    // caller) -- so a collection inside a nested call cannot reach the
+    // caller's locals (or any block scope below a frame) through the
+    // environment chain alone. Every scope creator pushes here on entry
+    // and pops on exit (callNode/callNodeWithRefs/callAnonBody, execBlock,
+    // the five loop kinds, catch); markRoots marks the whole stack, so
+    // locals in any live scope survive collections triggered deeper in the
+    // call tree. Scopes nest strictly LIFO, so a count-bounded stack with
+    // slot reuse is exact.
+    public void pushFrame(Env e) {
+        if (this.frameCount < this.frameStack.length) {
+            this.frameStack[this.frameCount] = e;
+        } else {
+            this.frameStack.add(e);
+        }
+        this.frameCount++;
+    }
+
+    public void popFrame() {
+        if (this.frameCount > 0) {
+            this.frameCount--;
         }
     }
 
@@ -197,8 +226,8 @@ class GCState {
     }
 
     public void markEnv(Env e) {
-        if (e.gcMark) { return; }
-        e.gcMark = true;
+        if (envIsMarked(e)) { return; }
+        setEnvMarked(e, true);
         for (int i = 0; i < e.varNames.length; i++) {
             string k = e.varNames[i];
             if (e.vars.contains(k)) {
@@ -219,6 +248,9 @@ class GCState {
         this.markEnv(globals);
         for (int i = 0; i < this.rootCount; i++) {
             this.markValue(this.roots[i]);
+        }
+        for (int i = 0; i < this.frameCount; i++) {
+            this.markEnv(this.frameStack[i]);
         }
         // Allocations made after a sweep starts are protected by the
         // `i >= sweepLimit` keep rule in finishCollection. They do not need a
@@ -278,13 +310,13 @@ class GCState {
         int ew = 0;
         for (int i = 0; i < this.envRegistryCount; i++) {
             Env e = this.envRegistry[i];
-            bool keep = i >= this.envSweepLimit || e.gcMark;
+            bool keep = i >= this.envSweepLimit || envIsMarked(e);
             if (keep) {
-                e.gcMark = false;
+                setEnvMarked(e, false);
                 this.envRegistry[ew] = e;
                 ew++;
             } else {
-                e.gcMark = false;
+                setEnvMarked(e, false);
                 e.parent = null;
                 if (this.envPoolCount < this.envPool.length) {
                     this.envPool[this.envPoolCount] = e;
@@ -387,6 +419,14 @@ public void popRoot() {
     gs.popRoot();
 }
 
+public void pushFrame(Env e) {
+    gs.pushFrame(e);
+}
+
+public void popFrame() {
+    gs.popFrame();
+}
+
 // Lua-style write barrier: while a collection is active, a marked owner must
 // immediately retain a newly assigned child. This permits future collector
 // slices to avoid depending on stale object graphs between root scans.
@@ -397,7 +437,7 @@ public void writeBarrier(Value owner, Value child) {
 }
 
 public void writeBarrierEnv(Env owner, Value child) {
-    if (gs.collecting && owner.gcMark) {
+    if (gs.collecting && envIsMarked(owner)) {
         gs.markValue(child);
     }
 }
