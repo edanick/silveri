@@ -106,6 +106,9 @@ Usage: silveri [options] <filename>
 Options:
   -i <file>      Input Silver source file
   -o <file>      Output file (ignored in interpreter)
+  --cache-bytecode  Run bytecode interpretation via the persistent cache
+  --os windows|linux|mac  Target OS for std region filtering (default: host)
+  --diag         Write per-call/per-block diagnostic crumbs to build/diag/ (slow)
   --help, -h     Show help information
   --version      Show version information
 ```

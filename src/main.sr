@@ -1162,6 +1162,7 @@ void printHelp() {
     printline("  -o <file>      Output file (ignored in interpreter)");
     printline("  --cache-bytecode  Run bytecode interpretation via the persistent cache");
     printline("  --os windows|linux|mac  Target OS for std region filtering (default: host)");
+    printline("  --diag  Write per-call/per-block diagnostic crumbs to build/diag/ (slow)");
     printline("  --help, -h     Show this help message");
     printline("  --version      Show version information");
     printline("");
@@ -1186,6 +1187,7 @@ void main() {
     string[] scriptArgs = [];
     bool cacheBytecode = false;
     string osOverride = "";
+    bool diagCrumbs = false;
 
     for (int i = 1; i < args.length; i++) {
         string arg = args[i];
@@ -1202,6 +1204,8 @@ void main() {
         }
         if (arg == "--cache-bytecode") {
             cacheBytecode = true;
+        } else if (arg == "--diag") {
+            diagCrumbs = true;
         } else if (arg == "--os") {
             // Preprocessor target override (lowercase windows/linux/mac is
             // the documented form; UPPERCASE also accepted, mirroring
@@ -1363,6 +1367,7 @@ void main() {
     }
 
     Evaluator evaluator = new Evaluator();
+    evaluator.setDiagCrumbs(diagCrumbs);
     evaluator.setProjectBoundary(boundaryLine);
     evaluator.setCustomTarget(target);
     string[] userCargs = [];

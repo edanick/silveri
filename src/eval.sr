@@ -61,6 +61,12 @@ class Evaluator {
     public prop int diagLine;
     public prop int diagCol;
     public prop bool diagHasPos;
+    // Diagnostic breadcrumb files (build/diag/T*.txt). The per-call and
+    // per-block markers cost a file open+write+close each (~15ms per call),
+    // so they stay off unless `--diag` opts in; the handful of
+    // once-per-run markers (constructor, guard, lexer, parser) are
+    // unconditional and negligible.
+    public prop bool diagCrumbs;
     // Parity with the compilers: string-field writes on class instances are
     // no-ops when executing inside a static method (the codegen for string
     // field stores in static frames produces broken code in silverc).
@@ -129,6 +135,7 @@ class Evaluator {
         this.diagLine = 0;
         this.diagCol = 0;
         this.diagHasPos = false;
+        this.diagCrumbs = false;
         this.inStaticMethod = false;
         this.projectBoundaryLine = 0;
         this.internalOwner = {};
@@ -147,6 +154,13 @@ class Evaluator {
     // is the script name (matching the compiled `cargs` convention where
     // cargs[0] is the program name). Exposed both as the `cargs` array global
     // and via the `cargs()` builtin function.
+    // Opt into the per-call / per-block diagnostic breadcrumb files
+    // (`--diag` on the silveri command line). Off by default: each crumb
+    // is a synchronous file write.
+    public void setDiagCrumbs(bool on) {
+        this.diagCrumbs = on;
+    }
+
     public void setScriptArgs(string[] args) {
         this.scriptArgs = args;
         Value[] items = [];
@@ -1016,11 +1030,11 @@ class Evaluator {
     }
 
     public void run(Node[] program) {
-        file.writeBytes("build/diag/TR0.txt", [49]);
+        if (this.diagCrumbs) { file.writeBytes("build/diag/TR0.txt", [49]); }
         this.registerItems(program);
-        file.writeBytes("build/diag/TR1.txt", [49]);
+        if (this.diagCrumbs) { file.writeBytes("build/diag/TR1.txt", [49]); }
         this.runMain(program);
-        file.writeBytes("build/diag/TR2.txt", [49]);
+        if (this.diagCrumbs) { file.writeBytes("build/diag/TR2.txt", [49]); }
     }
 
     public void register(Node[] program) {
@@ -1172,7 +1186,7 @@ class Evaluator {
             if (this.hasThrown) { break; }
         }
         if (this.functions.contains("main")) {
-            file.writeBytes("build/diag/TR3.txt", [49]);
+            if (this.diagCrumbs) { file.writeBytes("build/diag/TR3.txt", [49]); }
             this.callFunction("main", [], this.globals);
         }
         if (this.hasThrown) {
@@ -1207,7 +1221,7 @@ class Evaluator {
     }
 
     public Value callFunction(string name, Value[] args, Env callerEnv) {
-        file.writeBytes("build/diag/TF0.txt", [49]);
+        if (this.diagCrumbs) { file.writeBytes("build/diag/TF0.txt", [49]); }
         if (this.functions.contains(name)) {
             // Overload dispatch by arity (7.4 #2): same rule as evalCall.
             Node fn = this.functions[name];
@@ -1251,7 +1265,7 @@ class Evaluator {
     }
 
     public Value callNode(Node fn, Value[] args, Env callerEnv) {
-        file.writeBytes("build/diag/TN0.txt", [49]);
+        if (this.diagCrumbs) { file.writeBytes("build/diag/TN0.txt", [49]); }
         int rooted = 0;
         for (int i = 0; i < args.length; i++) {
             GC.pushRoot(args[i]);
@@ -1259,7 +1273,7 @@ class Evaluator {
         }
         Node params = fn.child(0);
         Env fnEnv = this.globals.push();
-        file.writeBytes("build/diag/TN1.txt", [49]);
+        if (this.diagCrumbs) { file.writeBytes("build/diag/TN1.txt", [49]); }
         GC.pushFrame(fnEnv);
         for (int i = 0; i < params.childCount(); i++) {
             Node param = params.child(i);
@@ -2977,7 +2991,7 @@ mirrorPut(obj, target.name, val);
     }
 
     public void execBlock(Node block, Env env) {
-        file.writeBytes("build/diag/TX0.txt", [49]);
+        if (this.diagCrumbs) { file.writeBytes("build/diag/TX0.txt", [49]); }
         Env blockEnv = env.push();
         GC.pushFrame(blockEnv);
         for (int i = 0; i < block.childCount(); i++) {
