@@ -4,10 +4,7 @@ import token;
 import lexer;
 import parser;
 import ast;
-import value;
-import env;
 import eval;
-import builtins;
 import fs;
 import cli;
 import llmai_std;
@@ -38,28 +35,27 @@ string dottedModulePath(string name, string sep) {
 bool dottedChildOrSelf(string name, string root) {
     string n = name.lower();
     string r = root.lower();
-    if (n == r) { return true; }
-    return n.startsWith(r + ".");
+    return n == r || n.startsWith(r + ".");
 }
 
 // Native modules the interpreter provides without needing a source file.
 bool nativeModule(string name) {
     string n = name.lower();
-    if (n == "fs" || n == "json" || n == "yaml"
+    // process is a native stdlib module on silverc-rs (stdlib::process
+    // emits getFocusedProcess natively); the interpreter mirrors that:
+    // std/process.sr is NOT prepended, Process.getFocusedProcess lands
+    // in the builtins.sr native dispatch. Prepending the wrapper would
+    // also drag in process_win, whose aliased win32 grants the parser
+    // cannot spell (`X as Y`), so the source path is not viable.
+    // Dotted children of native singletons behave like their parents:
+    // `fs.extra` never resolves from disk, exactly like `fs`.
+    return n == "fs" || n == "json" || n == "yaml"
         || n == "env" || n == "url" || n == "hash"
         || n == "path" || n == "bom" || n == "console"
         || n == "math" || n == "llmai" || n == "os"
         || n == "keyboard" || n == "mouse"
-        // process is a native stdlib module on silverc-rs (stdlib::process
-        // emits getFocusedProcess natively); the interpreter mirrors that:
-        // std/process.sr is NOT prepended, Process.getFocusedProcess lands
-        // in the builtins.sr native dispatch. Prepending the wrapper would
-        // also drag in process_win, whose aliased win32 grants the parser
-        // cannot spell (`X as Y`), so the source path is not viable.
-        || n == "process") { return true; }
-    // Dotted children of native singletons behave like their parents:
-    // `fs.extra` never resolves from disk, exactly like `fs`.
-    return dottedChildOrSelf(name, "fs") || dottedChildOrSelf(name, "json")
+        || n == "process"
+        || dottedChildOrSelf(name, "fs") || dottedChildOrSelf(name, "json")
         || dottedChildOrSelf(name, "yaml") || dottedChildOrSelf(name, "env")
         || dottedChildOrSelf(name, "url") || dottedChildOrSelf(name, "hash")
         || dottedChildOrSelf(name, "path") || dottedChildOrSelf(name, "bom")
@@ -87,12 +83,6 @@ int findCI(string text, string needle, int start) {
         if (ok) { result = i; break; }
     }
     return result;
-}
-
-private string stdRegionSlice(string s, int start, int end) {
-    string r = "";
-    for (int i = start; i < end; i++) { r += s[i]; }
-    return r;
 }
 
 // The interpreter's host OS default, resolved at silveri's own compile
@@ -153,7 +143,7 @@ bool stdRegionNameMatches(string name, string target) {
 bool stdRegionBranchMatches(string src, int nameStart, int contentEnd, string target) {
     int nameEnd = nameStart;
     while (nameEnd < contentEnd && src[nameEnd] != ' ' && src[nameEnd] != '\t') { nameEnd++; }
-    bool feeds = stdRegionNameMatches(stdRegionSlice(src, nameStart, nameEnd), target);
+    bool feeds = stdRegionNameMatches(projSlice(src, nameStart, nameEnd), target);
     int cursor = nameEnd;
     while (cursor < contentEnd) {
         int sepSkip = cursor;
@@ -161,13 +151,13 @@ bool stdRegionBranchMatches(string src, int nameStart, int contentEnd, string ta
         if (sepSkip >= contentEnd) { break; }
         int sepEnd = sepSkip;
         while (sepEnd < contentEnd && src[sepEnd] != ' ' && src[sepEnd] != '\t') { sepEnd++; }
-        if (stdRegionSlice(src, sepSkip, sepEnd) != "or") { break; }
+        if (projSlice(src, sepSkip, sepEnd) != "or") { break; }
         int nextSkip = sepEnd;
         while (nextSkip < contentEnd && (src[nextSkip] == ' ' || src[nextSkip] == '\t')) { nextSkip++; }
         int nextEnd = nextSkip;
         while (nextEnd < contentEnd && src[nextEnd] != ' ' && src[nextEnd] != '\t') { nextEnd++; }
         if (nextEnd <= nextSkip) { break; }
-        if (stdRegionNameMatches(stdRegionSlice(src, nextSkip, nextEnd), target)) { feeds = true; }
+        if (stdRegionNameMatches(projSlice(src, nextSkip, nextEnd), target)) { feeds = true; }
         cursor = nextEnd;
     }
     return feeds;
@@ -250,7 +240,7 @@ string filterStdRegions(string src, string target) {
         if (p < contentEnd && src[p] == '#') {
             int wordEnd = p + 1;
             while (wordEnd < contentEnd && src[wordEnd] >= 'a' && src[wordEnd] <= 'z') { wordEnd++; }
-            string word = stdRegionSlice(src, p + 1, wordEnd);
+            string word = projSlice(src, p + 1, wordEnd);
             if (word == "on") {
                 drop = true;
                 int nameStart = wordEnd;
@@ -321,7 +311,7 @@ string filterStdRegions(string src, string target) {
     int copyStart = 0;
     for (int d = 0; d < dropAt.length; d++) {
         if (dropAt[d] > copyStart) {
-            result += stdRegionSlice(src, copyStart, dropAt[d]);
+            result += projSlice(src, copyStart, dropAt[d]);
         }
         if (dropNl[d] >= 0) {
             if (dropCr[d] == 1) { result += "\r\n"; }
@@ -331,7 +321,7 @@ string filterStdRegions(string src, string target) {
         else { copyStart = src.length; }
     }
     if (copyStart < src.length) {
-        result += stdRegionSlice(src, copyStart, src.length);
+        result += projSlice(src, copyStart, src.length);
     }
     return result;
 }
@@ -403,29 +393,9 @@ string readStdModule(string name, string inputFile, string selfSource, string ta
     // Linux (backslash is a filename character, not a separator), so the
     // slash forms are probed too. Additive: WINDOWS builds never see them.
     // MAC (additive): macOS uses `/` separators like Linux, so a Mac-built
-    // silveri probes the same slash forms (mirrors the LINUX block
-    // statement-for-statement; the WINDOWS backslash candidates above are
-    // untouched).
-    #on LINUX
-    paths.add("std/" + lower + ".sr");
-    if (hasDot) { paths.add("std/" + dottedSlash + ".sr"); }
-    paths.add("std/" + lower + "/" + lower + ".sr");
-    paths.add("silverc/std/" + lower + ".sr");
-    if (hasDot) { paths.add("silverc/std/" + dottedSlash + ".sr"); }
-    paths.add("silverc/std/" + lower + "/" + lower + ".sr");
-    paths.add("../std/" + lower + ".sr");
-    if (hasDot) { paths.add("../std/" + dottedSlash + ".sr"); }
-    paths.add("../std/" + lower + "/" + lower + ".sr");
-    paths.add("../silverc/std/" + lower + ".sr");
-    if (hasDot) { paths.add("../silverc/std/" + dottedSlash + ".sr"); }
-    paths.add("../silverc/std/" + lower + "/" + lower + ".sr");
-    paths.add("../silveri/src/" + lower + ".sr");
-    if (hasDot) { paths.add("../silveri/src/" + dottedSlash + ".sr"); }
-    paths.add("../silveri/src/" + lower + "/" + lower + ".sr");
-    paths.add("silveri/src/" + lower + ".sr");
-    if (hasDot) { paths.add("silveri/src/" + dottedSlash + ".sr"); }
-    paths.add("silveri/src/" + lower + "/" + lower + ".sr");
-    #on MAC
+    // silveri probes the same slash forms (one shared body; the WINDOWS
+    // backslash candidates above are untouched).
+    #on LINUX or MAC
     paths.add("std/" + lower + ".sr");
     if (hasDot) { paths.add("std/" + dottedSlash + ".sr"); }
     paths.add("std/" + lower + "/" + lower + ".sr");
@@ -467,15 +437,15 @@ string readStdModule(string name, string inputFile, string selfSource, string ta
 // itself (mirrors the compiler driver's always-resolvable list).
 bool moduleAlwaysResolvable(string name) {
     string n = name.lower();
-    if (nativeModule(name) || n == "exception" || n == "llmai"
-        || n == "win32" || n == "http" || n == "os"
-        || n == "project" || name == "LLMAI") { return true; }
     // Dotted children of the embedded/fixed modules behave like their
     // parents (`win32.anything` needs no source, exactly like `win32`;
     // `llmai`/`os` children are already covered by nativeModule above).
     // validateNativeImports still owns the precise win32/linux/custom
     // diagnostics for these names; this only skips the disk probe.
-    return dottedChildOrSelf(name, "exception") || dottedChildOrSelf(name, "win32")
+    return nativeModule(name) || n == "exception" || n == "llmai"
+        || n == "win32" || n == "http" || n == "os"
+        || n == "project" || name == "LLMAI"
+        || dottedChildOrSelf(name, "exception") || dottedChildOrSelf(name, "win32")
         || dottedChildOrSelf(name, "http") || dottedChildOrSelf(name, "project");
 }
 
@@ -1108,9 +1078,9 @@ string resolveImports(string source, string inputFile, int[] prependLen, string 
                 int[] loc = diagSourceLoc(aggregate, nameStart);
                 string sugg = diagClosestMatch(module, knownModuleNames);
                 if (sugg.length > 0) {
-                    unknownModMsgs.add("did you mean to import the module \"" + sugg + "\"?, unknown module \"" + module + "\" was found at line " + loc[0].toString() + " column " + loc[1].toString());
+                    unknownModMsgs.add("did you mean to import the module \"" + sugg + "\"?, unknown module \"" + module + "\" was found at line " + (string)loc[0] + " column " + (string)loc[1]);
                 } else {
-                    unknownModMsgs.add("unknown module \"" + module + "\" was found at line " + loc[0].toString() + ", column " + loc[1].toString() + ". module either doesn't exist or not installed.");
+                    unknownModMsgs.add("unknown module \"" + module + "\" was found at line " + (string)loc[0] + ", column " + (string)loc[1] + ". module either doesn't exist or not installed.");
                 }
             }
         }
@@ -1205,9 +1175,6 @@ void main() {
     // working directory (e.g. when running tests/ scripts).
     // Option parsing goes through the `cli` module (DOCS/252) so the same
     // spelling rules apply as silverc and the self-hosted compiler.
-    string[] helpNames = ["-h", "--help"];
-    string[] versionNames = ["--version"];
-
     string[] args = cargs;
 
     if (args.length < 2) {
@@ -1222,18 +1189,18 @@ void main() {
 
     for (int i = 1; i < args.length; i++) {
         string arg = args[i];
-        if (helpNames.contains(arg)) {
+        if (arg == "-h" || arg == "--help") {
             printHelp();
             return;
         }
-        if (versionNames.contains(arg)) {
+        if (arg == "--version") {
             printline("silveri " + APP_VERSION);
             printline("Silver " + LANG_VERSION);
             printline("Copyright: © 2025 Edan M.");
             printline("License: " + APP_LICENSE);
             return;
         }
-        if (["--cache-bytecode"].contains(arg)) {
+        if (arg == "--cache-bytecode") {
             cacheBytecode = true;
         } else if (arg == "--os") {
             // Preprocessor target override (lowercase windows/linux/mac is
