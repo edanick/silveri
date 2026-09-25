@@ -1297,7 +1297,7 @@ void main() {
     // Region-filter target: explicit `--os` wins, otherwise the host OS
     // the interpreter itself was built for (interpHostOs).
     string target = interpTargetOsFor(osOverride);
-    if (isProjectPath(filename)) {
+    if (filename.endsWith(".srp")) {
         // Own-source load point (v2 fold): the .srp aggregate builder reads
         // each source file raw, so the region filter runs on the assembled
         // text here -- silveri's own src files now carry `#on WINDOWS ... #off`

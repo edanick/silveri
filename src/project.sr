@@ -2,26 +2,6 @@ mod export project;
 
 import * from fs;
 
-bool projEndsWith(string text, string suffix) {
-    if (text.length < suffix.length) { return false; }
-    int start = text.length - suffix.length;
-    for (int i = 0; i < suffix.length; i++) {
-        if (text[start + i] != suffix[i]) { return false; }
-    }
-    return true;
-}
-
-int projFind(string text, string needle, int start) {
-    for (int i = start; i + needle.length <= text.length; i++) {
-        bool hit = true;
-        for (int j = 0; j < needle.length; j++) {
-            if (text[i + j] != needle[j]) { hit = false; }
-        }
-        if (hit) { return i; }
-    }
-    return -1;
-}
-
 string projSlice(string text, int start, int end) {
     string result = "";
     for (int i = start; i < end; i++) {
@@ -59,14 +39,6 @@ bool natIsQuote(char c) {
     return c == '"' || c == '\'';
 }
 
-bool natIsIdentChar(char c) {
-    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
-}
-
-bool natIsSpace(char c) {
-    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
-}
-
 // Quote-aware search for a manifest object key (quoted or bare,
 // case-insensitive) followed by `:`. Returns the key start or -1. Values
 // mentioning a key word never match: quoted strings are skipped unless
@@ -90,17 +62,17 @@ int natScanKey(string text, string key, int start) {
             i++;
             if (word == want) {
                 int j = i;
-                while (j < text.length && natIsSpace(text[j])) { j++; }
+                while (j < text.length && (text[j] == ' ' || text[j] == '\t' || text[j] == '\r' || text[j] == '\n')) { j++; }
                 if (j < text.length && text[j] == ':') { return s - 1; }
             }
             continue;
         }
         if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_') {
             int s = i;
-            while (i < text.length && natIsIdentChar(text[i])) { i++; }
+            while (i < text.length && ((text[i] >= 'a' && text[i] <= 'z') || (text[i] >= 'A' && text[i] <= 'Z') || (text[i] >= '0' && text[i] <= '9') || text[i] == '_')) { i++; }
             if (projSlice(text, s, i).lower() == want) {
                 int j = i;
-                while (j < text.length && natIsSpace(text[j])) { j++; }
+                while (j < text.length && (text[j] == ' ' || text[j] == '\t' || text[j] == '\r' || text[j] == '\n')) { j++; }
                 if (j < text.length && text[j] == ':') { return s; }
             }
             continue;
@@ -189,13 +161,6 @@ bool projIsExcluded(string rel, string[] excludes) {
     return false;
 }
 
-bool projVisited(string[] visited, string path) {
-    for (int i = 0; i < visited.length; i++) {
-        if (visited[i] == path) { return true; }
-    }
-    return false;
-}
-
 // ---------------------------------------------------------------------------
 // QuickSilver (.qs) library bundles. A `.qs` file is a binary container (see
 // DOCS/226): magic "QSLIB2", then fixed 4-byte base-255 big-endian u32
@@ -266,7 +231,7 @@ string[] projWalk(string root, string relDir, string[] excludes) {
         string name = names[i];
         string rel = name;
         if (relDir.length > 0) { rel = relDir + relSep + name; }
-        if (!projEndsWith(rel, ".sr")) { continue; }
+        if (!rel.endsWith(".sr")) { continue; }
         if (projIsExcluded(rel, excludes)) { continue; }
         result.add(projJoin(root, rel));
     }
@@ -286,7 +251,7 @@ string[] projWalk(string root, string relDir, string[] excludes) {
 
 string[] projAddEntry(string root, string entry, string[] excludes) {
     string[] result = [];
-    if (projEndsWith(entry, ".sr")) {
+    if (entry.endsWith(".sr")) {
         if (projIsExcluded(entry, excludes)) { return result; }
         result.add(projJoin(root, entry));
         return result;
@@ -294,13 +259,6 @@ string[] projAddEntry(string root, string entry, string[] excludes) {
     return projWalk(root, entry, excludes);
 }
 
-string projTrim(string text) {
-    int start = 0;
-    int end = text.length;
-    while (start < end && (text[start] == ' ' || text[start] == '\t' || text[start] == '\r' || text[start] == '\n')) { start++; }
-    while (end > start && (text[end - 1] == ' ' || text[end - 1] == '\t' || text[end - 1] == '\r' || text[end - 1] == '\n')) { end--; }
-    return projSlice(text, start, end);
-}
 
 string projCollectionEscape(string value) {
     string result = "";
@@ -351,20 +309,21 @@ string projExpandCollections(string source, string root, string collections) {
         int end = cursor;
         while (end < source.length && source[end] != '\n') { end++; }
         string text = projSlice(source, cursor, end);
-        int marker = projFind(text, "collects", 0);
-        int comment = projFind(text, "//", 0);
+        int marker = text.indexOf("collects", 0);
+        int comment = text.indexOf("//", 0);
         if (marker >= 0 && (comment < 0 || comment > marker)) {
-            string prefix = projTrim(projSlice(text, 0, marker));
+            string prefix = projSlice(text, 0, marker).trim();
             int split = prefix.length - 1;
             while (split >= 0 && (prefix[split] != ' ' && prefix[split] != '\t')) { split--; }
-            if (split < 0 || projTrim(projSlice(prefix, 0, split)) != "string[]") {
+            if (split < 0 || projSlice(prefix, 0, split).trim() != "string[]") {
                 projCollectionFail("invalid declaration", line);
             }
-            string path = projTrim(projSlice(text, marker + 8, text.length));
-            int semi = projFind(path, ";", 0);
+            string path = projSlice(text, marker + 8, text.length).trim();
+            int semi = path.indexOf(";", 0);
             if (semi < 0) { projCollectionFail("missing .col path", line); }
-            path = projTrim(projSlice(path, 0, semi));
-            if (collections.length == 0 || path.length == 0 || !projEndsWith(path, ".col") || projFind(path, "..", 0) >= 0) {
+            string tail = projSlice(path, semi, path.length);
+            path = projSlice(path, 0, semi).trim();
+            if (collections.length == 0 || path.length == 0 || !path.endsWith(".col") || path.indexOf("..", 0) >= 0) {
                 projCollectionFail(path, line);
             }
             if (path[0] == '/' || path[0] == '\\') {
@@ -378,7 +337,7 @@ string projExpandCollections(string source, string root, string collections) {
             #off
             string fullPath = projJoin(root, collections + colSep + path);
             if (!fs.exists(fullPath)) { projCollectionFail(path, line); }
-            result += prefix + " = " + projCollectionLiteral(fullPath) + projSlice(path, semi, path.length);
+            result += prefix + " = " + projCollectionLiteral(fullPath) + tail;
         } else {
             result += text;
         }
@@ -389,9 +348,6 @@ string projExpandCollections(string source, string root, string collections) {
     return result;
 }
 
-bool isProjectPath(string path) {
-    return projEndsWith(path, ".srp");
-}
 
 string loadProjectSource(string projectPath) {
     string manifest = fs.readFile(projectPath);
@@ -423,7 +379,7 @@ string loadProjectSource(string projectPath) {
         else { entryPath += entry[ei]; }
     }
     entryPath = projJoin(root, entryPath);
-    if (!projVisited(visited, entryPath)) {
+    if (!visited.contains(entryPath)) {
         visited.add(entryPath);
         files.add(entryPath);
         natNoteProjectFile(entryPath);
@@ -434,7 +390,7 @@ string loadProjectSource(string projectPath) {
             string[] got = projAddEntry(root, sources[i], excludes);
             for (int k = 0; k < got.length; k++) {
                 string p = got[k];
-                if (!projVisited(visited, p)) {
+                if (!visited.contains(p)) {
                     visited.add(p);
                     files.add(p);
                     natNoteProjectFile(p);
@@ -445,7 +401,7 @@ string loadProjectSource(string projectPath) {
         string[] got = projWalk(root, "", excludes);
         for (int k = 0; k < got.length; k++) {
             string p = got[k];
-            if (!projVisited(visited, p)) {
+            if (!visited.contains(p)) {
                 visited.add(p);
                 files.add(p);
                 natNoteProjectFile(p);
@@ -580,7 +536,7 @@ int natFindPlain(string text, char want, int start) {
 }
 
 string natUnquote(string value) {
-    string t = projTrim(value);
+    string t = value.trim();
     if (t.length >= 2 && natIsQuote(t[0]) && t[t.length - 1] == t[0]) {
         string raw = projSlice(t, 1, t.length - 1);
         string result = "";
@@ -602,14 +558,14 @@ string natUnquote(string value) {
 // Parse a `["a", "b"]` string list into comma-joined form ("" when empty).
 // Bare words are accepted like the manifest's lenient scalar spellings.
 string natParseStrList(string value) {
-    string t = projTrim(value);
+    string t = value.trim();
     if (t.length < 2 || t[0] != '[') { return ""; }
     string inner = projSlice(t, 1, t.length - 1);
     string result = "";
     string sep = "";
     int i = 0;
     while (i < inner.length) {
-        while (i < inner.length && (natIsSpace(inner[i]) || inner[i] == ',')) { i++; }
+        while (i < inner.length && (inner[i] == ' ' || inner[i] == '\t' || inner[i] == '\r' || inner[i] == '\n' || inner[i] == ',')) { i++; }
         if (i >= inner.length) { break; }
         string item = "";
         if (natIsQuote(inner[i])) {
@@ -630,7 +586,7 @@ string natParseStrList(string value) {
                 item += inner[i];
                 i++;
             }
-            item = projTrim(item);
+            item = item.trim();
         }
         if (item.length > 0) {
             result += sep + item;
@@ -721,7 +677,7 @@ void natNoteProjectFile(string path) {
         if (path[i] == '/' || path[i] == '\\') { last = i; }
     }
     string base = projSlice(path, last + 1, path.length);
-    if (projEndsWith(base, ".sr")) { base = projSlice(base, 0, base.length - 3); }
+    if (base.endsWith(".sr")) { base = projSlice(base, 0, base.length - 3); }
     natNoteStem(base);
 }
 
