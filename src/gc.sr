@@ -121,11 +121,33 @@ class GCState {
         if (this.envPoolCount > 0) {
             this.envPoolCount--;
             e = this.envPool[this.envPoolCount];
-            // Reuse the environment's dictionary and name storage. Assigning
-            // fresh `{}`/`[]` values here leaks their native backing buffers
-            // because generated Silver storage is not individually freeable.
-            for (int i = 0; i < e.varNames.length; i++) {
-                e.vars[e.varNames[i]] = makeNull();
+            // Reuse the environment's dictionary, alias map, and name
+            // storage in place. Assigning fresh `{}`/`[]` values here
+            // orphans their native backing buffers because generated
+            // Silver storage is not individually freeable, so stale keys
+            // are removed instead: dict.remove shifts slots in place and
+            // pop truncates the name array in place. Every stale key must
+            // go -- a nulled value still satisfies contains(), so a kept
+            // key would let get()/exists() shadow the parent scope with
+            // nulls on the reused environment. Receivers are hoisted to
+            // temp locals; member-access receivers miscompile in some
+            // call shapes. All aliasOf keys are covered: the only aliasOf
+            // writer goes through define(), which records every name.
+            dict<string, Value> liveVars = e.vars;
+            dict<string, string> liveAliases = e.aliasOf;
+            string[] liveNames = e.varNames;
+            int staleCount = liveNames.length;
+            for (int i = 0; i < staleCount; i++) {
+                string k = liveNames[i];
+                if (liveVars.contains(k)) {
+                    liveVars.remove(k);
+                }
+                if (liveAliases.contains(k)) {
+                    liveAliases.remove(k);
+                }
+            }
+            for (int i = 0; i < staleCount; i++) {
+                liveNames.pop();
             }
             e.parent = parent;
             e.gcMark = false;
