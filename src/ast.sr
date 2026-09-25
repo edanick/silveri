@@ -1,7 +1,5 @@
 mod export ast;
 
-import token;
-
 const int ND_INT_LIT = 0;
 const int ND_FLOAT_LIT = 1;
 const int ND_STRING_LIT = 2;
@@ -152,7 +150,6 @@ class Node {
     public prop bool hasFinally;
     public prop string parentClass;
     public prop Node[] children;
-    public prop dict<string, Node> props;
     public prop int line;
     public prop int col;
 
@@ -179,7 +176,6 @@ class Node {
         this.hasFinally = false;
         this.parentClass = "";
         this.children = [];
-        this.props = {};
         this.line = line;
         this.col = col;
     }
@@ -209,17 +205,6 @@ class Node {
 
     public int childCount() {
         return this.children.length;
-    }
-
-    public void setProp(string key, Node val) {
-        this.props[key] = val;
-    }
-
-    public Node? getProp(string key) {
-        if (this.props.contains(key)) {
-            return this.props[key];
-        }
-        return null;
     }
 
     public string toString() {
@@ -279,5 +264,5 @@ string kindName(int k) {
     if (k == ND_CONST) { return "Const"; }
     if (k == ND_IMPORT) { return "Import"; }
     if (k == ND_MODULE) { return "Module"; }
-    return "Node" + k.toString();
+    return "Node" + (string)k;
 }
