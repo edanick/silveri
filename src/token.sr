@@ -180,7 +180,7 @@ class Token {
 
     public string toString() {
         string k = kindToString(this.kind);
-        return k + " '" + this.text + "' @ " + this.line.toString() + ":" + this.col.toString();
+        return k + " '" + this.text + "' @ " + (string)this.line + ":" + (string)this.col;
     }
 }
 
@@ -275,5 +275,5 @@ string kindToString(int kind) {
     if (kind == TK_TYPEALIAS) { return "typealias"; }
     if (kind == TK_INTERNAL) { return "internal"; }
     if (kind == TK_INTERP_STRING) { return "INTERP_STRING"; }
-    return "UNKNOWN(" + kind.toString() + ")";
+    return "UNKNOWN(" + (string)kind + ")";
 }
