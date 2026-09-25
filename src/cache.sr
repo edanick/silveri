@@ -114,7 +114,8 @@ class CacheSession {
         this.ok = true;
         return;
         #off
-        string appdata = icEnvValue("APPDATA");
+        // fs.getenv lowers to native GetEnvironmentVariableA, "" when unset.
+        string appdata = fs.getenv("APPDATA");
         if (appdata.length == 0) { return; }
         this.dir = appdata + "\\silver cache\\" + icSanitize(projName);
         icEnsureDirTree(this.dir);
@@ -141,9 +142,9 @@ class CacheSession {
         if (key.length == 0) { return this.icLexSet(source); }
         int64 hash = icFnv1(source);
         int size = source.length;
-        string hashKey = icIntToStr(hash);
-        string sizeKey = size.toString();
-        int idx = this.indexOfKey(key);
+        string hashKey = (string)hash;
+        string sizeKey = (string)size;
+        int idx = this.keys.indexOf(key);
         if (idx >= 0) {
             if (this.hashesStr[idx] == hashKey && this.mTimesStr[idx] == sizeKey) {
                 Token[] cached = this.loadSrbcText(absPath, hashKey);
@@ -159,18 +160,18 @@ class CacheSession {
         int stamp = icNowMillis();
         if (this.encodable(tokens)) {
             this.storeSrbc(absPath, tokens, stamp, hashKey, sizeKey);
-            string created = stamp.toString();
+            string created = (string)stamp;
             if (idx >= 0) {
                 created = this.cTimesStr[idx];
                 this.mTimesStr[idx] = sizeKey;
                 this.hashesStr[idx] = hashKey;
-                this.cachedAtStr[idx] = stamp.toString();
+                this.cachedAtStr[idx] = (string)stamp;
             } else {
                 this.keys.add(key);
                 this.cTimesStr.add(created);
                 this.mTimesStr.add(sizeKey);
                 this.hashesStr.add(hashKey);
-                this.cachedAtStr.add(stamp.toString());
+                this.cachedAtStr.add((string)stamp);
             }
             this.dirtyCount++;
         }
@@ -205,7 +206,7 @@ class CacheSession {
 
         this.sortRecords();
 
-        string indexText = "created " + icIntToStr(this.createdStamp) + "\n";
+        string indexText = "created " + (string)this.createdStamp + "\n";
         indexText += "name " + this.projectName + "\n";
         for (int r = 0; r < this.keys.length; r++) {
             indexText += "f " + this.keyOf(r) + "\n";
@@ -214,9 +215,7 @@ class CacheSession {
 
         icEnsureDirTree(this.dir);
         string sbcriOut = this.dir + "\\project.sbcri";
-        #on LINUX
-        sbcriOut = this.dir + "/project.sbcri";
-        #on MAC
+        #on LINUX or MAC
         sbcriOut = this.dir + "/project.sbcri";
         #off
         file.writeString(sbcriOut, indexText);
@@ -224,9 +223,7 @@ class CacheSession {
         // Reference-format binary record (little-endian, see module docs),
         // streamed in adaptive bounded chunks like the .srbc artifacts.
         string sbcrOut = this.dir + "\\project.sbcr";
-        #on LINUX
-        sbcrOut = this.dir + "/project.sbcr";
-        #on MAC
+        #on LINUX or MAC
         sbcrOut = this.dir + "/project.sbcr";
         #off
         BcBinWriter bw = new BcBinWriter(sbcrOut);
@@ -258,19 +255,9 @@ class CacheSession {
         bw.close();
     }
 
-    public int statsTotal() {
-        return this.keys.length;
-    }
-
-    public int statsDirty() {
-        return this.dirtyCount;
-    }
-
     private void loadRecords() {
         string sbcriPath = this.dir + "\\project.sbcri";
-        #on LINUX
-        sbcriPath = this.dir + "/project.sbcri";
-        #on MAC
+        #on LINUX or MAC
         sbcriPath = this.dir + "/project.sbcri";
         #off
         string text = icTryReadText(sbcriPath);
@@ -302,13 +289,6 @@ class CacheSession {
         }
     }
 
-    private int indexOfKey(string key) {
-        for (int i = 0; i < this.keys.length; i++) {
-            if (this.keys[i] == key) { return i; }
-        }
-        return -1;
-    }
-
     private void sortRecords() {
         int n = this.keys.length;
         for (int i = 1; i < n; i++) {
@@ -318,7 +298,7 @@ class CacheSession {
             string h = this.hashesStr[i];
             string lc = this.cachedAtStr[i];
             int j = i - 1;
-            while (j >= 0 && icKeyLess(k, this.keys[j])) {
+            while (j >= 0 && k < this.keys[j]) {
                 this.keys[j + 1] = this.keys[j];
                 this.cTimesStr[j + 1] = this.cTimesStr[j];
                 this.mTimesStr[j + 1] = this.mTimesStr[j];
@@ -338,21 +318,11 @@ class CacheSession {
         // Linux layout (mirrors silverc/compiler/bcache.sr): `/`
         // separators kept as-is under the cache root. MAC layout is the
         // same (MAC.md section 5b: `/` separators under /Library/Caches/Silver).
-        #on LINUX
+        #on LINUX or MAC
         string relL = this.relKey(keyOrAbs);
         if (relL.length == 0) { return ""; }
         string dottedL = relL;
-        if (dottedL.length >= 3 && dottedL[dottedL.length - 1] == 'r'
-            && dottedL[dottedL.length - 2] == 's' && dottedL[dottedL.length - 3] == '.') {
-            dottedL = icSliceRange(dottedL, 0, dottedL.length - 3);
-        }
-        return this.dir + "/" + dottedL + ".srbc";
-        #on MAC
-        string relL = this.relKey(keyOrAbs);
-        if (relL.length == 0) { return ""; }
-        string dottedL = relL;
-        if (dottedL.length >= 3 && dottedL[dottedL.length - 1] == 'r'
-            && dottedL[dottedL.length - 2] == 's' && dottedL[dottedL.length - 3] == '.') {
+        if (dottedL.endsWith(".sr")) {
             dottedL = icSliceRange(dottedL, 0, dottedL.length - 3);
         }
         return this.dir + "/" + dottedL + ".srbc";
@@ -360,8 +330,7 @@ class CacheSession {
         string rel = this.relKey(keyOrAbs);
         if (rel.length == 0) { return ""; }
         string dotted = rel;
-        if (dotted.length >= 3 && dotted[dotted.length - 1] == 'r'
-            && dotted[dotted.length - 2] == 's' && dotted[dotted.length - 3] == '.') {
+        if (dotted.endsWith(".sr")) {
             dotted = icSliceRange(dotted, 0, dotted.length - 3);
         }
         return this.dir + "\\" + dotted.replaceAll("/", "\\") + ".srbc";
@@ -417,9 +386,9 @@ class CacheSession {
         if (tw.ok()) {
             tw.put(hashKey);
             tw.put(" ");
-            tw.put(stamp.toString());
+            tw.put((string)stamp);
             tw.put(" ");
-            tw.put(tokens.length.toString());
+            tw.put((string)tokens.length);
             tw.put("\n");
             for (int i = 0; i < tokens.length; i++) {
                 this.writeTokenLine(tw, tokens[i]);
@@ -430,32 +399,31 @@ class CacheSession {
 
     // One token as one companion line: <tag> <line> <col> <payload>
     // (payload "-" for unit tags, decimal for int/char, "<byteLen>:<hex>"
-    // for string payloads). Identical bytes to the previous one-shot
-    // tokenLine(); emitted piecewise into the streaming writer.
+    // for string payloads), emitted piecewise into the streaming writer.
     private void writeTokenLine(BcTextWriter t, Token tok) {
         int tag = icTagOf(tok);
-        t.put(tag.toString());
+        t.put((string)tag);
         t.put(" ");
-        t.put(tok.line.toString());
+        t.put((string)tok.line);
         t.put(" ");
-        t.put(tok.col.toString());
+        t.put((string)tok.col);
         if (tag == 200) {
             t.put(" ");
-            t.put(icIntToStr(tok.intVal));
+            t.put((string)tok.intVal);
             t.put("\n");
             return;
         }
         if (tag == 203) {
             int cvEnc = tok.charVal;
             t.put(" ");
-            t.put(cvEnc.toString());
+            t.put((string)cvEnc);
             t.put("\n");
             return;
         }
         if (tag == 202 || tag == 204 || tag == 205) {
             t.put(" ");
             string s = tok.strVal;
-            t.put(s.length.toString());
+            t.put((string)s.length);
             t.put(":");
             string hex = "";
             for (int i = 0; i < s.length; i++) {
@@ -729,12 +697,6 @@ class BcTextWriter {
     }
 }
 
-public string icEnvValue(string name) {
-    // Unified std: the compiler lowers fs.getenv to a native
-    // GetEnvironmentVariableA that returns "" when the variable is unset.
-    return fs.getenv(name);
-}
-
 public int icNowMillis() {
     // Seconds-since-epoch * 1000 — msvcrt time, matching silverc's
     // bcache.sr. Inside the region: no portable epoch builtin exists.
@@ -745,14 +707,7 @@ public int icNowMillis() {
     #on WINDOWS
     return time(0) * 1000;
     #off
-    #on LINUX
-    int[] ts = [];
-    for (int i = 0; i < 16; i++) { ts.add(0); }
-    clock_gettime(0, ts);
-    int secLow = ts[0] + ts[1] * 256 + ts[2] * 65536 + ts[3] * 16777216;
-    int nsecLow = ts[8] + ts[9] * 256 + ts[10] * 65536 + ts[11] * 16777216;
-    return secLow * 1000 + nsecLow / 1000000;
-    #on MAC
+    #on LINUX or MAC
     int[] ts = [];
     for (int i = 0; i < 16; i++) { ts.add(0); }
     clock_gettime(0, ts);
@@ -810,10 +765,7 @@ public string icDirname(string path) {
 public string icResolveRel(string root, string rel) {
     // Linux joins with `/` (mirrors silverc/compiler/bcache.sr resolveRel).
     // MAC joins with `/` too (MAC.md section 5b).
-    #on LINUX
-    if (root.length == 0 || root == ".") { return rel; }
-    return root + "/" + rel;
-    #on MAC
+    #on LINUX or MAC
     if (root.length == 0 || root == ".") { return rel; }
     return root + "/" + rel;
     #off
@@ -833,20 +785,7 @@ public void icEnsureDirTree(string dir) {
     // MAC (additive, code-only -- MAC.md section 10, UNVALIDATED until
     // probed on Mac hardware): same raw mkdir (mode 0755 = 493) via the
     // file-top mac.libsystem grant, `/` separators like Linux.
-    #on LINUX
-    string curL = "";
-    for (int i = 0; i < dir.length; i++) {
-        char c = dir[i];
-        if (c == '\\' || c == '/') {
-            if (curL.length >= 2) { mkdir(curL, 493); }
-            curL += '/';
-        } else {
-            curL += c;
-        }
-    }
-    if (curL.length >= 2) { mkdir(curL, 493); }
-    return;
-    #on MAC
+    #on LINUX or MAC
     string curL = "";
     for (int i = 0; i < dir.length; i++) {
         char c = dir[i];
@@ -948,15 +887,6 @@ private string icTryReadText(string path) {
     return result;
 }
 
-private bool icKeyLess(string a, string b) {
-    int n = a.length;
-    if (b.length < n) { n = b.length; }
-    for (int i = 0; i < n; i++) {
-        if (a[i] != b[i]) { return a[i] < b[i]; }
-    }
-    return a.length < b.length;
-}
-
 // ---------------------------------------------------------------------------
 // Reference tag space (must match silverc-rs src/cache.rs SIMPLE_KINDS order
 // and silverc/compiler/bcache.sr). Tokens without a reference spelling return
@@ -1023,12 +953,9 @@ private int icTagOf(Token t) {
     if (k == 53) { return 50; }
     if (k == 54) { return 57; }
     if (k == 55) { return 53; }
-    if (k == 56) { return -1; }
-    if (k == 57) { return -1; }
-    if (k == 58) { return -1; }
+    if (k == 56 || k == 57 || k == 58) { return -1; }
     if (k == 59) { return 59; }
-    if (k == 60) { return -1; }
-    if (k == 61) { return -1; }
+    if (k == 60 || k == 61) { return -1; }
     if (k == 62) { return 56; }
     if (k == 63) { return 64; }
     if (k == 64) { return 65; }
@@ -1041,8 +968,7 @@ private int icTagOf(Token t) {
     if (k == 71) { return 44; }
     if (k == 72) { return 45; }
     if (k == 73) { return 46; }
-    if (k == 74) { return -1; }
-    if (k == 75) { return -1; }
+    if (k == 74 || k == 75) { return -1; }
     if (k == 100) { return 66; }
     if (k == 101) { return 67; }
     if (k == 102) { return 68; }
@@ -1112,7 +1038,7 @@ private Token? icTokenFromParts(int tag, string payload, int64 iv, int cv) {
     if (tag == 200) {
         t.kind = 1;
         t.intVal = iv;
-        t.text = icIntToStr(iv);
+        t.text = (string)iv;
         return t;
     }
     if (tag == 201) {
@@ -1170,27 +1096,6 @@ private int icHexVal(char c) {
     return -1;
 }
 
-private string icTokenLine(Token t) {
-    int tag = icTagOf(t);
-    string head = tag.toString() + " " + t.line.toString() + " " + t.col.toString();
-    if (tag == 200) {
-        return head + " " + icIntToStr(t.intVal) + "\n";
-    }
-    if (tag == 203) {
-        int cvEnc = t.charVal;
-        return head + " " + cvEnc.toString() + "\n";
-    }
-    if (tag == 202 || tag == 204 || tag == 205) {
-        string s = t.strVal;
-        string hex = "";
-        for (int i = 0; i < s.length; i++) {
-            hex += icHexDigits(s[i] & 0xFF);
-        }
-        return head + " " + s.length.toString() + ":" + hex + "\n";
-    }
-    return head + " -\n";
-}
-
 private Token? icTokenFromLine(string line) {
     string t1 = icWordAt(line, 0);
     string t2 = icWordAt(line, 1);
@@ -1229,23 +1134,4 @@ private Token? icTokenFromLine(string line) {
     t.line = ln;
     t.col = cl;
     return t;
-}
-
-private string icIntToStr(int64 v) {
-    if (v == 0) { return "0"; }
-    bool neg = v < 0;
-    int64 mag = v;
-    if (neg) { mag = -v; }
-    string rev = "";
-    while (mag > 0) {
-        char digit = char(48 + (mag % 10));
-        rev += digit;
-        mag = mag / 10;
-    }
-    string r = "";
-    for (int i = rev.length - 1; i >= 0; i--) {
-        r += rev[i];
-    }
-    if (neg) { r = "-" + r; }
-    return r;
 }
