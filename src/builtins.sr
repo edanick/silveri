@@ -88,29 +88,12 @@ class BuiltinMethods {
 
     // Filesystem entry points whose first argument must be a file path.
     private static bool isPathFirstArgMethodRT(string m) {
-        if (m == "readString" || m == "readFile") { return true; }
-        if (m == "readBytes" || m == "writeString") { return true; }
-        if (m == "writeFile" || m == "writeBytes") { return true; }
-        if (m == "exists" || m == "delete") { return true; }
-        if (m == "deleteFile" || m == "rename") { return true; }
-        if (m == "copy" || m == "mkdir") { return true; }
-        if (m == "createDirectory" || m == "createDir") { return true; }
-        if (m == "directoryExists" || m == "folderExists") { return true; }
-        if (m == "isFile" || m == "isDirectory" || m == "isDir") { return true; }
-        if (m == "size" || m == "getSize" || m == "modification" || m == "listFiles") { return true; }
-        if (m == "getEntries" || m == "entries" || m == "list") { return true; }
-        if (m == "getFiles" || m == "files" || m == "getFolders" || m == "folders") { return true; }
-        return false;
+        return m == "readString" || m == "readFile" || m == "readBytes" || m == "writeString" || m == "writeFile" || m == "writeBytes" || m == "exists" || m == "delete" || m == "deleteFile" || m == "rename" || m == "copy" || m == "mkdir" || m == "createDirectory" || m == "createDir" || m == "directoryExists" || m == "folderExists" || m == "isFile" || m == "isDirectory" || m == "isDir" || m == "size" || m == "getSize" || m == "modification" || m == "listFiles" || m == "getEntries" || m == "entries" || m == "list" || m == "getFiles" || m == "files" || m == "getFolders" || m == "folders";
     }
 
     private static bool looksLikeUrlRT(string s) {
         string lo = s.lower();
-        if (lo.startsWith("http://") || lo.startsWith("https://")) { return true; }
-        if (lo.startsWith("http:") || lo.startsWith("https:")) { return true; }
-        if (lo.startsWith("ftp://") || lo.startsWith("ftps://")) { return true; }
-        if (lo.startsWith("file://")) { return true; }
-        if (lo.startsWith("www.")) { return true; }
-        return false;
+        return lo.startsWith("http://") || lo.startsWith("https://") || lo.startsWith("http:") || lo.startsWith("https:") || lo.startsWith("ftp://") || lo.startsWith("ftps://") || lo.startsWith("file://") || lo.startsWith("www.");
     }
 
     // A runtime path is unusable when it is empty, carries characters

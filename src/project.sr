@@ -183,8 +183,7 @@ bool projIsExcluded(string rel, string[] excludes) {
         if (hit) {
             if (rel.length == pat.length) { return true; }
             char sep = rel[pat.length];
-            if (sep == '\\') { return true; }
-            if (sep == '/') { return true; }
+            if (sep == '\\' || sep == '/') { return true; }
         }
     }
     return false;

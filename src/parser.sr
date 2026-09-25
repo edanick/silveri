@@ -285,13 +285,7 @@ class Parser {
     // declaration? If not, a lowercase statement-leading identifier is an
     // unknown keyword (SYNTAX_EXCEPTIONS.md).
     private bool tokenContinuesExpr(int nk) {
-        if (nk == TK_LPAREN || nk == TK_DOT || nk == TK_LBRACKET || nk == TK_ASSIGN) { return true; }
-        if (nk == TK_PLUS_EQ || nk == TK_MINUS_EQ || nk == TK_STAR_EQ || nk == TK_SLASH_EQ || nk == TK_PERCENT_EQ) { return true; }
-        if (nk == TK_AMP_EQ || nk == TK_PIPE_EQ || nk == TK_CARET_EQ || nk == TK_SHL_EQ || nk == TK_SHR_EQ) { return true; }
-        if (nk == TK_INC || nk == TK_DEC || nk == TK_QUESTION || nk == TK_QUESTIONQUESTION) { return true; }
-        if (nk == TK_COLON || nk == TK_RANGE || nk == TK_SPREAD || nk == TK_LESS) { return true; }
-        if (nk == TK_SHL) { return true; }
-        return false;
+        return nk == TK_LPAREN || nk == TK_DOT || nk == TK_LBRACKET || nk == TK_ASSIGN || nk == TK_PLUS_EQ || nk == TK_MINUS_EQ || nk == TK_STAR_EQ || nk == TK_SLASH_EQ || nk == TK_PERCENT_EQ || nk == TK_AMP_EQ || nk == TK_PIPE_EQ || nk == TK_CARET_EQ || nk == TK_SHL_EQ || nk == TK_SHR_EQ || nk == TK_INC || nk == TK_DEC || nk == TK_QUESTION || nk == TK_QUESTIONQUESTION || nk == TK_COLON || nk == TK_RANGE || nk == TK_SPREAD || nk == TK_LESS || nk == TK_SHL;
     }
 
     // Flag an unknown keyword / keyword typo at the token's position.
@@ -2244,11 +2238,9 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
     // `in` before expression parsing begins, so neither is ever ambiguous.
     private bool membershipAhead() {
         if (this.inMembershipOperand) { return false; }
-        if (this.check(TK_IN)) { return true; }
-        if (this.check(TK_IDENT) && this.peek().text == "not"
+        return this.check(TK_IN) || (this.check(TK_IDENT) && this.peek().text == "not"
             && this.pos + 1 < this.tokens.length
-            && this.tokens[this.pos + 1].kind == TK_IN) { return true; }
-        return false;
+            && this.tokens[this.pos + 1].kind == TK_IN);
     }
 
     private bool isInfix() {
@@ -3127,9 +3119,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
     // ND_MEMBER=13, ND_INDEX=11, ND_PAREN=23).
     private bool isValueRefNode(Node e) {
         if (e.kind == ND_IDENT) { return true; }
-        if (e.kind == ND_MEMBER && e.childCount() > 0) { return this.isValueRefNode(e.child(0)); }
-        if (e.kind == ND_INDEX && e.childCount() > 0) { return this.isValueRefNode(e.child(0)); }
-        if (e.kind == ND_PAREN && e.childCount() > 0) { return this.isValueRefNode(e.child(0)); }
+        if ((e.kind == ND_MEMBER || e.kind == ND_INDEX || e.kind == ND_PAREN) && e.childCount() > 0) { return this.isValueRefNode(e.child(0)); }
         return false;
     }
 
@@ -3485,16 +3475,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         for (int i = 0; i < this.sigNames.length; i++) {
             if (this.sigNames[i] == name) { return true; }
         }
-        if (this.isDeclaredTypeName(name)) { return true; }
-        if (this.knownIdentName(name)) { return true; }
-        if (this.builtinCallableName(name)) { return true; }
-        if (this.win32Resolvable(name)) { return true; }
-        if (this.linuxResolvable(name)) { return true; }
-        if (this.macResolvable(name)) { return true; }
-        if (this.customResolvable(name)) { return true; }
-        if (this.isAllCapsName(name)) { return true; }
-        if (name.length > 2 && name[0] == '_' && name[1] == '_') { return true; }
-        return false;
+        return this.isDeclaredTypeName(name) || this.knownIdentName(name) || this.builtinCallableName(name) || this.win32Resolvable(name) || this.linuxResolvable(name) || this.macResolvable(name) || this.customResolvable(name) || this.isAllCapsName(name) || (name.length > 2 && name[0] == '_' && name[1] == '_');
     }
 
     // DOCS/259 -- declared names inside an anonymous body (its own locals).
@@ -3575,13 +3556,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             if (this.modExportNames[m] == name) { return true; }
         }
         // Value factories and compiler-intrinsic calls stay callable.
-        if (name.length > 4 && name.startsWith("make") && name[4] >= 'A' && name[4] <= 'Z') { return true; }
-        if (this.win32Resolvable(name)) { return true; }
-        if (this.linuxResolvable(name)) { return true; }
-        if (this.macResolvable(name)) { return true; }
-        if (this.customResolvable(name)) { return true; }
-        if (this.isAllCapsName(name)) { return true; }
-        return false;
+        return (name.length > 4 && name.startsWith("make") && name[4] >= 'A' && name[4] <= 'Z') || this.win32Resolvable(name) || this.linuxResolvable(name) || this.macResolvable(name) || this.customResolvable(name) || this.isAllCapsName(name);
     }
 
     private bool fnPtrCallScopeHas(string name) {
@@ -3933,17 +3908,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
     // Filesystem entry points whose first argument must be a file path
     // (VALUE_EXCEPTION.md).
     private bool isPathFirstArgMethod(string m) {
-        if (m == "readString" || m == "readFile") { return true; }
-        if (m == "readBytes" || m == "writeString") { return true; }
-        if (m == "writeFile" || m == "writeBytes") { return true; }
-        if (m == "exists" || m == "delete") { return true; }
-        if (m == "deleteFile" || m == "rename") { return true; }
-        if (m == "copy" || m == "mkdir") { return true; }
-        if (m == "createDirectory" || m == "createDir") { return true; }
-        if (m == "directoryExists" || m == "folderExists") { return true; }
-        if (m == "isFile" || m == "isDirectory") { return true; }
-        if (m == "size" || m == "listFiles") { return true; }
-        return false;
+        return m == "readString" || m == "readFile" || m == "readBytes" || m == "writeString" || m == "writeFile" || m == "writeBytes" || m == "exists" || m == "delete" || m == "deleteFile" || m == "rename" || m == "copy" || m == "mkdir" || m == "createDirectory" || m == "createDir" || m == "directoryExists" || m == "folderExists" || m == "isFile" || m == "isDirectory" || m == "size" || m == "listFiles";
     }
 
     private void checkFreePathValueException(Node call) {
@@ -3984,12 +3949,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
 
     private bool looksLikeUrl(string s) {
         string lo = s.toLower();
-        if (lo.startsWith("http://") || lo.startsWith("https://")) { return true; }
-        if (lo.startsWith("http:") || lo.startsWith("https:")) { return true; }
-        if (lo.startsWith("ftp://") || lo.startsWith("ftps://")) { return true; }
-        if (lo.startsWith("file://")) { return true; }
-        if (lo.startsWith("www.")) { return true; }
-        return false;
+        return lo.startsWith("http://") || lo.startsWith("https://") || lo.startsWith("http:") || lo.startsWith("https:") || lo.startsWith("ftp://") || lo.startsWith("ftps://") || lo.startsWith("file://") || lo.startsWith("www.");
     }
 
     // A literal is an unusable local path when it is empty, carries
