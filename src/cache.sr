@@ -679,7 +679,9 @@ class BcTextWriter {
         this.handle = h;
         // Heap-allocated capacity buffer (never a literal: lstrcatA writes
         // through the pointer), emptied in place so appends stay within it.
-        this.buf = icSpaces(this.cap);
+        // cap comes from rsCacheChunk (floor 256), so no non-positive
+        // guard is needed: repeat handles the count directly.
+        this.buf = " ".repeat(this.cap);
         #on WINDOWS
         lstrcpyA(this.buf, "");
         #off
@@ -731,14 +733,6 @@ public string icEnvValue(string name) {
     // Unified std: the compiler lowers fs.getenv to a native
     // GetEnvironmentVariableA that returns "" when the variable is unset.
     return fs.getenv(name);
-}
-
-// Heap string of n spaces — the writable buffer primitive for
-// BcTextWriter. The repeat builtin covers every n >= 0; the guard stays
-// because a negative count faults in native code.
-public string icSpaces(int n) {
-    if (n <= 0) { return ""; }
-    return " ".repeat(n);
 }
 
 public int icNowMillis() {
