@@ -34,13 +34,6 @@ import * from mac.libsystem;
 
 private int64 LOW_MEMORY_FLOOR = 1073741824; // 1 GiB
 
-// Writable string buffer of n bytes (spaces) for Win32 struct queries.
-private string rsBuf(int n) {
-    string r = "";
-    for (int i = 0; i < n; i++) { r += " "; }
-    return r;
-}
-
 // Little-endian DWORD at byte offset `off` in a string buffer.
 private int rsDword(string buf, int off) {
     int v = 0;
@@ -64,7 +57,7 @@ private int rsDword(string buf, int off) {
 // probed on Mac hardware): sysctlbyname hw.ncpu (the MAC.md-blessed shape;
 // there is NO /proc on macOS), floored at 1 the same way.
 public int rsCpuThreadCount() {
-    string buf = rsBuf(48);
+    string buf = " ".repeat(48);
     #on WINDOWS
     GetSystemInfo(buf);
     #off
@@ -103,7 +96,7 @@ public int rsCpuThreadCount() {
 // so the /proc helpers below stay LINUX-only. The MAC early return defines
 // `ok` exactly like the LINUX one so the shared tail still compiles.
 private int64 rsRamField(int startOff) {
-    string buf = rsBuf(64);
+    string buf = " ".repeat(64);
     #on WINDOWS
     memset(buf, 0, 64);
     lstrcpyA(buf, "@");
