@@ -24,12 +24,9 @@ string projJoin(string root, string path) {
     if (path.length > 0 && (path[0] == '/' || path[0] == '\\')) {
         return root + path;
     }
-    // Linux joins with `/` (mirrors silverc/compiler/bcache.sr resolveRel);
-    // dual-separator scanning everywhere else is untouched. MAC joins with
-    // `/` too (MAC.md section 5b).
-    #on LINUX
-    return root + "/" + path;
-    #on MAC
+    // Linux and MAC join with `/` (mirrors silverc/compiler/bcache.sr
+    // resolveRel); dual-separator scanning everywhere else is untouched.
+    #on LINUX or MAC
     return root + "/" + path;
     #off
     return root + "\\" + path;
@@ -172,9 +169,7 @@ bool projIsExcluded(string rel, string[] excludes) {
 // ---------------------------------------------------------------------------
 
 bool qsIsBundle(string content) {
-    if (content.length < 6) { return false; }
-    return content[0] == 'Q' && content[1] == 'S' && content[2] == 'L'
-        && content[3] == 'I' && content[4] == 'B' && content[5] == '2';
+    return content.startsWith("QSLIB2");
 }
 
 // Read a fixed 4-byte base-255 big-endian u32 at pos (digit = byte - 1).
@@ -221,9 +216,7 @@ string[] projWalk(string root, string relDir, string[] excludes) {
     // Native separator per target inside walk-relative joins only;
     // scanning (projDirname/projIsExcluded) stays dual-separator.
     string relSep = "\\";
-    #on LINUX
-    relSep = "/";
-    #on MAC
+    #on LINUX or MAC
     relSep = "/";
     #off
     string[] names = folder.getFiles(dir);
@@ -297,7 +290,7 @@ string projCollectionLiteral(string path) {
 }
 
 void projCollectionFail(string path, int line) {
-    printline("UnknownCollectionException: unknown collection was tried to be collected \"" + path + "\" at line " + line.toString());
+    printline("UnknownCollectionException: unknown collection was tried to be collected \"" + path + "\" at line " + (string)line);
     exit(1);
 }
 
@@ -330,9 +323,7 @@ string projExpandCollections(string source, string root, string collections) {
                 projCollectionFail(path, line);
             }
             string colSep = "\\";
-            #on LINUX
-            colSep = "/";
-            #on MAC
+            #on LINUX or MAC
             colSep = "/";
             #off
             string fullPath = projJoin(root, collections + colSep + path);
@@ -367,10 +358,7 @@ string loadProjectSource(string projectPath) {
     string entryPath = "";
     char entryFrom = '/';
     string entrySep = "\\";
-    #on LINUX
-    entryFrom = '\\';
-    entrySep = "/";
-    #on MAC
+    #on LINUX or MAC
     entryFrom = '\\';
     entrySep = "/";
     #off
