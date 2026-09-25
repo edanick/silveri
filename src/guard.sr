@@ -1,7 +1,6 @@
 mod export guard;
 
 import ast;
-import cli;
 
 class GuardVar {
     public prop string name;
