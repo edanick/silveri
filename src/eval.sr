@@ -289,15 +289,9 @@ class Evaluator {
             #on WINDOWS
             Sleep(1);
             #off
-            #on LINUX
-            int[] tsGc = new int[2];
-            tsGc[0] = 0;
-            tsGc[1] = 1000000;
-            int[] remGc = new int[2];
-            nanosleep(tsGc, remGc);
-            #on MAC
-            // MAC (additive, code-only -- MAC.md section 10, UNVALIDATED):
-            // same 1 ms nanosleep yield via mac.libsystem.
+            #on LINUX or MAC
+            // POSIX 1 ms nanosleep yield (MAC side code-only -- MAC.md
+            // section 10, UNVALIDATED until probed on Mac hardware).
             int[] tsGc = new int[2];
             tsGc[0] = 0;
             tsGc[1] = 1000000;
@@ -446,8 +440,7 @@ class Evaluator {
     // The raw Win32 exports the interpreter's callBuiltin can execute,
     // mapped to their owning DLL.
     public string win32DllForFn(string fn) {
-        if (fn == "keybd_event" || fn == "mouse_event" || fn == "VkKeyScanA" || fn == "GetKeyState" || fn == "GetAsyncKeyState" || fn == "MapVirtualKeyA" || fn == "GetCursorPos" || fn == "SetCursorPos" || fn == "SendInput" || fn == "SetCursor" || fn == "ClipCursor" || fn == "GetClipCursor" || fn == "GetDoubleClickTime" || fn == "SetDoubleClickTime" || fn == "RegisterHotKey" || fn == "UnregisterHotKey" || fn == "MessageBeep" || fn == "RegisterRawInputDevices" || fn == "GetRawInputData" || fn == "GetRawInputDeviceList") { return "user32.dll"; }
-        if (fn == "GetForegroundWindow" || fn == "GetWindowTextA" || fn == "GetWindowThreadProcessId" || fn == "RegisterClassExA" || fn == "CreateWindowExA" || fn == "ShowWindow" || fn == "UpdateWindow" || fn == "SetWindowTextA" || fn == "DestroyWindow" || fn == "GetSystemMetrics" || fn == "LoadImageA" || fn == "SendMessageA" || fn == "SetFocus" || fn == "SetForegroundWindow" || fn == "PeekMessageA" || fn == "ScreenToClient" || fn == "GetClientRect" || fn == "MessageBoxA") { return "user32.dll"; }
+        if (fn == "keybd_event" || fn == "mouse_event" || fn == "VkKeyScanA" || fn == "GetKeyState" || fn == "GetAsyncKeyState" || fn == "MapVirtualKeyA" || fn == "GetCursorPos" || fn == "SetCursorPos" || fn == "SendInput" || fn == "SetCursor" || fn == "ClipCursor" || fn == "GetClipCursor" || fn == "GetDoubleClickTime" || fn == "SetDoubleClickTime" || fn == "RegisterHotKey" || fn == "UnregisterHotKey" || fn == "MessageBeep" || fn == "RegisterRawInputDevices" || fn == "GetRawInputData" || fn == "GetRawInputDeviceList" || fn == "GetForegroundWindow" || fn == "GetWindowTextA" || fn == "GetWindowThreadProcessId" || fn == "RegisterClassExA" || fn == "CreateWindowExA" || fn == "ShowWindow" || fn == "UpdateWindow" || fn == "SetWindowTextA" || fn == "DestroyWindow" || fn == "GetSystemMetrics" || fn == "LoadImageA" || fn == "SendMessageA" || fn == "SetFocus" || fn == "SetForegroundWindow" || fn == "PeekMessageA" || fn == "ScreenToClient" || fn == "GetClientRect" || fn == "MessageBoxA") { return "user32.dll"; }
         if (fn == "OpenProcess" || fn == "QueryFullProcessImageNameA" || fn == "CloseHandle" || fn == "GetModuleHandleA" || fn == "GetSystemInfo" || fn == "GlobalMemoryStatusEx"
             // std/time.sr's folded WINDOWS now() body calls the QPC pair raw
             // (the v2 fold removed the time_win indirection); the interpreter
@@ -1814,7 +1807,7 @@ class Evaluator {
             Node classDef = this.classes[cur];
             for (int i = 0; i < classDef.childCount(); i++) {
                 Node child = classDef.child(i);
-                if (child.kindOf() == ND_VAR_DECL && child.name == fieldName) {
+                if (child.kind == ND_VAR_DECL && child.name == fieldName) {
                     return child.isReadOnly;
                 }
             }
@@ -2036,30 +2029,12 @@ mirrorPut(obj, target.name, val);
                     } else {
                         GetLocalTime(gltBuf);
                     }
-                    #on LINUX
-                    int[] gltTs = new int[2];
-                    clock_gettime(0, gltTs);
-                    int64 gltSec = gltTs[0];
-                    int64 gltNsec = gltTs[1];
-                    int[] gltTm = new int[7];
-                    if (node.name == "GetSystemTime") {
-                        gmtime_r(&gltSec, gltTm);
-                    } else {
-                        localtime_r(&gltSec, gltTm);
-                    }
-                    int gltYr = 1900 + ((gltTm[2] >> 32) & 0xFFFFFFFF);
-                    int gltMo = 1 + (gltTm[2] & 0xFFFFFFFF);
-                    int gltDay = (gltTm[1] >> 32) & 0xFFFFFFFF;
-                    int gltHr = gltTm[1] & 0xFFFFFFFF;
-                    int gltMi = (gltTm[0] >> 32) & 0xFFFFFFFF;
-                    int gltSe = gltTm[0] & 0xFFFFFFFF;
-                    int gltMs = int(gltNsec / 1000000);
-                    gltBuf[0] = gltYr | (gltMo << 16) | (gltDay << 48);
-                    gltBuf[1] = gltHr | (gltMi << 16) | (gltSe << 32) | (gltMs << 48);
-                    #on MAC
-                    // MAC (additive, code-only -- MAC.md section 10,
-                    // UNVALIDATED until probed on Mac hardware): same shape
-                    // as LINUX but clock_gettime id 6 on Darwin (NOT 1).
+                    #on LINUX or MAC
+                    // POSIX wall-clock fill (MAC side code-only -- MAC.md
+                    // section 10, UNVALIDATED until probed on Mac hardware):
+                    // clock_gettime(CLOCK_REALTIME = 0) + localtime_r /
+                    // gmtime_r with the same SYSTEMTIME packing on both
+                    // targets (CLOCK_MONOTONIC id 6 is for QPC, not here).
                     int[] gltTs = new int[2];
                     clock_gettime(0, gltTs);
                     int64 gltSec = gltTs[0];
@@ -2688,7 +2663,7 @@ mirrorPut(obj, target.name, val);
             Node classDef = this.classes[chain[ci]];
             for (int i = 0; i < classDef.childCount(); i++) {
                 Node child = classDef.child(i);
-                if (child.kindOf() == ND_VAR_DECL) {
+                if (child.kind == ND_VAR_DECL) {
                     if (child.childCount() > 0) {
                         Value fv = this.evalExpr(child.child(0), this.globals);
                         mirrorPut(inst, child.name, fv);
@@ -2799,7 +2774,7 @@ mirrorPut(obj, target.name, val);
             Node classDef = this.classes[cur];
             for (int i = 0; i < classDef.childCount(); i++) {
                 Node child = classDef.child(i);
-                if (child.kindOf() == ND_VAR_DECL && child.name == fieldName) {
+                if (child.kind == ND_VAR_DECL && child.name == fieldName) {
                     return child.typeHint == "string";
                 }
             }
@@ -2819,7 +2794,7 @@ mirrorPut(obj, target.name, val);
             Node classDef = this.classes[cur];
             for (int i = 0; i < classDef.childCount(); i++) {
                 Node child = classDef.child(i);
-                if (child.kindOf() == ND_VAR_DECL && child.name == fieldName) {
+                if (child.kind == ND_VAR_DECL && child.name == fieldName) {
                     return child.typeHint == "void ()";
                 }
             }
