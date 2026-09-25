@@ -72,13 +72,6 @@ class Lexer {
         return null;
     }
 
-    private char? peekNext() {
-        if (this.pos + 1 < this.src.length) {
-            return this.src[this.pos + 1];
-        }
-        return null;
-    }
-
     private char? advance() {
         if (this.pos >= this.src.length) { return null; }
         char c = this.src[this.pos];
@@ -130,10 +123,6 @@ class Lexer {
         return depth == 0;
     }
 
-    private Token makeToken(int kind, string text) {
-        return new Token(kind, text, this.line, this.col);
-    }
-
     private Token readString(int ln, int c) {
         string s = "";
         bool closed = false;
@@ -171,15 +160,15 @@ class Lexer {
                         }
                         if (nd > 0) {
                             char xc = char(hv);
-                            s += xc.toString();
+                            s += (string)xc;
                         } else {
                             s += "\\x";
                         }
                     }
-                    else { s += esc.toString(); }
+                    else { s += (string)esc; }
                 }
             } else {
-                s += ch.toString();
+                s += (string)ch;
             }
         }
         // SYNTAX_EXCEPTIONS.md — an unterminated literal reports the opening
@@ -187,7 +176,7 @@ class Lexer {
         if (!closed) {
             int endCol = this.lineCharLen(ln);
             if (endCol <= 0) { endCol = c; }
-            this.recordLexError("you forgot to close your string quotes at line " + ln.toString() + ", column " + endCol.toString());
+            this.recordLexError("you forgot to close your string quotes at line " + (string)ln + ", column " + (string)endCol);
         }
         Token tok = new Token(TK_STRING_LIT, s, ln, c);
         tok.strVal = s;
@@ -236,10 +225,13 @@ class Lexer {
                             hv = hv * 16 + dv;
                             nd++;
                         }
-                        if (nd > 0) { text += char(hv).toString(); }
+                        if (nd > 0) {
+                            char xh = char(hv);
+                            text += (string)xh;
+                        }
                         else { text += "\\x"; }
                     }
-                    else { text += esc.toString(); }
+                    else { text += (string)esc; }
                 }
                 continue;
             }
@@ -265,7 +257,7 @@ class Lexer {
                         depth++;
                         hole += "{";
                     } else if (c2 == '"' || c2 == '\'') {
-                        hole += c2.toString();
+                        hole += (string)c2;
                         hole = this.ipCopyQuoted(c2, hole);
                     } else if (c2 == '$' && this.peek() == '"') {
                         hole += "$";
@@ -274,10 +266,11 @@ class Lexer {
                         hole = this.ipCopyQuoted('"', hole);
                     } else if (c2 == '\\' && this.pos < this.src.length) {
                         hole += "\\";
-                        hole += this.src[this.pos].toString();
+                        char nx = this.src[this.pos];
+                        hole += (string)nx;
                         this.advance();
                     } else {
-                        hole += c2.toString();
+                        hole += (string)c2;
                     }
                 }
                 if (!holeClosed) { closed = false; break; }
@@ -289,7 +282,7 @@ class Lexer {
                 text += "}";
                 continue;
             }
-            text += ch.toString();
+            text += (string)ch;
         }
         if (text.length > 0) {
             tok.ipKinds.add(0); tok.ipTexts.add(text); tok.ipLines.add(0); tok.ipCols.add(0);
@@ -297,7 +290,7 @@ class Lexer {
         if (!closed) {
             int endCol = this.lineCharLen(ln);
             if (endCol <= 0) { endCol = cl; }
-            this.recordLexError("you forgot to close your string quotes at line " + ln.toString() + ", column " + endCol.toString());
+            this.recordLexError("you forgot to close your string quotes at line " + (string)ln + ", column " + (string)endCol);
         }
         return tok;
     }
@@ -312,10 +305,14 @@ class Lexer {
             this.advance();
             if (c == '\\') {
                 acc += "\\";
-                if (this.pos < this.src.length) { acc += this.src[this.pos].toString(); this.advance(); }
+                if (this.pos < this.src.length) {
+                    char nx = this.src[this.pos];
+                    acc += (string)nx;
+                    this.advance();
+                }
                 continue;
             }
-            acc += c.toString();
+            acc += (string)c;
             if (c == q) { return acc; }
         }
         return acc;
@@ -362,23 +359,23 @@ class Lexer {
         if (this.pos < this.src.length && this.src[this.pos] == '\'') {
             this.advance();
         }
-        Token tok = new Token(TK_CHAR_LIT, ch.toString(), ln, c);
+        Token tok = new Token(TK_CHAR_LIT, (string)ch, ln, c);
         tok.charVal = ch;
         return tok;
     }
 
     private Token readNumber(char first, int ln, int c) {
-        string s = first.toString();
+        string s = (string)first;
         bool isFloat = false;
         if (first == '0' && this.pos < this.src.length) {
             char next = this.src[this.pos];
             if (next == 'x' || next == 'X') {
-                s += next.toString();
+                s += (string)next;
                 this.advance();
                 while (this.pos < this.src.length) {
                     char ch = this.src[this.pos];
                     if (isHexDigit(ch)) {
-                        s += ch.toString();
+                        s += (string)ch;
                         this.advance();
                     } else {
                         break;
@@ -387,12 +384,12 @@ class Lexer {
                 return this.makeIntToken(s, 16, ln, c);
             }
             if (next == 'b' || next == 'B') {
-                s += next.toString();
+                s += (string)next;
                 this.advance();
                 while (this.pos < this.src.length) {
                     char ch = this.src[this.pos];
                     if (ch == '0' || ch == '1') {
-                        s += ch.toString();
+                        s += (string)ch;
                         this.advance();
                     } else {
                         break;
@@ -404,23 +401,23 @@ class Lexer {
         while (this.pos < this.src.length) {
             char ch = this.src[this.pos];
             if (ch.isDigit() || ch == '_') {
-                s += ch.toString();
+                s += (string)ch;
                 this.advance();
             } else if (ch == '.' && !isFloat) {
                 if (this.pos + 1 < this.src.length && this.src[this.pos + 1] == '.') {
                     break;
                 }
                 isFloat = true;
-                s += ch.toString();
+                s += (string)ch;
                 this.advance();
             } else if (ch == 'e' || ch == 'E') {
                 isFloat = true;
-                s += ch.toString();
+                s += (string)ch;
                 this.advance();
                 if (this.pos < this.src.length) {
                     char sign = this.src[this.pos];
                     if (sign == '+' || sign == '-') {
-                        s += sign.toString();
+                        s += (string)sign;
                         this.advance();
                     }
                 }
@@ -428,7 +425,7 @@ class Lexer {
                 break;
             }
         }
-        string clean = removeUnderscores(s);
+        string clean = s.replaceAll("_", "");
         if (isFloat) {
             Token tok = new Token(TK_FLOAT_LIT, clean, ln, c);
             tok.strVal = clean;
@@ -440,7 +437,7 @@ class Lexer {
     }
 
     private Token makeIntToken(string s, int base, int ln, int c) {
-        string clean = removeUnderscores(s);
+        string clean = s.replaceAll("_", "");
         Token tok = new Token(TK_INT_LIT, clean, ln, c);
         if (base == 16) {
             string hex = clean.substr(2);
@@ -473,11 +470,11 @@ class Lexer {
     }
 
     private Token readIdentifierOrKeyword(char first, int ln, int c) {
-        string s = first.toString();
+        string s = (string)first;
         while (this.pos < this.src.length) {
             char ch = this.src[this.pos];
             if (ch.isAlphaNum() || ch == '_') {
-                s += ch.toString();
+                s += (string)ch;
                 this.advance();
             } else {
                 break;
@@ -659,7 +656,7 @@ class Lexer {
         if (c == '@') { return new Token(TK_AT, "@", ln, cl); }
         if (c == '_') { return new Token(TK_UNDERSCORE, "_", ln, cl); }
 
-        printline("Warning: unexpected character '" + c.toString() + "' at " + ln.toString() + ":" + cl.toString());
+        printline("Warning: unexpected character '" + (string)c + "' at " + (string)ln + ":" + (string)cl);
         return null;
     }
 }
@@ -697,8 +694,7 @@ int keywordKind(string s) {
     if (s == "as") { return TK_AS; }
     if (s == "new") { return TK_NEW; }
     if (s == "const") { return TK_CONST; }
-    if (s == "true") { return TK_BOOL_LIT; }
-    if (s == "false") { return TK_BOOL_LIT; }
+    if (s == "true" || s == "false") { return TK_BOOL_LIT; }
     if (s == "null") { return TK_NULL_LIT; }
     if (s == "public") { return TK_PUBLIC; }
     if (s == "private") { return TK_PRIVATE; }
@@ -737,14 +733,4 @@ int keywordKind(string s) {
 
 bool isHexDigit(char c) {
     return c.isDigit() || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
-}
-
-string removeUnderscores(string s) {
-    string result = "";
-    for (int i = 0; i < s.length; i++) {
-        if (s[i] != '_') {
-            result += s[i].toString();
-        }
-    }
-    return result;
 }
