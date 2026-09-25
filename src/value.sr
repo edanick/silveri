@@ -77,17 +77,13 @@ class Value {
 
     public bool equals(Value other) {
         if (this.tag != other.tag) {
-            if (this.tag == VAL_NULL && other.tag == VAL_NULL) { return true; }
             if (this.tag == VAL_INT && other.tag == VAL_FLOAT) {
                 return this.intVal.toFloat64() == valueToFloat(other);
             }
             if (this.tag == VAL_FLOAT && other.tag == VAL_INT) {
                 return valueToFloat(this) == other.intVal.toFloat64();
             }
-            if (this.tag == VAL_BYTE && other.tag == VAL_INT) {
-                return this.intVal == other.intVal;
-            }
-            if (this.tag == VAL_INT && other.tag == VAL_BYTE) {
+            if ((this.tag == VAL_BYTE && other.tag == VAL_INT) || (this.tag == VAL_INT && other.tag == VAL_BYTE)) {
                 return this.intVal == other.intVal;
             }
             // The compiled runtime stores `char` as an integer code point, so
@@ -181,9 +177,8 @@ class Value {
     }
 
     public float64 toFloat() {
-        if (this.tag == VAL_FLOAT) { return floatStrToF64(this.strVal); }
+        if (this.tag == VAL_FLOAT || this.tag == VAL_STRING) { return floatStrToF64(this.strVal); }
         if (this.tag == VAL_INT || this.tag == VAL_BYTE) { return this.intVal.toFloat64(); }
-        if (this.tag == VAL_STRING) { return floatStrToF64(this.strVal); }
         return 0.0;
     }
 }
@@ -581,17 +576,13 @@ float64 floatStrToF64(string s) {
 // Convert a Value to a float64: float Values parse their decimal string,
 // int/byte Values convert numerically, string Values parse as a number.
 float64 valueToFloat(Value v) {
-    if (v.tag == VAL_FLOAT) {
+    if (v.tag == VAL_FLOAT || v.tag == VAL_STRING) {
         float64 r = floatStrToF64(v.strVal);
         return r;
     }
     if (v.tag == VAL_INT || v.tag == VAL_BYTE) {
         int64 iv = v.intVal;
         float64 r = iv.toFloat64();
-        return r;
-    }
-    if (v.tag == VAL_STRING) {
-        float64 r = floatStrToF64(v.strVal);
         return r;
     }
     return 0.0;

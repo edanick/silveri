@@ -192,10 +192,6 @@ class Node {
         this.children = newChildren;
     }
 
-    public int kindOf() {
-        return this.kind;
-    }
-
     public Node child(int i) {
         if (i >= 0 && i < this.children.length) {
             return this.children[i];
