@@ -733,17 +733,12 @@ public string icEnvValue(string name) {
     return fs.getenv(name);
 }
 
-// Heap string of n spaces built with one join (linear) — the writable
-// buffer primitive for BcTextWriter.
+// Heap string of n spaces — the writable buffer primitive for
+// BcTextWriter. The repeat builtin covers every n >= 0; the guard stays
+// because a negative count faults in native code.
 public string icSpaces(int n) {
     if (n <= 0) { return ""; }
-    string unit = "                    ";
-    string[] parts = [];
-    int full = n / 20;
-    for (int i = 0; i < full; i++) { parts.add(unit); }
-    int rem = n - full * 20;
-    if (rem > 0) { parts.add(icSliceRange(unit, 0, rem)); }
-    return parts.join("");
+    return " ".repeat(n);
 }
 
 public int icNowMillis() {
