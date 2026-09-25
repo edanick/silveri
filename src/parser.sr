@@ -240,6 +240,7 @@ class Parser {
             || name == "exit" || name == "input"
             || name == "sleep" || name == "assert"
             || name == "strlen" || name == "now") { return true; }
+        return false;
     }
 
     // DOCS/259 -- names that resolve everywhere without a declaration: the
@@ -3952,11 +3953,6 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         return lo.startsWith("http://") || lo.startsWith("https://") || lo.startsWith("http:") || lo.startsWith("https:") || lo.startsWith("ftp://") || lo.startsWith("ftps://") || lo.startsWith("file://") || lo.startsWith("www.");
     }
 
-    // A literal is an unusable local path when it is empty, carries
-    // characters Windows forbids in paths, or sits on a drive that does not
-    // exist. Drive validity is probed with folder.exists on the bare root:
-    // the folder listing builtin fails gracefully on nonexistent drives
-    // where the file attribute builtins crash.
     // A literal is an unusable local path when it is empty or carries
     // characters Windows forbids in paths. Drive existence cannot be probed
     // safely at parse time (the fs builtins are only stable once the
@@ -3966,8 +3962,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         if (s.length == 0) { return true; }
         for (int i = 0; i < s.length; i++) {
             char c = s[i];
-            if (c == '<' || c == '>' || c == '"' || c == '|' || c == '?' || c == '*') { return true; }
-            if (c < 32) { return true; }
+            if (c == '<' || c == '>' || c == '"' || c == '|' || c == '?' || c == '*' || c < 32) { return true; }
         }
         return false;
     }
