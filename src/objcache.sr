@@ -3,14 +3,14 @@ mod export objcache;
 import * from cache;
 
 // OVERHAUL.md --cache-object — persistent per-target object cache for the
-// interpreter, plus the built-in object runner (the third execution tier
-// beside .sr AST interpretation and .srbc bytecode interpretation).
+// interpreter, plus the built-in object validation tier (the third execution
+// tier beside .sr AST interpretation and .srbc bytecode interpretation).
 //
 // One entry per project per target OS + architecture, a tier above
-// --cache-bytecode: object emission packs the synced .srbc text when the
-// bytecode tier hit and falls back to source otherwise, so passing both
-// flags together is the fastest configuration — but --cache-object works
-// on its own too. There is no --os in silveri: the target comes from host
+// --cache-bytecode: object emission packs genuine machine code and falls
+// back to nothing — the payload is always emittable, so passing both flags
+// together is the fastest configuration, but --cache-object works on its
+// own too. There is no --os in silveri: the target comes from host
 // auto-detection (interpHostOs in main.sr), and the architecture follows
 // the target — x86-64 for Windows/Linux, aarch64 for mac.
 //
@@ -23,13 +23,99 @@ import * from cache;
 //
 // (On Linux/macOS the same tree applies with / separators.)
 //
-// - The extension is always .o (never .obj); the contents are the proper
-//   linkable object format for the target, emitted below — COFF on Windows,
-//   ELF relocatable on Linux, Mach-O object on macOS. No external linker,
-//   assembler, or object toolchain of any kind (FORBIDDEN.md): the
-//   containers are assembled here with plain byte pushes over int[]
-//   buffers, mirroring silverc/compiler/objcache.sr byte-exactly so cached
-//   objects validate across the toolchain.
+// Object format (v4 — mirrors silverc-rs src/objcache.rs and
+// silverc/compiler/objcache.sr byte-exactly):
+//
+// The extension is always .o (never .obj); the contents are the proper
+// relocatable object format for the target, emitted by the built-in writers
+// below — COFF (IMAGE_FILE_MACHINE_AMD64) on Windows, ELF relocatable
+// (ET_REL, EM_X86_64) on Linux, Mach-O object (MH_OBJECT, ARM64) on mac.
+// No external linker, assembler, or object toolchain of any kind
+// (FORBIDDEN.md): the containers are assembled here with plain byte pushes
+// over int[] buffers so cached objects validate across the toolchain.
+//
+// Every object carries three real sections plus the container's symbol and
+// relocation tables:
+//
+// - .text — GENUINE MACHINE CODE assembled by the interpreter's own Silver
+//   emitter (interpBuildUnit below, following the silverc port's approach:
+//   one entry stub per file, cross-tier references left as relocations).
+//   Never source text, never a token stream — the v3 era packed source/.srbc
+//   text into .text and is gone. On x86-64 targets the stub is real x86-64
+//   (frame prologue, hash materialization, a REL32 call to the runner seam,
+//   an ABS64 data reference, epilogue); on mac it is real ARM64
+//   (hash materialization + ret). v3 objects (SLVOBJ1 note, _slvobj marker,
+//   no relocations) fail the v4 note parse and are treated as stale
+//   (re-emitted), never as a hard error.
+// - .rdata — the owning file's real data bytes (source hash, source length,
+//   emission stamp, owner key). May be empty in principle; never text.
+// - .slvnote — the Silver note (magic SLVOBJ2, emitting flag set, source
+//   FNV-1 hash, emission stamp, globals-block size, the full import list,
+//   and the owning file key). The planner reads this for freshness.
+//
+// Symbol tables hold, in the reference order (section anchors, defined
+// functions, the data anchor, then undefined symbols): the section anchors,
+// one FUNC symbol for the file's entry stub, one global data-anchor symbol
+// (__slv_data_<file>_<hash>, offset 0 in .rdata, spelled by databName exactly
+// like the references), and UNDEF entries for the referenced seam symbol
+// (__slv_interp_run — the future native runner, see below).
+//
+// Relocations cover the position-dependent sites in .text: REL32 (the E8
+// call to the runner seam) and ABS64 (the 8-byte absolute data address).
+// Intra-stub relative flow is already final and carries no relocation,
+// exactly like a conventional compiler's output.
+//
+// ///////////////////////////////////////////////////////////////////////////
+// // NATIVE-RUNNER BOUNDARY — loud, documented, deliberate (read this all). //
+// ///////////////////////////////////////////////////////////////////////////
+// //
+// // The .o files above are GENUINE relocatable machine-code objects (real
+// // code bytes, real symbols, real relocations, validated byte-shape), but
+// // in-process NATIVE EXECUTION from .text is NOT implemented in this task
+// // and does not happen: there is no loader, no mmap-executable mapping, no
+// // relocation applier, and no call into the emitted bytes anywhere in this
+// // module. That runner is the explicit follow-up.
+// //
+// // What happens instead (the execution path, see main.sr): finish() parses
+// // every cached + refreshed object back with the built-in readers
+// // (container magic, target machine, section spans, symbol tables,
+// // relocations, SLVOBJ2 note, emitting flag set, source hash) and fails
+// // LOUDLY on any mismatch — never executing stale bytes. verifyObject()
+// // re-checks the entry object on the execution path itself. Execution then
+// // proceeds from the VERIFIED tokens the driver already holds (synced .srbc
+// // text on a bytecode-tier hit, freshly lexed source otherwise) through the
+// // existing AST/bytecode tiers. The validated object is therefore a
+// // freshness + integrity carrier today and becomes the runnable payload
+// // when the native runner lands — everything up to the runner is genuine.
+// //
+// // The seam is already named in every emitted object: the stub calls the
+// // UNDEF FUNC symbol __slv_interp_run, which the future runner will define
+// // (bind) at load time. Any dumpbin/nm/objdump of an interpreter-written
+// // .o shows the pending import outright.
+// //
+////////////////////////////////////////////////////////////////////////////////
+//
+// Freshness (mirrors the references exactly):
+//
+// The per-file FNV-1 hash + source length (the bytecode tier's size proxy in
+// place of mtimes) is compared against the per-target project.sbcr record
+// (v3 — unchanged fields, existing records are reused), which additionally
+// keys on the emitting flag set, so a flag switch re-emits. Fresh means: the
+// record matches (hash + size), the .o exists, AND its v4 note peeks with the
+// expected flag set + hash (plan() in the references). Anything else —
+// including a v3-era object or a compiler-emitted object whose flag set is
+// not "interp" — is stale (re-emitted), never a hard error on the plan path
+// and never silently reused. Unlike the compilers — which note every project
+// file per run — the interpreter notes its single entry per run, so finish()
+// never drops unnoted records (dropping would evict other entries' objects
+// when alternating entry files).
+//
+// Cross-acceptance: a compiler-emitted windows-x86-64 object parses with the
+// readers below (same containers, same SLVOBJ2 shape) and is then either
+// fresh-planned (same flags + hash, which only an "interp" emitter can
+// produce) or detected as a flag-set/hash mismatch and re-emitted — accepted
+// structurally, never executed stale.
+//
 // - The record is the same .sbcr family (v3: v2 fields plus the emitting
 //   flag-set string), with text companion project.sbcri. Each <os>-<arch>
 //   directory carries its own record. The flag set is the constant "interp"
@@ -37,17 +123,6 @@ import * from cache;
 //   exists so the machinery — and cross-tool validation — matches the
 //   compilers: a compiler-emitted object reports a flag-set switch instead
 //   of being silently reused).
-// - Freshness is tracked per entry by source FNV-1 hash plus source length
-//   (the same size proxy the bytecode tier uses in place of mtimes); only
-//   .o files whose source hash changed are re-emitted. Unlike the compilers
-//   — which note every project file per run — the interpreter notes its
-//   single entry per run, so finish() never drops unnoted records (dropping
-//   would evict other entries' objects when alternating entry files).
-// - The built-in unify step validates the cached + refreshed objects
-//   (container magic, target machine/cpu, flag set, per-file hash) with the
-//   exact reference error strings, then the runner executes from the
-//   validated .o payload (ocTextSpan): synced .srbc text decodes straight
-//   to tokens, source text lexes fresh.
 //
 // Binary artifacts (the v3 record, the .o objects) ride file.writeBytes over
 // int[] buffers, so NUL bytes survive on every target; file.read (byte[],
@@ -72,6 +147,59 @@ public string objFlagKey() {
     return "interp";
 }
 
+// Linker-provided singleton symbols (writable blocks laid out once by the
+// linker, referenced from any object). Spelled exactly like the references
+// so cross-tool readers agree; the interpreter's own stub references only
+// the runner seam below, but the names stay for cross-acceptance.
+public string objSingletonExc() { return "__slv_exc_state"; }
+public string objSingletonTray() { return "__slv_tray_state"; }
+public string objSingletonGlobals() { return "__slv_globals"; }
+
+// Prefix of the per-object data-anchor symbol (global, offset 0 in
+// .rdata) and of undefined import symbols (the suffix is the decimal index
+// into the note's import list: __slv_imp_3). Spelled exactly like the
+// references.
+public string objDatabPrefix() { return "__slv_data_"; }
+public string objImportPrefix() { return "__slv_imp_"; }
+
+// The seam symbol every interpreter stub calls (UNDEF FUNC in our objects):
+// the future in-process native runner's entry point. Naming it here — in
+// code AND in every emitted symbol table — is the loud marker of the
+// native-runner boundary above.
+public string objInterpRunSym() { return "__slv_interp_run"; }
+
+// Per-file entry-stub symbol: sanitized owner key plus an FNV-1 suffix so
+// distinct files can never collide after sanitizing. Deterministic per
+// (key, content hash).
+public string objInterpEntrySym(string filekey, int64 hash) {
+    string[] parts = [];
+    for (int i = 0; i < filekey.length; i++) {
+        char c = filekey[i];
+        bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+        if (ok) { parts.add((string)c); }
+        else { parts.add("_"); }
+    }
+    int64 low = hash & 0xFFFFFFFF;
+    return "__slv_interp_" + parts.join("") + "_" + objHex8(low);
+}
+
+// Global data-anchor symbol name for `filekey`: sanitized path plus an
+// FNV-1 suffix so distinct files can never collide after sanitizing
+// (a/b.sr vs a_b.sr). Mirrors the references byte-exactly (same sanitize,
+// same {:08x} of the low 32 bits of FNV-1 over the key).
+public string databName(string filekey) {
+    string[] parts = [];
+    for (int i = 0; i < filekey.length; i++) {
+        char c = filekey[i];
+        bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+        if (ok) { parts.add((string)c); }
+        else { parts.add("_"); }
+    }
+    int64 h = icFnv1(filekey);
+    int64 low = h & 0xFFFFFFFF;
+    return objDatabPrefix() + parts.join("") + "_" + objHex8(low);
+}
+
 // 16 lowercase hex digits of a 64-bit value (the {:016x} shape the record
 // companions use for FNV-1 hashes).
 public string objHex16(int64 v) {
@@ -84,14 +212,26 @@ public string objHex16(int64 v) {
     return parts.join("");
 }
 
+// 8 lowercase hex digits of the low 32 bits (the {:08x} shape of data
+// anchors and entry symbols).
+public string objHex8(int64 v) {
+    string digits = "0123456789abcdef";
+    string[] parts = [];
+    for (int i = 0; i < 8; i++) {
+        int nib = int((v >> ((7 - i) * 4)) & 0xF);
+        parts.add(digits[nib..nib + 1]);
+    }
+    return parts.join("");
+}
+
 // Escape a text-companion field so the output never contains NUL bytes or
-// line breaks (mirrors silverc-rs escape_text; companion paths never carry
-// NULs from disk, so only backslash/newline/CR need mappings).
+// line breaks (mirrors the reference escape_text).
 public string objEscapeText(string s) {
     string[] parts = [];
     for (int i = 0; i < s.length; i++) {
         char c = s[i];
         if (c == '\\') { parts.add("\\\\"); }
+        else if (c == char(0)) { parts.add("\\0"); }
         else if (c == '\n') { parts.add("\\n"); }
         else if (c == '\r') { parts.add("\\r"); }
         else { parts.add((string)c); }
@@ -157,8 +297,7 @@ private int objIsLocalKey(string key) {
 }
 
 // In-memory byte sink for container emission. Methods grow the object's own
-// buffer; callers pass payload/note arrays read-only and take the finished
-// buffer out once.
+// buffer; callers take the finished buffer out once.
 class ObjWriter {
     public prop int[] out;
 
@@ -215,7 +354,7 @@ class ObjWriter {
         }
     }
 
-    // Length-prefixed (u32 LE) string field for the .sbcr record.
+    // Length-prefixed (u32 LE) string field for notes and records.
     public void strField(string s) {
         this.u32(s.length);
         this.rawStr(s);
@@ -234,196 +373,156 @@ class ObjWriter {
         this.u64(align);
         this.u64(entsize);
     }
+}
 
-    // Minimal COFF relocatable object (Windows target): IMAGE_FILE_HEADER
-    // (Machine = AMD64) + .text (the payload) + .slvnote (the Silver note)
-    // + one external symbol. Built only with byte pushes.
-    public void emitCoff(int[] payload, int[] note, int64 stamp) {
-        int textPad = (payload.length + 3) / 4 * 4;
-        int notePad = (note.length + 3) / 4 * 4;
-        int textOff = 100;
-        int noteOff = textOff + textPad;
-        int symOff = noteOff + notePad;
-        this.u16(34404);
-        this.u16(2);
-        this.u32(stamp);
-        this.u32(symOff);
-        this.u32(1);
-        this.u16(0);
-        this.u16(0);
-        this.rawName(".text", 8);
-        this.u32(payload.length);
-        this.u32(0);
-        this.u32(textPad);
-        this.u32(textOff);
-        this.u32(0);
-        this.u32(0);
-        this.u16(0);
-        this.u16(0);
-        this.u32(1615855648);
-        this.rawName(".slvnote", 8);
-        this.u32(note.length);
-        this.u32(0);
-        this.u32(notePad);
-        this.u32(noteOff);
-        this.u32(0);
-        this.u32(0);
-        this.u16(0);
-        this.u16(0);
-        this.u32(1073741888);
-        this.rawPad(payload, textPad);
-        this.rawPad(note, notePad);
-        this.rawName("_slvobj", 8);
-        this.u32(0);
-        this.u16(1);
-        this.u16(32);
-        this.u8(2);
-        this.u8(0);
+// One emitted object unit: the owning file's machine code + data with full
+// symbol and relocation tables. Built by interpBuildUnit (the interpreter's
+// own Silver emitter); serialized by emitObject. Mirrors the references'
+// unit shape (defined/undefined/reloc tables sorted for determinism).
+class ObjUnit {
+    // Session-relative owner key (/-separated).
+    public prop string filekey;
+    // Machine code slice (.text).
+    public prop int[] code;
+    // Data slice (.rdata).
+    public prop int[] data;
+    // Defined function symbols (parallel arrays; offsets into code).
+    public prop string[] defNames;
+    public prop int[] defOffs;
+    public prop int[] defSizes;
+    // Global data-anchor name (databName of filekey).
+    public prop string datab;
+    // Referenced-but-elsewhere-defined Silver symbols (sorted, deduped).
+    public prop string[] undefFuncs;
+    // Referenced linker singletons (sorted; 0 = exc, 1 = tray, 2 = globals).
+    public prop int[] undefSingles;
+    // Referenced import-list indices (sorted).
+    public prop int[] undefImports;
+    // Relocations, sorted by site (parallel arrays).
+    public prop int[] relSites;
+    // 0 = Rel32 (E8 call), 1 = Abs64 (8-byte absolute address).
+    public prop int[] relKinds;
+    // 0 = Defined, 1 = Extern, 2 = Data, 3 = Singleton, 4 = Import.
+    public prop int[] relTargets;
+    // Target index (defined idx / data offset / singleton id / import idx).
+    public prop int[] relIdx;
+    // Extern target name (only for target kind 1).
+    public prop string[] relNames;
+    // Full import list (parallel arrays; deterministic across runs).
+    public prop string[] impDlls;
+    public prop string[] impNames;
+    // Whole-program globals-block size. The interpreter carries no globals
+    // block (execution stays on the AST/bytecode tiers), so this is always
+    // 0 — recorded so the note shape stays reference-exact.
+    public prop int gas;
+
+    construct {
+        this.filekey = "";
+        this.code = [];
+        this.data = [];
+        this.defNames = [];
+        this.defOffs = [];
+        this.defSizes = [];
+        this.datab = "";
+        this.undefFuncs = [];
+        this.undefSingles = [];
+        this.undefImports = [];
+        this.relSites = [];
+        this.relKinds = [];
+        this.relTargets = [];
+        this.relIdx = [];
+        this.relNames = [];
+        this.impDlls = [];
+        this.impNames = [];
+        this.gas = 0;
     }
+}
 
-    // Minimal ELF relocatable object (Linux target): ELF64 header (ET_REL,
-    // EM_X86_64) + .text (payload) + .slvnote (Silver note) + .shstrtab +
-    // .symtab + .strtab. Built only with byte pushes.
-    public void emitElf(int[] payload, int[] note) {
-        ObjWriter sw = new ObjWriter();
-        sw.u8(0);
-        sw.rawStr(".text");
-        sw.u8(0);
-        sw.rawStr(".slvnote");
-        sw.u8(0);
-        sw.rawStr(".shstrtab");
-        sw.u8(0);
-        sw.rawStr(".symtab");
-        sw.u8(0);
-        sw.rawStr(".strtab");
-        sw.u8(0);
-        int[] shstr = sw.out;
-        ObjWriter tw = new ObjWriter();
-        tw.u8(0);
-        tw.rawStr("_slvobj");
-        tw.u8(0);
-        int[] strtab = tw.out;
-        int textOff = 64;
-        int noteOff = textOff + payload.length;
-        int shstrOff = noteOff + note.length;
-        int symOff = shstrOff + shstr.length;
-        while (symOff % 8 != 0) { symOff++; }
-        int strOff = symOff + 48;
-        int shoff = strOff + strtab.length;
-        while (shoff % 8 != 0) { shoff++; }
-        this.u8(127);
-        this.rawStr("ELF");
-        this.u8(2);
-        this.u8(1);
-        this.u8(1);
-        this.u8(0);
-        for (int pi = 0; pi < 8; pi++) { this.u8(0); }
-        this.u16(1);
-        this.u16(62);
-        this.u32(1);
-        this.u64(0);
-        this.u64(0);
-        this.u64(shoff);
-        this.u32(0);
-        this.u16(64);
-        this.u16(0);
-        this.u16(0);
-        this.u16(64);
-        this.u16(6);
-        this.u16(3);
-        this.rawBytes(payload);
-        this.rawBytes(note);
-        this.rawBytes(shstr);
-        while (this.out.length < symOff) { this.u8(0); }
-        for (int zi = 0; zi < 24; zi++) { this.u8(0); }
-        this.u32(1);
-        this.u8(18);
-        this.u8(0);
-        this.u16(1);
-        this.u64(0);
-        this.u64(payload.length);
-        this.rawBytes(strtab);
-        while (this.out.length < shoff) { this.u8(0); }
-        this.sh(0, 0, 0, 0, 0, 0, 0, 0, 0);
-        this.sh(1, 1, 6, textOff, payload.length, 0, 0, 16, 0);
-        this.sh(7, 1, 0, noteOff, note.length, 0, 0, 1, 0);
-        this.sh(16, 3, 0, shstrOff, shstr.length, 0, 0, 1, 0);
-        this.sh(26, 2, 0, symOff, 48, 5, 1, 8, 24);
-        this.sh(34, 3, 0, strOff, strtab.length, 0, 0, 1, 0);
+// Native symbol tables for one emitted object (holder object, not raw
+// array parameters: arrays received as function parameters silently stop
+// growing past 8 entries in this toolchain, while prop arrays on a passed
+// object keep growing — the writer's tables scale with the symbol count,
+// so they live here). Mirrors the reference build_out_syms order.
+class ObjSymTab {
+    public prop string[] names;
+    public prop int[] sects;
+    public prop int[] vals;
+    public prop int[] funcs;
+
+    construct {
+        this.names = [];
+        this.sects = [];
+        this.vals = [];
+        this.funcs = [];
     }
+}
 
-    // Minimal Mach-O object (Mac target): mach_header_64 (ARM64, MH_OBJECT)
-    // + LC_SEGMENT_64 (__TEXT with __text payload and __slvnote sections) +
-    // LC_SYMTAB. Built only with byte pushes.
-    public void emitMacho(int[] payload, int[] note) {
-        ObjWriter tw = new ObjWriter();
-        tw.u8(0);
-        tw.rawStr("_slvobj");
-        tw.u8(0);
-        int[] strtab = tw.out;
-        int segCmdsize = 232;
-        int sizeofcmds = 256;
-        int textOff = 288;
-        int noteOff = textOff + payload.length;
-        int symOff = noteOff + note.length;
-        int strOff = symOff + 16;
-        this.u32(4277009103);
-        this.u32(16777228);
-        this.u32(0);
-        this.u32(1);
-        this.u32(2);
-        this.u32(sizeofcmds);
-        this.u32(0);
-        this.u32(0);
-        this.u32(25);
-        this.u32(segCmdsize);
-        this.rawName("__TEXT", 16);
-        this.u64(0);
-        this.u64(payload.length + note.length);
-        this.u64(textOff);
-        this.u64(payload.length + note.length);
-        this.u32(7);
-        this.u32(5);
-        this.u32(2);
-        this.u32(0);
-        this.rawName("__text", 16);
-        this.rawName("__TEXT", 16);
-        this.u64(0);
-        this.u64(payload.length);
-        this.u32(textOff);
-        this.u32(2);
-        this.u32(0);
-        this.u32(0);
-        this.u32(2147484672);
-        this.u32(0);
-        this.u32(0);
-        this.u32(0);
-        this.rawName("__slvnote", 16);
-        this.rawName("__TEXT", 16);
-        this.u64(0);
-        this.u64(note.length);
-        this.u32(noteOff);
-        this.u32(0);
-        this.u32(0);
-        this.u32(0);
-        this.u32(0);
-        this.u32(0);
-        this.u32(0);
-        this.u32(0);
-        this.u32(2);
-        this.u32(24);
-        this.u32(symOff);
-        this.u32(1);
-        this.u32(strOff);
-        this.u32(strtab.length);
-        this.rawBytes(payload);
-        this.rawBytes(note);
-        this.u32(1);
-        this.u8(15);
-        this.u8(1);
-        this.u16(0);
-        this.u64(0);
-        this.rawBytes(strtab);
+// A fully parsed object: note metadata plus code, data, symbols, and
+// relocations. The unifier's validation input (there is no linker in the
+// interpreter — see the NATIVE-RUNNER BOUNDARY above).
+class ParsedObj {
+    public prop string filekey;
+    public prop string flags;
+    public prop int64 hash;
+    public prop int stamp;
+    public prop int gas;
+    public prop string[] impDlls;
+    public prop string[] impNames;
+    public prop int[] code;
+    public prop int[] data;
+    // Symbols (parallel arrays): section (0 = undef, 1 = .text, 2 = .rdata),
+    // value (offset), isFunc (1 = function).
+    public prop string[] symNames;
+    public prop int[] symSects;
+    public prop int[] symVals;
+    public prop int[] symIsFunc;
+    // Relocations (parallel arrays): site, symbol index, kind (0 = Rel32,
+    // 1 = Abs64), addend.
+    public prop int[] relSites;
+    public prop int[] relSyms;
+    public prop int[] relKinds;
+    public prop int64[] relAddends;
+
+    construct {
+        this.filekey = "";
+        this.flags = "";
+        this.hash = 0;
+        this.stamp = 0;
+        this.gas = 0;
+        this.impDlls = [];
+        this.impNames = [];
+        this.code = [];
+        this.data = [];
+        this.symNames = [];
+        this.symSects = [];
+        this.symVals = [];
+        this.symIsFunc = [];
+        this.relSites = [];
+        this.relSyms = [];
+        this.relKinds = [];
+        this.relAddends = [];
+    }
+}
+
+// Decoded v4 note: emitting flag set, source hash, emission stamp,
+// globals-block size, full import list, and owner file key.
+class ObjNote {
+    public prop string flags;
+    public prop int64 hash;
+    public prop int stamp;
+    public prop int gas;
+    public prop string[] impDlls;
+    public prop string[] impNames;
+    public prop string filekey;
+
+    construct {
+        this.flags = "";
+        this.hash = 0;
+        this.stamp = 0;
+        this.gas = 0;
+        this.impDlls = [];
+        this.impNames = [];
+        this.filekey = "";
     }
 }
 
@@ -470,8 +569,7 @@ class ObjReader {
     }
 
     // Exact bytes as a string (callers only lift short ASCII ranges: magic
-    // words, section names, the flag set — and the runner's .text payload,
-    // which is NUL-free .srbc text or source text).
+    // words, section names, symbol names, the flag set — never .text code).
     public string bytesAt(int off, int len) {
         if (off < 0 || len < 0 || off + len > this.size) { return ""; }
         string[] parts = [];
@@ -483,58 +581,749 @@ class ObjReader {
     }
 }
 
-// Silver object note: SLVOBJ1 + flag-set string + source FNV-1 hash +
-// emission stamp. Parsed back by objCheckNote.
-public int[] objEncodeNote(string flags, int64 srcHash, int64 stamp) {
+// ---------------------------------------------------------------------------
+// The interpreter's own Silver emitter (following the silverc port's
+// approach: one entry stub per file, machine code + data + symbols +
+// relocations assembled as bytes, no external assembler).
+//
+// The stub is genuine, disassemblable machine code for the session target,
+// deterministic per (owner key, source hash). It is NOT the program
+// compiled: native execution is the follow-up (see the boundary notice at
+// the top of this file). The stub's job today is being a real code payload
+// with real symbols/relocs so the object tier validates byte-identically
+// across the toolchain; its call to __slv_interp_run names the seam the
+// future runner will bind.
+// ---------------------------------------------------------------------------
+
+// 34 bytes of real x86-64 (Windows/Linux target):
+//
+//   push rbp; mov rbp,rsp
+//   movabs rax,<source hash>        (proves content-derivation in bytes)
+//   movabs rcx,<data anchor>        (ABS64 reloc site at 16)
+//   call __slv_interp_run           (REL32 reloc site at 25 — the seam)
+//   mov rsp,rbp; pop rbp; ret
+public int[] interpBuildX86(int64 hash) {
+    int[] code = [];
+    code.add(85);
+    code.add(72);
+    code.add(137);
+    code.add(229);
+    code.add(72);
+    code.add(184);
+    for (int i = 0; i < 8; i++) { code.add((hash >> (i * 8)) & 0xFF); }
+    code.add(72);
+    code.add(185);
+    for (int i = 0; i < 8; i++) { code.add(0); }
+    code.add(232);
+    for (int i = 0; i < 4; i++) { code.add(0); }
+    code.add(72);
+    code.add(137);
+    code.add(236);
+    code.add(93);
+    code.add(195);
+    return code;
+}
+
+// 16 bytes of real ARM64 (Mac target): materialize the low 48 bits of the
+// source hash into x0 (movz + 2x movk) and return. No relocations: GOT
+// emission for ARM64 is the follow-up alongside native execution.
+public int[] interpBuildArm(int64 hash) {
+    int lo = int(hash & 65535);
+    int mid = int((hash >> 16) & 65535);
+    int hi = int((hash >> 32) & 65535);
+    int64 w0 = 3531603968 + (int64(lo) << 5);
+    int64 w1 = 4070572032 + (int64(mid) << 5);
+    int64 w2 = 4072669184 + (int64(hi) << 5);
+    int64 w3 = 3596551104;
+    int[] code = [];
+    int64[] words = [];
+    words.add(w0);
+    words.add(w1);
+    words.add(w2);
+    words.add(w3);
+    for (int i = 0; i < words.length; i++) {
+        for (int b = 0; b < 4; b++) { code.add((words[i] >> (b * 8)) & 0xFF); }
+    }
+    return code;
+}
+
+// Real data bytes (never text): source hash + source length + emission
+// stamp + owner key. The data anchor (__slv_data_..., offset 0) addresses
+// this slice.
+public int[] interpBuildData(string filekey, int64 hash, int srcLen, int stamp) {
     ObjWriter w = new ObjWriter();
-    w.rawStr("SLVOBJ1");
-    w.u32(flags.length);
-    w.rawStr(flags);
-    w.u64(srcHash);
-    w.u64(stamp);
+    w.u64(hash);
+    w.u32(srcLen);
+    w.u32(stamp);
+    w.rawStr(filekey);
     return w.out;
 }
 
-// Validate one object's Silver note against the expected flag set + source
-// hash. Returns "" when valid, else the exact reference error. Any mismatch
-// is a hard link error — never a silent fallback.
-private string objCheckNote(ObjReader r, int noteOff, int noteLen, string expectFlags, int64 expectHash) {
-    string badNote = "object cache: corrupt Silver note section";
-    if (noteOff < 0 || noteLen < 19 || noteOff + noteLen > r.size) { return badNote; }
-    if (r.bytesAt(noteOff, 7) != "SLVOBJ1") { return badNote; }
-    int flagLen = int(r.u32At(noteOff + 7));
-    if (flagLen < 0 || 7 + 4 + flagLen + 8 + 8 > noteLen) { return badNote; }
-    string gotFlags = r.bytesAt(noteOff + 11, flagLen);
-    if (gotFlags != expectFlags) {
-        return "object cache: flag-set switch (object has '" + gotFlags + "', build wants '" + expectFlags + "') — re-emit required";
+// Fill `unit` for one entry file: machine code + data + the defined entry
+// FUNC + the data anchor + the UNDEF runner seam + the two relocations
+// (x86-64) or none (ARM64 — see interpBuildArm). Sorted + deterministic.
+public void interpBuildUnit(string filekey, int64 hash, int srcLen, int stamp, string targetOs, ObjUnit unit) {
+    unit.filekey = filekey;
+    unit.datab = databName(filekey);
+    unit.gas = 0;
+    unit.impDlls = [];
+    unit.impNames = [];
+    unit.undefSingles = [];
+    unit.undefImports = [];
+    if (targetOs == "MAC") {
+        unit.code = interpBuildArm(hash);
+    } else {
+        unit.code = interpBuildX86(hash);
     }
-    int64 gotHash = r.u64At(noteOff + 11 + flagLen);
-    if (gotHash != expectHash) {
-        return "object cache: stale object (source hash changed) — re-emit required";
+    unit.data = interpBuildData(filekey, hash, srcLen, stamp);
+    string entry = objInterpEntrySym(filekey, hash);
+    unit.defNames = [];
+    unit.defOffs = [];
+    unit.defSizes = [];
+    unit.defNames.add(entry);
+    unit.defOffs.add(0);
+    unit.defSizes.add(unit.code.length);
+    unit.undefFuncs = [];
+    unit.relSites = [];
+    unit.relKinds = [];
+    unit.relTargets = [];
+    unit.relIdx = [];
+    unit.relNames = [];
+    if (targetOs != "MAC") {
+        unit.undefFuncs.add(objInterpRunSym());
+        unit.relSites.add(16);
+        unit.relKinds.add(1);
+        unit.relTargets.add(2);
+        unit.relIdx.add(0);
+        unit.relNames.add("");
+        unit.relSites.add(25);
+        unit.relKinds.add(0);
+        unit.relTargets.add(1);
+        unit.relIdx.add(-1);
+        unit.relNames.add(objInterpRunSym());
     }
-    return "";
 }
 
-// Split a COFF object into its note span, then check the note.
-private string objCheckCoff(ObjReader r, string expectFlags, int64 expectHash) {
-    string bad = "object cache: corrupt COFF object";
-    if (r.size < 20) { return bad; }
-    if (int(r.u16At(0)) != 34404) { return bad; }
-    if (int(r.u16At(2)) != 2 || int(r.u16At(16)) != 0) { return bad; }
-    int textOff = -1;
-    int noteOff = -1;
-    int noteLen = 0;
-    for (int i = 0; i < 2; i++) {
-        int base = 20 + i * 40;
-        int vsize = int(r.u32At(base + 8));
-        int rawsize = int(r.u32At(base + 16));
-        int raw = int(r.u32At(base + 20));
-        if (vsize < 0 || rawsize < 0 || raw < 0 || vsize > rawsize || raw + vsize > r.size) { return bad; }
-        if (r.bytesAt(base, 5) == ".text") { textOff = raw; }
-        else if (r.bytesAt(base, 8) == ".slvnote") { noteOff = raw; noteLen = vsize; }
+// Internal symbol order shared by every writer (mirrors the references):
+// section anchors, defined functions, the data anchor, then undefined
+// symbols (functions, singletons, imports).
+private void objBuildSyms(ObjUnit unit, ObjSymTab t) {
+    t.names.add(".text");
+    t.sects.add(1);
+    t.vals.add(0);
+    t.funcs.add(0);
+    t.names.add(".rdata");
+    t.sects.add(2);
+    t.vals.add(0);
+    t.funcs.add(0);
+    for (int i = 0; i < unit.defNames.length; i++) {
+        t.names.add(unit.defNames[i]);
+        t.sects.add(1);
+        t.vals.add(unit.defOffs[i]);
+        t.funcs.add(1);
     }
-    if (textOff < 0 || noteOff < 0) { return bad; }
-    return objCheckNote(r, noteOff, noteLen, expectFlags, expectHash);
+    t.names.add(unit.datab);
+    t.sects.add(2);
+    t.vals.add(0);
+    t.funcs.add(0);
+    for (int i = 0; i < unit.undefFuncs.length; i++) {
+        t.names.add(unit.undefFuncs[i]);
+        t.sects.add(0);
+        t.vals.add(0);
+        t.funcs.add(1);
+    }
+    for (int i = 0; i < unit.undefSingles.length; i++) {
+        int s = unit.undefSingles[i];
+        if (s == 0) { t.names.add(objSingletonExc()); }
+        else if (s == 1) { t.names.add(objSingletonTray()); }
+        else { t.names.add(objSingletonGlobals()); }
+        t.sects.add(0);
+        t.vals.add(0);
+        t.funcs.add(0);
+    }
+    for (int i = 0; i < unit.undefImports.length; i++) {
+        t.names.add(objImportPrefix() + (string)unit.undefImports[i]);
+        t.sects.add(0);
+        t.vals.add(0);
+        t.funcs.add(0);
+    }
+}
+
+// Native symbol index for one unit reloc (mirrors the writer order above:
+// 2 anchors, then defined[i], the datab, then undef tables in order).
+// Returns -1 when the target has no entry (caller reports it loudly).
+private int objSymIndexFor(ObjUnit unit, int tkind, int idx, string name) {
+    if (tkind == 0) { return 2 + idx; }
+    if (tkind == 2) { return 2 + unit.defNames.length; }
+    if (tkind == 1) {
+        for (int i = 0; i < unit.undefFuncs.length; i++) {
+            if (unit.undefFuncs[i] == name) { return 2 + unit.defNames.length + 1 + i; }
+        }
+        return -1;
+    }
+    if (tkind == 3) {
+        int base = 2 + unit.defNames.length + 1 + unit.undefFuncs.length;
+        for (int i = 0; i < unit.undefSingles.length; i++) {
+            if (unit.undefSingles[i] == idx) { return base + i; }
+        }
+        return -1;
+    }
+    int base2 = 2 + unit.defNames.length + 1 + unit.undefFuncs.length + unit.undefSingles.length;
+    for (int i = 0; i < unit.undefImports.length; i++) {
+        if (unit.undefImports[i] == idx) { return base2 + i; }
+    }
+    return -1;
+}
+
+// Minimal COFF relocatable object (Windows target): IMAGE_FILE_HEADER
+// (Machine = AMD64) + .text (genuine machine code) + .rdata (data) +
+// .slvnote (Silver note) + section/function/undefined symbols + .text
+// relocations. Mirrors the reference emit_coff byte-exactly (3 sections,
+// TimeDateStamp, strtab dedup, symbol classes, REL32 = 20 / ADDR64 = 1).
+// Built only with byte pushes.
+public int[] emitCoff(ObjUnit unit, int[] note, int stamp) {
+    ObjSymTab syms = new ObjSymTab();
+    objBuildSyms(unit, syms);
+    string[] symNames = syms.names;
+    int[] symSects = syms.sects;
+    int[] symVals = syms.vals;
+    int[] symFuncs = syms.funcs;
+    int textPad = (unit.code.length + 3) / 4 * 4;
+    int rdataPad = (unit.data.length + 3) / 4 * 4;
+    int notePad = (note.length + 3) / 4 * 4;
+    int textOff = 20 + 3 * 40;
+    int rdataOff = textOff + textPad;
+    int noteOff = rdataOff + rdataPad;
+    int relocOff = noteOff + notePad;
+    int symtabOff = relocOff + unit.relSites.length * 10;
+    // String table for names longer than 8 bytes (deduped, like the ref).
+    int[] strLens = [];
+    string[] strNames = [];
+    int strSize = 4;
+    for (int i = 0; i < symNames.length; i++) {
+        string nm = symNames[i];
+        if (nm.length > 8) {
+            bool seen = false;
+            for (int j = 0; j < strNames.length; j++) {
+                if (strNames[j] == nm) { seen = true; break; }
+            }
+            if (!seen) {
+                strNames.add(nm);
+                strLens.add(strSize);
+                strSize += nm.length + 1;
+            }
+        }
+    }
+    ObjWriter w = new ObjWriter();
+    // IMAGE_FILE_HEADER (20 bytes).
+    w.u16(34404);
+    w.u16(3);
+    w.u32(stamp);
+    w.u32(symtabOff);
+    w.u32(symNames.length);
+    w.u16(0);
+    w.u16(0);
+    // Section headers: .text, .rdata, .slvnote (40 bytes each).
+    w.rawName(".text", 8);
+    w.u32(unit.code.length);
+    w.u32(0);
+    w.u32(textPad);
+    w.u32(textOff);
+    if (unit.relSites.length > 0) { w.u32(relocOff); }
+    else { w.u32(0); }
+    w.u32(0);
+    int nrelHdr = unit.relSites.length;
+    if (nrelHdr > 65535) { nrelHdr = 65535; }
+    w.u16(nrelHdr);
+    w.u16(0);
+    w.u32(1615855648);
+    w.rawName(".rdata", 8);
+    w.u32(unit.data.length);
+    w.u32(0);
+    w.u32(rdataPad);
+    w.u32(rdataOff);
+    w.u32(0);
+    w.u32(0);
+    w.u16(0);
+    w.u16(0);
+    w.u32(1073741888);
+    w.rawName(".slvnote", 8);
+    w.u32(note.length);
+    w.u32(0);
+    w.u32(notePad);
+    w.u32(noteOff);
+    w.u32(0);
+    w.u32(0);
+    w.u16(0);
+    w.u16(0);
+    w.u32(1073741888);
+    // Raw data.
+    w.rawPad(unit.code, textPad);
+    w.rawPad(unit.data, rdataPad);
+    w.rawPad(note, notePad);
+    // Relocations (sorted by site for determinism).
+    for (int i = 0; i < unit.relSites.length; i++) {
+        int symidx = objSymIndexFor(unit, unit.relTargets[i], unit.relIdx[i], unit.relNames[i]);
+        int rtype = 20;
+        if (unit.relKinds[i] == 1) { rtype = 1; }
+        w.u32(unit.relSites[i]);
+        w.u32(symidx);
+        w.u16(rtype);
+    }
+    // Symbol table (18 bytes each, no aux symbols).
+    for (int i = 0; i < symNames.length; i++) {
+        string nm = symNames[i];
+        if (nm.length > 8) {
+            int off = 0;
+            for (int j = 0; j < strNames.length; j++) {
+                if (strNames[j] == nm) { off = strLens[j]; break; }
+            }
+            w.u32(0);
+            w.u32(off);
+        } else {
+            w.rawName(nm, 8);
+        }
+        w.u32(symVals[i]);
+        w.u16(symSects[i]);
+        int stype = 0;
+        if (i >= 2) {
+            if (symSects[i] == 0) {
+                if (symFuncs[i] == 1) { stype = 32; }
+            } else if (symFuncs[i] == 1) {
+                stype = 32;
+            }
+        }
+        w.u16(stype);
+        if (i < 2) { w.u8(3); }
+        else { w.u8(2); }
+        w.u8(0);
+    }
+    w.u32(strSize);
+    for (int i = 0; i < strNames.length; i++) {
+        w.rawStr(strNames[i]);
+        w.u8(0);
+    }
+    return w.out;
+}
+
+// Minimal ELF relocatable object (Linux target): ELF64 header (ET_REL,
+// EM_X86_64) + .text (genuine machine code) + .rdata (data) + .slvnote
+// (Silver note) + .shstrtab + .symtab + .strtab + .rela.text. Mirrors the
+// reference emit_elf_rel byte-exactly (8 section headers, null + SECTION +
+// GLOBAL syms, R_X86_64_64 = 1 / R_X86_64_PC32 = 2 relas with the written
+// symbol index shifted by one for the leading null entry). Built only with
+// byte pushes.
+public int[] emitElf(ObjUnit unit, int[] note) {
+    ObjSymTab syms = new ObjSymTab();
+    objBuildSyms(unit, syms);
+    // Section names and their offsets in .shstrtab.
+    string[] secNames = [".text", ".rdata", ".slvnote", ".shstrtab", ".symtab", ".strtab", ".rela.text"];
+    ObjWriter sw = new ObjWriter();
+    sw.u8(0);
+    int[] nameOff = [];
+    for (int i = 0; i < secNames.length; i++) {
+        nameOff.add(sw.out.length);
+        sw.rawStr(secNames[i]);
+        sw.u8(0);
+    }
+    int[] shstr = sw.out;
+    // Symbol names into .strtab (the null entry and section symbols use
+    // st_name 0). Written order: null, SECTION .text, SECTION .rdata,
+    // datab (GLOBAL OBJECT), defined FUNCs, undefined symbols.
+    ObjWriter tw = new ObjWriter();
+    tw.u8(0);
+    int[] symNameOff = [];
+    symNameOff.add(0);
+    for (int i = 0; i < syms.names.length; i++) {
+        if (i < 2) {
+            symNameOff.add(0);
+        } else {
+            symNameOff.add(tw.out.length);
+            tw.rawStr(syms.names[i]);
+            tw.u8(0);
+        }
+    }
+    int[] strtab = tw.out;
+    int nsymsWritten = syms.names.length + 1;
+    int textOff = 64;
+    int rdataOff = textOff + unit.code.length;
+    int noteOff = rdataOff + unit.data.length;
+    int shstrOff = noteOff + note.length;
+    int symOff = shstrOff + shstr.length;
+    while (symOff % 8 != 0) { symOff++; }
+    int strOff = symOff + nsymsWritten * 24;
+    int relaOff = strOff + strtab.length;
+    int relaLen = unit.relSites.length * 24;
+    int shoff = relaOff + relaLen;
+    while (shoff % 8 != 0) { shoff++; }
+    ObjWriter w = new ObjWriter();
+    // ELF header (64 bytes).
+    w.u8(127);
+    w.rawStr("ELF");
+    w.u8(2);
+    w.u8(1);
+    w.u8(1);
+    w.u8(0);
+    for (int pi = 0; pi < 8; pi++) { w.u8(0); }
+    w.u16(1);
+    w.u16(62);
+    w.u32(1);
+    w.u64(0);
+    w.u64(0);
+    w.u64(shoff);
+    w.u32(0);
+    w.u16(64);
+    w.u16(0);
+    w.u16(0);
+    w.u16(64);
+    w.u16(8);
+    w.u16(4);
+    w.rawBytes(unit.code);
+    w.rawBytes(unit.data);
+    w.rawBytes(note);
+    w.rawBytes(shstr);
+    while (w.out.length < symOff) { w.u8(0); }
+    // .symtab (24 bytes each): null, SECTION .text, SECTION .rdata, datab
+    // (GLOBAL OBJECT), defined FUNCs, undefined symbols.
+    for (int zi = 0; zi < 24; zi++) { w.u8(0); }
+    for (int i = 0; i < syms.names.length; i++) {
+        int sect = syms.sects[i];
+        int isFunc = syms.funcs[i];
+        int bind = 0;
+        int typ = 3;
+        if (i < 2) {
+            bind = 0;
+            typ = 3;
+        } else if (sect == 0) {
+            bind = 1;
+            typ = 0;
+            if (isFunc == 1) { typ = 2; }
+        } else if (isFunc == 1) {
+            bind = 1;
+            typ = 2;
+        } else {
+            bind = 1;
+            typ = 1;
+        }
+        int shndx = 0;
+        if (sect == 1) { shndx = 1; }
+        else if (sect == 2) { shndx = 2; }
+        w.u32(symNameOff[i + 1]);
+        w.u8(bind * 16 + typ);
+        w.u8(0);
+        w.u16(shndx);
+        w.u64(syms.vals[i]);
+        if (i >= 2 && sect == 1 && isFunc == 1) {
+            int didx = i - 2;
+            if (didx >= 0 && didx < unit.defSizes.length) { w.u64(unit.defSizes[didx]); }
+            else { w.u64(0); }
+        } else {
+            w.u64(0);
+        }
+    }
+    w.rawBytes(strtab);
+    // .rela.text (24 bytes each): offset, ((symidx+1)<<32)|rtype, addend.
+    for (int i = 0; i < unit.relSites.length; i++) {
+        int symidx = objSymIndexFor(unit, unit.relTargets[i], unit.relIdx[i], unit.relNames[i]);
+        int rtype = 2;
+        int64 addend = 0;
+        if (unit.relKinds[i] == 1) {
+            rtype = 1;
+            addend = unit.relIdx[i];
+        }
+        w.u64(unit.relSites[i]);
+        w.u64((int64(symidx + 1) << 32) | int64(rtype));
+        w.u64(addend);
+    }
+    while (w.out.length < shoff) { w.u8(0); }
+    // Section headers (64 bytes each): NULL, .text, .rdata, .slvnote,
+    // .shstrtab, .symtab, .strtab, .rela.text.
+    w.sh(0, 0, 0, 0, 0, 0, 0, 0, 0);
+    w.sh(nameOff[0], 1, 6, textOff, unit.code.length, 0, 0, 16, 0);
+    w.sh(nameOff[1], 1, 2, rdataOff, unit.data.length, 0, 0, 1, 0);
+    w.sh(nameOff[2], 1, 0, noteOff, note.length, 0, 0, 1, 0);
+    w.sh(nameOff[3], 3, 0, shstrOff, shstr.length, 0, 0, 1, 0);
+    w.sh(nameOff[4], 2, 0, symOff, nsymsWritten * 24, 6, 3, 8, 24);
+    w.sh(nameOff[5], 3, 0, strOff, strtab.length, 0, 0, 1, 0);
+    w.sh(nameOff[6], 4, 0, relaOff, relaLen, 5, 1, 8, 24);
+    return w.out;
+}
+
+// Minimal Mach-O object (Mac target): mach_header_64 (ARM64, MH_OBJECT)
+// + LC_SEGMENT_64 (__TEXT with __text, __rdata and __slvnote sections) +
+// LC_SYMTAB. Mirrors the reference emit_macho_object byte-exactly
+// (nlist order [entry?][datab][defined...][undefs...], ARM64 reloc kinds).
+// The interpreter's ARM64 stub carries no relocations (see interpBuildArm),
+// so the relocation list is empty — full ARM64 GOT-reloc emission is the
+// follow-up alongside native execution (NATIVE-RUNNER BOUNDARY above).
+// Built only with byte pushes.
+public int[] emitMacho(ObjUnit unit, int[] note) {
+    ObjSymTab syms = new ObjSymTab();
+    objBuildSyms(unit, syms);
+    int segCmdsize = 72 + 3 * 80;
+    int sizeofcmds = segCmdsize + 24;
+    int textOff = 32 + sizeofcmds;
+    int rdataOff = textOff + unit.code.length;
+    int noteOff = rdataOff + unit.data.length;
+    int reloff = noteOff + note.length;
+    int relLen = unit.relSites.length * 8;
+    int symOff = reloff + relLen;
+    bool hasEntry = unit.code.length > 0;
+    ObjWriter sw = new ObjWriter();
+    sw.u8(0);
+    int[] nlistStrx = [];
+    int[] nlistType = [];
+    int[] nlistSect = [];
+    int64[] nlistVal = [];
+    int[] nlistOf = [];
+    for (int i = 0; i < syms.names.length; i++) { nlistOf.add(-1); }
+    if (hasEntry) {
+        nlistStrx.add(sw.out.length);
+        sw.rawStr("__slv_entry");
+        sw.u8(0);
+        nlistType.add(15);
+        nlistSect.add(1);
+        nlistVal.add(0);
+    }
+    int databStrx = sw.out.length;
+    sw.rawStr(unit.datab);
+    sw.u8(0);
+    nlistOf[symIdxOf(syms, unit.datab)] = nlistStrx.length;
+    nlistStrx.add(databStrx);
+    nlistType.add(15);
+    nlistSect.add(2);
+    nlistVal.add(0);
+    for (int di = 0; di < unit.defNames.length; di++) {
+        nlistOf[2 + di] = nlistStrx.length;
+        nlistStrx.add(sw.out.length);
+        sw.rawStr(unit.defNames[di]);
+        sw.u8(0);
+        nlistType.add(15);
+        nlistSect.add(1);
+        nlistVal.add(unit.defOffs[di]);
+    }
+    for (int fi = 0; fi < unit.undefFuncs.length; fi++) {
+        int nlidx = 2 + unit.defNames.length + 1 + fi;
+        nlistOf[nlidx] = nlistStrx.length;
+        nlistStrx.add(sw.out.length);
+        sw.rawStr(unit.undefFuncs[fi]);
+        sw.u8(0);
+        nlistType.add(1);
+        nlistSect.add(0);
+        nlistVal.add(0);
+    }
+    int singleBase = 2 + unit.defNames.length + 1 + unit.undefFuncs.length;
+    for (int si = 0; si < unit.undefSingles.length; si++) {
+        int nlidx = singleBase + si;
+        nlistOf[nlidx] = nlistStrx.length;
+        string sname = objSingletonGlobals();
+        if (unit.undefSingles[si] == 0) { sname = objSingletonExc(); }
+        else if (unit.undefSingles[si] == 1) { sname = objSingletonTray(); }
+        nlistStrx.add(sw.out.length);
+        sw.rawStr(sname);
+        sw.u8(0);
+        nlistType.add(1);
+        nlistSect.add(0);
+        nlistVal.add(0);
+    }
+    int importBase = singleBase + unit.undefSingles.length;
+    for (int ii = 0; ii < unit.undefImports.length; ii++) {
+        int nlidx = importBase + ii;
+        nlistOf[nlidx] = nlistStrx.length;
+        nlistStrx.add(sw.out.length);
+        sw.rawStr(objImportPrefix() + (string)unit.undefImports[ii]);
+        sw.u8(0);
+        nlistType.add(1);
+        nlistSect.add(0);
+        nlistVal.add(0);
+    }
+    int[] strtab = sw.out;
+    int strOff = symOff + nlistStrx.length * 16;
+    ObjWriter w = new ObjWriter();
+    // mach_header_64 (32 bytes).
+    w.u32(4277009103);
+    w.u32(16777228);
+    w.u32(0);
+    w.u32(1);
+    w.u32(2);
+    w.u32(sizeofcmds);
+    w.u32(0);
+    w.u32(0);
+    // LC_SEGMENT_64 + 3 sections.
+    w.u32(25);
+    w.u32(segCmdsize);
+    w.rawName("__TEXT", 16);
+    w.u64(0);
+    w.u64(unit.code.length + unit.data.length + note.length);
+    w.u64(textOff);
+    w.u64(unit.code.length + unit.data.length + note.length);
+    w.u32(7);
+    w.u32(5);
+    w.u32(3);
+    w.u32(0);
+    // Section 1: __text.
+    w.rawName("__text", 16);
+    w.rawName("__TEXT", 16);
+    w.u64(0);
+    w.u64(unit.code.length);
+    w.u32(textOff);
+    w.u32(2);
+    if (unit.relSites.length > 0) { w.u32(reloff); }
+    else { w.u32(0); }
+    w.u32(unit.relSites.length);
+    w.u32(2147484672);
+    w.u32(0);
+    w.u32(0);
+    w.u32(0);
+    // Section 2: __rdata.
+    w.rawName("__rdata", 16);
+    w.rawName("__TEXT", 16);
+    w.u64(0);
+    w.u64(unit.data.length);
+    w.u32(rdataOff);
+    w.u32(0);
+    w.u32(0);
+    w.u32(0);
+    w.u32(0);
+    w.u32(0);
+    w.u32(0);
+    w.u32(0);
+    // Section 3: __slvnote.
+    w.rawName("__slvnote", 16);
+    w.rawName("__TEXT", 16);
+    w.u64(0);
+    w.u64(note.length);
+    w.u32(noteOff);
+    w.u32(0);
+    w.u32(0);
+    w.u32(0);
+    w.u32(0);
+    w.u32(0);
+    w.u32(0);
+    w.u32(0);
+    // LC_SYMTAB.
+    w.u32(2);
+    w.u32(24);
+    w.u32(symOff);
+    w.u32(nlistStrx.length);
+    w.u32(strOff);
+    w.u32(strtab.length);
+    w.rawBytes(unit.code);
+    w.rawBytes(unit.data);
+    w.rawBytes(note);
+    // Relocation entries (8 bytes each; empty for the interpreter stub).
+    for (int i = 0; i < unit.relSites.length; i++) {
+        int symidx = objSymIndexFor(unit, unit.relTargets[i], unit.relIdx[i], unit.relNames[i]);
+        int ni = nlistOf[symidx];
+        int rtype = 3;
+        if (unit.relKinds[i] == 1) { rtype = 3; }
+        else { rtype = 4; }
+        int64 packed = int64(ni) | 16777216 | 33554432 | 134217728 | (int64(rtype) << 28);
+        w.u32(unit.relSites[i]);
+        w.u32(packed);
+    }
+    // nlist_64 entries (16 bytes).
+    for (int i = 0; i < nlistStrx.length; i++) {
+        w.u32(nlistStrx[i]);
+        w.u8(nlistType[i]);
+        w.u8(nlistSect[i]);
+        w.u16(0);
+        w.u64(nlistVal[i]);
+    }
+    w.rawBytes(strtab);
+    return w.out;
+}
+
+// Internal symbol-table index of `name` (-1 when absent; used for the
+// Mach-O datab lookup above).
+private int symIdxOf(ObjSymTab syms, string name) {
+    for (int i = 0; i < syms.names.length; i++) {
+        if (syms.names[i] == name) { return i; }
+    }
+    return -1;
+}
+
+// Serialize one interpreter-built unit for the session target: the proper
+// relocatable container per target with genuine .text machine code,
+// .rdata, .slvnote, symbol table, and relocations.
+public int[] emitObject(ObjUnit unit, string flags, int64 hash, int stamp, string targetOs) {
+    int[] note = objEncodeNote(unit, flags, hash, stamp);
+    if (targetOs == "LINUX") { return emitElf(unit, note); }
+    if (targetOs == "MAC") { return emitMacho(unit, note); }
+    return emitCoff(unit, note, stamp);
+}
+
+// True when the unit exceeds the v1 boundary (COFF section limit): the
+// session skips emission and the driver keeps running from the verified
+// AST/bytecode tiers (loud fallback, never a silent mislink). The
+// interpreter stub carries 2 relocations, so this is defensive only.
+public bool objTooManyRelocs(ObjUnit unit) {
+    return unit.relSites.length >= 65535;
+}
+
+// Silver object note (v4): SLVOBJ2 + flag-set string + source FNV-1 hash +
+// emission stamp + globals-block size + import list + owner file key.
+// Mirrors the reference encode_note byte-exactly (the interpreter always
+// records gas 0 and an empty import list — the shape stays exact).
+public int[] objEncodeNote(ObjUnit unit, string flags, int64 srcHash, int stamp) {
+    ObjWriter w = new ObjWriter();
+    w.rawStr("SLVOBJ2");
+    w.strField(flags);
+    w.u64(srcHash);
+    w.u64(stamp);
+    w.u64(unit.gas);
+    w.u32(unit.impDlls.length);
+    for (int i = 0; i < unit.impDlls.length; i++) {
+        w.strField(unit.impDlls[i]);
+        w.strField(unit.impNames[i]);
+    }
+    w.strField(unit.filekey);
+    return w.out;
+}
+
+// Decode one note span into note. Returns "" when valid, else the exact
+// reference error. A v3-era (SLVOBJ1) note fails here and the planner
+// treats the object as stale — never a hard error.
+private string objDecodeNote(ObjReader r, int noteOff, int noteLen, ObjNote note) {
+    string badNote = "object cache: corrupt Silver note section";
+    if (noteOff < 0 || noteLen <= 0 || noteOff + noteLen > r.size) { return badNote; }
+    if (r.bytesAt(noteOff, 7) != "SLVOBJ2") { return badNote; }
+    int pos = noteOff + 7;
+    int flagLen = int(r.u32At(pos));
+    pos += 4;
+    if (flagLen < 0 || pos + flagLen + 8 + 8 + 8 + 4 > noteOff + noteLen) { return badNote; }
+    note.flags = r.bytesAt(pos, flagLen);
+    pos += flagLen;
+    note.hash = r.u64At(pos);
+    pos += 8;
+    note.stamp = int(r.u64At(pos));
+    pos += 8;
+    note.gas = int(r.u64At(pos));
+    pos += 8;
+    int importCount = int(r.u32At(pos));
+    pos += 4;
+    if (importCount < 0 || importCount > 1000000) { return badNote; }
+    note.impDlls = [];
+    note.impNames = [];
+    for (int i = 0; i < importCount; i++) {
+        int dllLen = int(r.u32At(pos));
+        pos += 4;
+        if (dllLen < 0 || pos + dllLen > noteOff + noteLen) { return badNote; }
+        string dll = r.bytesAt(pos, dllLen);
+        pos += dllLen;
+        int nameLen = int(r.u32At(pos));
+        pos += 4;
+        if (nameLen < 0 || pos + nameLen > noteOff + noteLen) { return badNote; }
+        string nm = r.bytesAt(pos, nameLen);
+        pos += nameLen;
+        note.impDlls.add(dll);
+        note.impNames.add(nm);
+    }
+    int keyLen = int(r.u32At(pos));
+    pos += 4;
+    if (keyLen < 0 || pos + keyLen > noteOff + noteLen) { return badNote; }
+    note.filekey = r.bytesAt(pos, keyLen);
+    return "";
 }
 
 // NUL-terminated name inside a string-table span.
@@ -551,8 +1340,50 @@ private string objCStr(ObjReader r, int strOff, int strSize, int nameOff) {
     return parts.join("");
 }
 
-// Split an ELF relocatable object into its note span, then check the note.
-private string objCheckElf(ObjReader r, string expectFlags, int64 expectHash) {
+// Split a COFF object into its section spans: out holds
+// [textOff, textLen, rdataOff, rdataLen, noteOff, noteLen].
+// Returns "" on success, else the exact reference error. Sections match by
+// name (like the reference split_coff): Machine must be AMD64 with exactly
+// 3 sections and no optional header; VirtualSize is the exact data length
+// while SizeOfRawData includes up-to-4 alignment padding.
+private string objSplitCoff(ObjReader r, int[] out) {
+    string bad = "object cache: corrupt COFF object";
+    if (r.size < 20) { return bad; }
+    if (int(r.u16At(0)) != 34404) { return bad; }
+    if (int(r.u16At(2)) != 3 || int(r.u16At(16)) != 0) { return bad; }
+    int textOff = -1;
+    int textLen = 0;
+    int rdataOff = -1;
+    int rdataLen = 0;
+    int noteOff = -1;
+    int noteLen = 0;
+    for (int i = 0; i < 3; i++) {
+        int base = 20 + i * 40;
+        string sname = r.bytesAt(base, 8);
+        int vsize = int(r.u32At(base + 8));
+        int rawsize = int(r.u32At(base + 16));
+        int raw = int(r.u32At(base + 20));
+        if (vsize < 0 || rawsize < 0 || raw < 0 || vsize > rawsize || raw + vsize > r.size) { return bad; }
+        if (sname.startsWith(".text")) { textOff = raw; textLen = vsize; }
+        else if (sname.startsWith(".rdata")) { rdataOff = raw; rdataLen = vsize; }
+        else if (sname.startsWith(".slvnote")) { noteOff = raw; noteLen = vsize; }
+    }
+    if (textOff < 0 || rdataOff < 0 || noteOff < 0) { return bad; }
+    out.add(textOff);
+    out.add(textLen);
+    out.add(rdataOff);
+    out.add(rdataLen);
+    out.add(noteOff);
+    out.add(noteLen);
+    return "";
+}
+
+// Split an ELF relocatable object into its section spans: out holds
+// [textOff, textLen, rdataOff, rdataLen, noteOff, noteLen, shstrOff,
+// shstrLen]. Returns "" on success, else the exact reference error (ELF
+// magic, 64-bit LE, ET_REL + EM_X86_64, sane section-header table, all
+// three sections found by name through .shstrtab with in-bounds spans).
+private string objSplitElf(ObjReader r, int[] out) {
     string bad = "object cache: corrupt ELF object";
     if (r.size < 64) { return bad; }
     if (int(r.u8At(0)) != 127 || int(r.u8At(1)) != 69 || int(r.u8At(2)) != 76 || int(r.u8At(3)) != 70) { return bad; }
@@ -562,11 +1393,15 @@ private string objCheckElf(ObjReader r, string expectFlags, int64 expectHash) {
     int shnum = int(r.u16At(60));
     int shstrndx = int(r.u16At(62));
     if (shoff < 0 || shnum <= 0 || shstrndx < 0 || shstrndx >= shnum) { return bad; }
+    if (shoff + shnum * 64 > r.size) { return bad; }
     int sbase = shoff + shstrndx * 64;
     int strOff = int(r.u64At(sbase + 24));
     int strSize = int(r.u64At(sbase + 32));
     if (strOff < 0 || strSize < 0 || strOff + strSize > r.size) { return bad; }
     int textOff = -1;
+    int textLen = 0;
+    int rdataOff = -1;
+    int rdataLen = 0;
     int noteOff = -1;
     int noteLen = 0;
     for (int i = 1; i < shnum; i++) {
@@ -576,22 +1411,37 @@ private string objCheckElf(ObjReader r, string expectFlags, int64 expectHash) {
         int size = int(r.u64At(base + 32));
         if (nameOff < 0 || off < 0 || size < 0 || off + size > r.size) { return bad; }
         string secName = objCStr(r, strOff, strSize, nameOff);
-        if (secName == ".text") { textOff = off; }
+        if (secName == ".text") { textOff = off; textLen = size; }
+        else if (secName == ".rdata") { rdataOff = off; rdataLen = size; }
         else if (secName == ".slvnote") { noteOff = off; noteLen = size; }
     }
-    if (textOff < 0 || noteOff < 0) { return bad; }
-    return objCheckNote(r, noteOff, noteLen, expectFlags, expectHash);
+    if (textOff < 0 || rdataOff < 0 || noteOff < 0) { return bad; }
+    out.add(textOff);
+    out.add(textLen);
+    out.add(rdataOff);
+    out.add(rdataLen);
+    out.add(noteOff);
+    out.add(noteLen);
+    out.add(strOff);
+    out.add(strSize);
+    return "";
 }
 
-// Split a Mach-O object into its note span, then check the note.
-private string objCheckMacho(ObjReader r, string expectFlags, int64 expectHash) {
+// Split a Mach-O object into its section spans: out holds
+// [textOff, textLen, rdataOff, rdataLen, noteOff, noteLen]. Returns "" on
+// success, else the exact reference error (ARM64 MH_OBJECT magic, sane
+// load-command walk, __text/__rdata/__slvnote found with in-bounds spans).
+private string objSplitMacho(ObjReader r, int[] out) {
     string bad = "object cache: corrupt Mach-O object";
     if (r.size < 32) { return bad; }
     if (int(r.u32At(0)) != 4277009103 || int(r.u32At(4)) != 16777228 || int(r.u32At(12)) != 1) { return bad; }
     int ncmds = int(r.u32At(16));
-    if (ncmds < 0) { return bad; }
+    if (ncmds < 0 || ncmds > 100) { return bad; }
     int off = 32;
     int textOff = -1;
+    int textLen = 0;
+    int rdataOff = -1;
+    int rdataLen = 0;
     int noteOff = -1;
     int noteLen = 0;
     for (int c = 0; c < ncmds; c++) {
@@ -600,114 +1450,372 @@ private string objCheckMacho(ObjReader r, string expectFlags, int64 expectHash) 
         if (cmd < 0 || cmdsize < 8 || off + cmdsize > r.size) { return bad; }
         if (cmd == 25) {
             int nsects = int(r.u32At(off + 64));
-            if (nsects < 0) { return bad; }
+            if (nsects < 0 || nsects > 100) { return bad; }
             for (int s = 0; s < nsects; s++) {
                 int base = off + 72 + s * 80;
+                string sname = r.bytesAt(base, 16);
                 int size = int(r.u64At(base + 40));
                 int fileoff = int(r.u32At(base + 48));
                 if (size < 0 || fileoff < 0 || fileoff + size > r.size) { return bad; }
-                if (r.bytesAt(base, 6) == "__text") { textOff = fileoff; }
-                else if (r.bytesAt(base, 9) == "__slvnote") { noteOff = fileoff; noteLen = size; }
+                if (sname.startsWith("__text")) { textOff = fileoff; textLen = size; }
+                else if (sname.startsWith("__rdata")) { rdataOff = fileoff; rdataLen = size; }
+                else if (sname.startsWith("__slvnote")) { noteOff = fileoff; noteLen = size; }
             }
         }
         off += cmdsize;
     }
-    if (textOff < 0 || noteOff < 0) { return bad; }
-    return objCheckNote(r, noteOff, noteLen, expectFlags, expectHash);
+    if (textOff < 0 || rdataOff < 0 || noteOff < 0) { return bad; }
+    out.add(textOff);
+    out.add(textLen);
+    out.add(rdataOff);
+    out.add(rdataLen);
+    out.add(noteOff);
+    out.add(noteLen);
+    return "";
 }
 
-// Runner span readers: the same container walks as the checkers above, but
-// locating the .text payload span (the execution bytes) instead of
-// validating the note. Returns [off, len], or [] when malformed. The walks
-// stay beside the checkers (rather than sharing one) so the unifier's
-// validation math above stays byte-identical to the reference.
-private int[] ocCoffTextSpan(ObjReader r) {
-    if (r.size < 20) { return []; }
-    if (int(r.u16At(0)) != 34404) { return []; }
-    if (int(r.u16At(2)) != 2 || int(r.u16At(16)) != 0) { return []; }
-    for (int i = 0; i < 2; i++) {
-        int base = 20 + i * 40;
-        int vsize = int(r.u32At(base + 8));
-        int rawsize = int(r.u32At(base + 16));
-        int raw = int(r.u32At(base + 20));
-        if (vsize < 0 || rawsize < 0 || raw < 0 || vsize > rawsize || raw + vsize > r.size) { return []; }
-        if (r.bytesAt(base, 5) == ".text") {
-            int[] span = [];
-            span.add(raw);
-            span.add(vsize);
-            return span;
+// Parse just the Silver note (cheap freshness probe, mirrors the reference
+// peek_note): split the container for the session target, decode the v4
+// note into note. Returns true when the container and note are valid v4 —
+// v3-era and foreign objects fail here and the planner treats them as
+// stale, never a hard error.
+public bool objPeekNote(ObjReader r, string targetOs, ObjNote note) {
+    int[] spans = [];
+    string serr = "";
+    if (targetOs == "LINUX") { serr = objSplitElf(r, spans); }
+    else if (targetOs == "MAC") { serr = objSplitMacho(r, spans); }
+    else { serr = objSplitCoff(r, spans); }
+    if (serr.length > 0) { return false; }
+    string nerr = objDecodeNote(r, spans[4], spans[5], note);
+    return nerr.length == 0;
+}
+
+// Fully parse one COFF object into obj (mirrors the reference parse_coff:
+// code + data + note + symbol table with class/section checks + .text
+// relocations with type checks, REL32 = 20 / ADDR64 = 1, ABS64 sites
+// bounds-checked against the code length). Hard errors on any corruption.
+public string objParseCoff(ObjReader r, ParsedObj obj) {
+    string bad = "object cache: corrupt COFF object";
+    int[] spans = [];
+    string serr = objSplitCoff(r, spans);
+    if (serr.length > 0) { return serr; }
+    int textOff = spans[0];
+    int textLen = spans[1];
+    int rdataOff = spans[2];
+    int rdataLen = spans[3];
+    int noteOff = spans[4];
+    int noteLen = spans[5];
+    obj.code = [];
+    for (int i = 0; i < textLen; i++) { obj.code.add(int(r.u8At(textOff + i))); }
+    obj.data = [];
+    for (int i = 0; i < rdataLen; i++) { obj.data.add(int(r.u8At(rdataOff + i))); }
+    ObjNote note = new ObjNote();
+    string nerr = objDecodeNote(r, noteOff, noteLen, note);
+    if (nerr.length > 0) { return nerr; }
+    obj.flags = note.flags;
+    obj.hash = note.hash;
+    obj.stamp = note.stamp;
+    obj.gas = note.gas;
+    obj.impDlls = note.impDlls;
+    obj.impNames = note.impNames;
+    obj.filekey = note.filekey;
+    int symOff = int(r.u32At(8));
+    int nsyms = int(r.u32At(12));
+    if (symOff < 0 || nsyms < 2) { return bad; }
+    // String table follows the symbol table.
+    int strtabOff = symOff + nsyms * 18;
+    int strtabLen = int(r.u32At(strtabOff));
+    if (strtabLen < 4 || strtabOff + strtabLen > r.size) { return bad; }
+    obj.symNames = [];
+    obj.symSects = [];
+    obj.symVals = [];
+    obj.symIsFunc = [];
+    for (int i = 0; i < nsyms; i++) {
+        int base = symOff + i * 18;
+        if (base + 18 > r.size) { return bad; }
+        string name = "";
+        if (r.u8At(base) == 0 && r.u8At(base + 1) == 0 && r.u8At(base + 2) == 0 && r.u8At(base + 3) == 0) {
+            int strRef = int(r.u32At(base + 4));
+            name = objCStr(r, strtabOff, strtabLen, strRef);
+            if (name.length == 0) { return bad; }
+        } else {
+            string[] parts = [];
+            for (int b = 0; b < 8; b++) {
+                int64 c = r.u8At(base + b);
+                if (c < 0) { return bad; }
+                if (c == 0) { break; }
+                parts.add((string)char(int(c)));
+            }
+            name = parts.join("");
         }
+        int value = int(r.u32At(base + 8));
+        int sect = int(r.u16At(base + 12));
+        int stype = int(r.u16At(base + 14));
+        int sclass = int(r.u8At(base + 16));
+        if (value < 0 || sect < 0 || sect > 3) { return bad; }
+        if (sclass != 2 && sclass != 3) { return bad; }
+        obj.symNames.add(name);
+        obj.symSects.add(sect);
+        obj.symVals.add(value);
+        if (stype == 32) { obj.symIsFunc.add(1); }
+        else { obj.symIsFunc.add(0); }
     }
-    return [];
+    // Relocations from the .text header (relptr at +24, count at +32).
+    int relPtr = int(r.u32At(20 + 24));
+    int nrel = int(r.u16At(20 + 32));
+    if (relPtr < 0 || nrel < 0 || (nrel > 0 && relPtr + nrel * 10 > r.size)) { return bad; }
+    obj.relSites = [];
+    obj.relSyms = [];
+    obj.relKinds = [];
+    obj.relAddends = [];
+    for (int i = 0; i < nrel; i++) {
+        int base = relPtr + i * 10;
+        int site = int(r.u32At(base));
+        int sni = int(r.u32At(base + 4));
+        int rtype = int(r.u16At(base + 8));
+        if (site < 0 || sni < 0 || sni >= obj.symNames.length) { return bad; }
+        int kind = -1;
+        if (rtype == 20) { kind = 0; }
+        else if (rtype == 1) { kind = 1; }
+        else { return bad; }
+        // COFF addends live in the site bytes.
+        int64 addend = 0;
+        if (kind == 1) {
+            if (site + 8 > obj.code.length) { return bad; }
+            addend = 0;
+            for (int b = 0; b < 8; b++) {
+                addend = addend | (int64(obj.code[site + b] & 0xFF) << (b * 8));
+            }
+        } else {
+            if (site + 4 > obj.code.length) { return bad; }
+        }
+        obj.relSites.add(site);
+        obj.relSyms.add(sni);
+        obj.relKinds.add(kind);
+        obj.relAddends.add(addend);
+    }
+    return "";
 }
 
-private int[] ocElfTextSpan(ObjReader r) {
-    if (r.size < 64) { return []; }
-    if (int(r.u8At(0)) != 127 || int(r.u8At(1)) != 69 || int(r.u8At(2)) != 76 || int(r.u8At(3)) != 70) { return []; }
-    if (int(r.u8At(4)) != 2 || int(r.u8At(5)) != 1) { return []; }
-    if (int(r.u16At(16)) != 1 || int(r.u16At(18)) != 62) { return []; }
+// Fully parse one ELF relocatable object into obj (mirrors the reference
+// parse_elf_rel: code + data + note + .symtab with section-index mapping +
+// .rela.text with R_X86_64_64 = 1 / R_X86_64_PC32 = 2 type checks).
+// Hard errors on any corruption.
+public string objParseElf(ObjReader r, ParsedObj obj) {
+    string bad = "object cache: corrupt ELF object";
+    int[] spans = [];
+    string serr = objSplitElf(r, spans);
+    if (serr.length > 0) { return serr; }
+    int textOff = spans[0];
+    int textLen = spans[1];
+    int rdataOff = spans[2];
+    int rdataLen = spans[3];
+    int noteOff = spans[4];
+    int noteLen = spans[5];
+    obj.code = [];
+    for (int i = 0; i < textLen; i++) { obj.code.add(int(r.u8At(textOff + i))); }
+    obj.data = [];
+    for (int i = 0; i < rdataLen; i++) { obj.data.add(int(r.u8At(rdataOff + i))); }
+    ObjNote note = new ObjNote();
+    string nerr = objDecodeNote(r, noteOff, noteLen, note);
+    if (nerr.length > 0) { return nerr; }
+    obj.flags = note.flags;
+    obj.hash = note.hash;
+    obj.stamp = note.stamp;
+    obj.gas = note.gas;
+    obj.impDlls = note.impDlls;
+    obj.impNames = note.impNames;
+    obj.filekey = note.filekey;
     int shoff = int(r.u64At(40));
     int shnum = int(r.u16At(60));
-    int shstrndx = int(r.u16At(62));
-    if (shoff < 0 || shnum <= 0 || shstrndx < 0 || shstrndx >= shnum) { return []; }
-    int sbase = shoff + shstrndx * 64;
-    int strOff = int(r.u64At(sbase + 24));
-    int strSize = int(r.u64At(sbase + 32));
-    if (strOff < 0 || strSize < 0 || strOff + strSize > r.size) { return []; }
-    for (int i = 1; i < shnum; i++) {
+    int symTabOff = -1;
+    int symTabSize = 0;
+    int strTabOff = -1;
+    int strTabSize = 0;
+    int relaOff = -1;
+    int relaSize = 0;
+    for (int i = 0; i < shnum; i++) {
         int base = shoff + i * 64;
         int nameOff = int(r.u32At(base));
+        int stype = int(r.u32At(base + 4));
         int off = int(r.u64At(base + 24));
         int size = int(r.u64At(base + 32));
-        if (nameOff < 0 || off < 0 || size < 0 || off + size > r.size) { return []; }
-        if (objCStr(r, strOff, strSize, nameOff) == ".text") {
-            int[] span = [];
-            span.add(off);
-            span.add(size);
-            return span;
+        if (nameOff < 0 || off < 0 || size < 0 || off + size > r.size) { return bad; }
+        string secName = objCStr(r, spans[6], spans[7], nameOff);
+        if (secName == ".symtab") {
+            if (stype != 2) { return bad; }
+            symTabOff = off;
+            symTabSize = size;
+        } else if (secName == ".strtab") {
+            strTabOff = off;
+            strTabSize = size;
+        } else if (secName == ".rela.text") {
+            relaOff = off;
+            relaSize = size;
         }
     }
-    return [];
+    if (symTabOff < 0 || strTabOff < 0) { return bad; }
+    if (symTabOff + symTabSize > r.size || strTabOff + strTabSize > r.size) { return bad; }
+    int nsyms = symTabSize / 24;
+    if (nsyms < 2 || symTabSize % 24 != 0) { return bad; }
+    obj.symNames = [];
+    obj.symSects = [];
+    obj.symVals = [];
+    obj.symIsFunc = [];
+    for (int i = 0; i < nsyms; i++) {
+        int base = symTabOff + i * 24;
+        int nameRef = int(r.u32At(base));
+        int info = int(r.u8At(base + 4));
+        int shndx = int(r.u16At(base + 6));
+        int64 value = r.u64At(base + 8);
+        if (nameRef < 0 || info < 0 || shndx < 0 || value < 0) { return bad; }
+        int typ = info & 15;
+        string name = "";
+        if (i == 0) {
+            name = "";
+        } else if (typ == 3) {
+            if (shndx == 1) { name = ".text"; }
+            else if (shndx == 2) { name = ".rdata"; }
+            else { return bad; }
+        } else {
+            name = objCStr(r, strTabOff, strTabSize, nameRef);
+            if (name.length == 0) { return bad; }
+        }
+        int sect = -1;
+        if (shndx == 0) { sect = 0; }
+        else if (shndx == 1) { sect = 1; }
+        else if (shndx == 2) { sect = 2; }
+        else { return bad; }
+        obj.symNames.add(name);
+        obj.symSects.add(sect);
+        obj.symVals.add(int(value));
+        if (typ == 2) { obj.symIsFunc.add(1); }
+        else { obj.symIsFunc.add(0); }
+    }
+    obj.relSites = [];
+    obj.relSyms = [];
+    obj.relKinds = [];
+    obj.relAddends = [];
+    if (relaOff >= 0) {
+        if (relaSize % 24 != 0 || relaOff + relaSize > r.size) { return bad; }
+        int nrel = relaSize / 24;
+        for (int i = 0; i < nrel; i++) {
+            int base = relaOff + i * 24;
+            int64 site = r.u64At(base);
+            int64 info = r.u64At(base + 8);
+            int64 addend = r.u64At(base + 16);
+            if (site < 0 || info < 0) { return bad; }
+            int sni = int((info >> 32)) - 1;
+            int rtype = int(info & 0xFFFFFFFF);
+            if (sni < 0 || sni >= obj.symNames.length) { return bad; }
+            int kind = -1;
+            if (rtype == 2) { kind = 0; }
+            else if (rtype == 1) { kind = 1; }
+            else { return bad; }
+            if (kind == 1) {
+                if (int(site) + 8 > obj.code.length) { return bad; }
+            } else {
+                if (int(site) + 4 > obj.code.length) { return bad; }
+            }
+            obj.relSites.add(int(site));
+            obj.relSyms.add(sni);
+            obj.relKinds.add(kind);
+            obj.relAddends.add(addend);
+        }
+    }
+    return "";
 }
 
-private int[] ocMachoTextSpan(ObjReader r) {
-    if (r.size < 32) { return []; }
-    if (int(r.u32At(0)) != 4277009103 || int(r.u32At(4)) != 16777228 || int(r.u32At(12)) != 1) { return []; }
+// Fully parse one Mach-O object into obj: code + data + note + LC_SYMTAB
+// bounds (symbol/string tables must sit inside the file). Section relocs
+// are bounds-checked when present. Hard errors on any corruption.
+public string objParseMacho(ObjReader r, ParsedObj obj) {
+    string bad = "object cache: corrupt Mach-O object";
+    int[] spans = [];
+    string serr = objSplitMacho(r, spans);
+    if (serr.length > 0) { return serr; }
+    int textOff = spans[0];
+    int textLen = spans[1];
+    int rdataOff = spans[2];
+    int rdataLen = spans[3];
+    int noteOff = spans[4];
+    int noteLen = spans[5];
+    obj.code = [];
+    for (int i = 0; i < textLen; i++) { obj.code.add(int(r.u8At(textOff + i))); }
+    obj.data = [];
+    for (int i = 0; i < rdataLen; i++) { obj.data.add(int(r.u8At(rdataOff + i))); }
+    ObjNote note = new ObjNote();
+    string nerr = objDecodeNote(r, noteOff, noteLen, note);
+    if (nerr.length > 0) { return nerr; }
+    obj.flags = note.flags;
+    obj.hash = note.hash;
+    obj.stamp = note.stamp;
+    obj.gas = note.gas;
+    obj.impDlls = note.impDlls;
+    obj.impNames = note.impNames;
+    obj.filekey = note.filekey;
     int ncmds = int(r.u32At(16));
-    if (ncmds < 0) { return []; }
     int off = 32;
+    int symOff = -1;
+    int nsyms = 0;
+    int strOff = -1;
+    int strSize = 0;
     for (int c = 0; c < ncmds; c++) {
         int cmd = int(r.u32At(off));
         int cmdsize = int(r.u32At(off + 4));
-        if (cmd < 0 || cmdsize < 8 || off + cmdsize > r.size) { return []; }
+        if (cmd < 0 || cmdsize < 8 || off + cmdsize > r.size) { return bad; }
         if (cmd == 25) {
             int nsects = int(r.u32At(off + 64));
-            if (nsects < 0) { return []; }
+            if (nsects < 0 || nsects > 100) { return bad; }
             for (int s = 0; s < nsects; s++) {
                 int base = off + 72 + s * 80;
-                int size = int(r.u64At(base + 40));
-                int fileoff = int(r.u32At(base + 48));
-                if (size < 0 || fileoff < 0 || fileoff + size > r.size) { return []; }
-                if (r.bytesAt(base, 6) == "__text") {
-                    int[] span = [];
-                    span.add(fileoff);
-                    span.add(size);
-                    return span;
-                }
+                int nreloc = int(r.u32At(base + 60));
+                int reloff = int(r.u32At(base + 56));
+                if (nreloc < 0) { return bad; }
+                if (nreloc > 0 && (reloff < 0 || reloff + nreloc * 8 > r.size)) { return bad; }
             }
+        } else if (cmd == 2) {
+            symOff = int(r.u32At(off + 8));
+            nsyms = int(r.u32At(off + 12));
+            strOff = int(r.u32At(off + 16));
+            strSize = int(r.u32At(off + 20));
         }
         off += cmdsize;
     }
-    return [];
+    if (symOff < 0 || nsyms <= 0 || strOff < 0 || strSize <= 0) { return bad; }
+    if (symOff + nsyms * 16 > r.size || strOff + strSize > r.size) { return bad; }
+    obj.symNames = [];
+    obj.symSects = [];
+    obj.symVals = [];
+    obj.symIsFunc = [];
+    for (int i = 0; i < nsyms; i++) {
+        int base = symOff + i * 16;
+        int strx = int(r.u32At(base));
+        int ntype = int(r.u8At(base + 4));
+        int nsect = int(r.u8At(base + 5));
+        int64 nvalue = r.u64At(base + 8);
+        if (strx < 0 || ntype < 0 || nsect < 0 || nvalue < 0) { return bad; }
+        string name = objCStr(r, strOff, strSize, strx);
+        if (name.length == 0) { return bad; }
+        obj.symNames.add(name);
+        obj.symSects.add(nsect);
+        obj.symVals.add(int(nvalue));
+        obj.symIsFunc.add(0);
+    }
+    obj.relSites = [];
+    obj.relSyms = [];
+    obj.relKinds = [];
+    obj.relAddends = [];
+    return "";
 }
 
-// The .text payload span of one validated object for the session target:
-// [off, len], or [] when the container is malformed (unreachable after a
-// clean finish() unless the file changed mid-run).
-private int[] ocTextSpan(ObjReader r, string targetOs) {
-    if (targetOs == "LINUX") { return ocElfTextSpan(r); }
-    if (targetOs == "MAC") { return ocMachoTextSpan(r); }
-    return ocCoffTextSpan(r);
+// Fully parse one cached object for the session target (hard errors: a
+// fresh-planned file whose object is corrupt fails loudly instead of being
+// reused silently). Fills obj, returns "" or the exact reference error.
+public string objParseObject(ObjReader r, string targetOs, ParsedObj obj) {
+    if (targetOs == "LINUX") { return objParseElf(r, obj); }
+    if (targetOs == "MAC") { return objParseMacho(r, obj); }
+    return objParseCoff(r, obj);
 }
 
 // An open object-cache session for one project and one host target.
@@ -725,14 +1833,15 @@ class ObjSession {
     public prop int[] mTimes;
     public prop int[] hashes;
     public prop int[] cachedAt;
-    // Files observed this run (payload = synced .srbc text on a bytecode
-    // hit, source text otherwise).
+    // Files observed this run: the source FNV-1 hash plus the source length
+    // (the bytecode tier's size proxy in place of mtimes), and which tier
+    // fed the driver's tokens (1 = synced .srbc text, 0 = fresh source).
     public prop string[] notedKeys;
-    public prop string[] notedPayloads;
     public prop int[] notedC;
     public prop int[] notedM;
     public prop int[] notedH;
     public prop int[] notedStamps;
+    public prop int[] notedTiers;
 
     // Open (or prepare) the object cache for `projName` rooted at `rootDir`,
     // targeting the auto-detected host (`hostOsName`, interpHostOs). When
@@ -751,11 +1860,11 @@ class ObjSession {
         this.hashes = [];
         this.cachedAt = [];
         this.notedKeys = [];
-        this.notedPayloads = [];
         this.notedC = [];
         this.notedM = [];
         this.notedH = [];
         this.notedStamps = [];
+        this.notedTiers = [];
         string guarded = icSanitize(projName);
         string sub = objTargetDirName(hostOsName);
         #on WINDOWS
@@ -786,36 +1895,36 @@ class ObjSession {
         return -1;
     }
 
-    // Observe the entry source. `payload` carries the synced .srbc text when
-    // the bytecode tier hit ("" selects the source itself). Freshness keys
-    // on the source FNV-1 hash plus the source length (the bytecode tier's
-    // size proxy in place of mtimes). Out-of-root entries are skipped: they
+    // Observe the entry source. Freshness keys on the source FNV-1 hash plus
+    // the source length (the bytecode tier's size proxy in place of mtimes —
+    // the same hash the driver lexed, whether its tokens came from synced
+    // .srbc text or fresh source). Out-of-root entries are skipped: they
     // still run normally, they just are not object-cached.
-    public void noteFile(string absPath, string source, string payload) {
+    public void noteFile(string absPath, string source, bool fromBytecode) {
         if (!this.ok) { return; }
         string key = icRelPath(this.root, absPath);
         if (key.length == 0) { return; }
         if (objIsLocalKey(key) == 0) { return; }
         int64 srcHash = icFnv1(source);
         int srcLen = source.length;
-        string body = payload;
-        if (body.length == 0) { body = source; }
         int stamp = icNowMillis();
+        int tier = 0;
+        if (fromBytecode) { tier = 1; }
         int idx = this.findNoted(key);
         if (idx >= 0) {
-            this.notedPayloads[idx] = body;
             this.notedC[idx] = stamp;
             this.notedM[idx] = srcLen;
             this.notedH[idx] = srcHash;
             this.notedStamps[idx] = stamp;
+            this.notedTiers[idx] = tier;
             return;
         }
         this.notedKeys.add(key);
-        this.notedPayloads.add(body);
         this.notedC.add(stamp);
         this.notedM.add(srcLen);
         this.notedH.add(srcHash);
         this.notedStamps.add(stamp);
+        this.notedTiers.add(tier);
     }
 
     // Absolute path of the .o for a record key (mirrors the project tree,
@@ -835,31 +1944,59 @@ class ObjSession {
         return this.dir + "\\" + base.replaceAll("/", "\\") + ".o";
     }
 
+    // Freshness probe for one noted entry (mirrors the reference plan()):
+    // the record matches (hash + size), the .o exists, and its v4 note
+    // peeks with the expected flag set + hash. Anything else — a changed
+    // source, a missing file, a v3-era object, a foreign object, a
+    // compiler-emitted object under another flag set — is stale (re-emit),
+    // never a hard error here and never silently reused.
+    private bool isFresh(int n) {
+        int idx = this.findRecord(this.notedKeys[n]);
+        if (idx < 0) { return false; }
+        if (this.hashes[idx] != this.notedH[n]) { return false; }
+        if (this.mTimes[idx] != this.notedM[n]) { return false; }
+        string probe = this.objectPath(this.notedKeys[n]);
+        if (probe.length == 0 || !file.exists(probe)) { return false; }
+        byte[] raw = [];
+        try {
+            raw = file.read(probe);
+        } catch (int e) {
+            return false;
+        }
+        if (raw.length == 0) { return false; }
+        ObjReader r = new ObjReader(raw);
+        ObjNote note = new ObjNote();
+        if (!objPeekNote(r, this.targetOs, note)) { return false; }
+        if (note.flags != this.flags) { return false; }
+        if (note.hash != int64(this.notedH[n])) { return false; }
+        return true;
+    }
+
     // Re-emit changed objects, merge the per-target record (+ .sbcri text
-    // companion), then unify: validate the cached + refreshed objects with
-    // the built-in unifier before the driver runs from them. Returns "" on
-    // success, else the exact reference error — fails loudly (never
-    // silently) when an object is missing or corrupt.
+    // companion), then unify: fully parse the cached + refreshed objects
+    // with the built-in readers before the driver runs from the verified
+    // tokens. Returns "" on success, else the exact reference error — fails
+    // loudly (never silently) when an object is missing or corrupt.
     public string finish() {
         this.sortNoted();
         for (int n = 0; n < this.notedKeys.length; n++) {
-            int idx = this.findRecord(this.notedKeys[n]);
-            bool fresh = false;
-            if (idx >= 0 && this.hashes[idx] == this.notedH[n] && this.mTimes[idx] == this.notedM[n]) {
-                string probe = this.objectPath(this.notedKeys[n]);
-                if (probe.length > 0 && file.exists(probe)) { fresh = true; }
-            }
-            if (!fresh) {
+            if (!this.isFresh(n)) {
+                ObjUnit unit = new ObjUnit();
+                interpBuildUnit(this.notedKeys[n], int64(this.notedH[n]), this.notedM[n], this.notedStamps[n], this.targetOs, unit);
+                if (objTooManyRelocs(unit)) {
+                    return "object cache: too many relocations in '" + this.notedKeys[n] + "' for one COFF section (v1 boundary)";
+                }
                 string objPath = this.objectPath(this.notedKeys[n]);
                 if (objPath.length == 0) {
                     return "object cache: cannot place object for '" + this.notedKeys[n] + "'";
                 }
                 icEnsureDirTree(icDirname(objPath));
-                int[] bytes = this.emitObject(this.notedPayloads[n], int64(this.notedH[n]), this.notedStamps[n]);
+                int[] bytes = emitObject(unit, this.flags, int64(this.notedH[n]), this.notedStamps[n], this.targetOs);
                 file.writeBytes(objPath, bytes);
                 if (!file.exists(objPath) || file.getSize(objPath) != bytes.length) {
                     return "object cache: cannot write " + objPath + ": verification failed";
                 }
+                int idx = this.findRecord(this.notedKeys[n]);
                 if (idx >= 0) {
                     this.mTimes[idx] = this.notedM[n];
                     this.hashes[idx] = this.notedH[n];
@@ -893,9 +2030,12 @@ class ObjSession {
             w.u64(this.hashes[rb]);
             w.u64(this.cachedAt[rb]);
         }
-        string sbcrPath = this.dir + "\\project.sbcr";
-        string sbcriPath = this.dir + "\\project.sbcri";
-        #on LINUX or MAC
+        string sbcrPath = "";
+        string sbcriPath = "";
+        #on WINDOWS
+        sbcrPath = this.dir + "\\project.sbcr";
+        sbcriPath = this.dir + "\\project.sbcri";
+        #else
         sbcrPath = this.dir + "/project.sbcr";
         sbcriPath = this.dir + "/project.sbcri";
         #off
@@ -915,11 +2055,9 @@ class ObjSession {
         file.writeString(sbcriPath, lines.join(""));
 
         // Built-in unification: every object of this run must be present
-        // and valid (container magic, target machine/cpu, flag set, source
-        // hash) before the driver executes from it.
-        string corruptEmpty = "object cache: corrupt COFF object";
-        if (this.targetOs == "LINUX") { corruptEmpty = "object cache: corrupt ELF object"; }
-        if (this.targetOs == "MAC") { corruptEmpty = "object cache: corrupt Mach-O object"; }
+        // and fully valid (container magic, target machine, sections,
+        // symbols, relocations, flag set, source hash) before the driver
+        // executes from the verified tokens.
         for (int u = 0; u < this.notedKeys.length; u++) {
             string upath = this.objectPath(this.notedKeys[u]);
             if (!file.exists(upath)) {
@@ -931,60 +2069,61 @@ class ObjSession {
             } catch (int e) {
                 return "object cache: cannot read " + upath + ": file not found";
             }
-            if (udata.length == 0) { return corruptEmpty; }
+            if (udata.length == 0) { return this.corruptEmpty(); }
             ObjReader ur = new ObjReader(udata);
-            string uerr = this.validateObject(ur, u);
-            if (uerr.length > 0) { return uerr; }
+            ParsedObj parsed = new ParsedObj();
+            string perr = objParseObject(ur, this.targetOs, parsed);
+            if (perr.length > 0) { return perr; }
+            if (parsed.flags != this.flags) {
+                return "object cache: flag-set switch (object has '" + parsed.flags + "', build wants '" + this.flags + "') — re-emit required";
+            }
+            if (parsed.hash != int64(this.notedH[u])) {
+                return "object cache: stale object (source hash changed) — re-emit required";
+            }
         }
         return "";
     }
 
-    // The validated .o payload of one noted entry as text: synced .srbc text
-    // when the object tier packed bytecode, source text otherwise. Returns
-    // "" when the object cannot be read or parsed (unreachable after a clean
-    // finish() unless the file changed mid-run); the driver then runs from
-    // the tokens it already holds.
-    public string extractPayload(string absPath) {
+    // Execution-path gate (called by the driver after finish()): re-read
+    // the entry's object and fully validate it (magic, machine, sections,
+    // symbols, relocations, flag set, source hash). Returns "" when the
+    // object is verified — execution then proceeds from the verified
+    // tokens — else the exact loud error. Stale bytes are never executed.
+    public string verifyObject(string absPath, int64 expectHash) {
         string key = icRelPath(this.root, absPath);
-        if (key.length == 0) { return ""; }
+        if (key.length == 0) {
+            return "object cache: cannot read " + absPath + ": file not found";
+        }
         string opath = this.objectPath(key);
-        if (opath.length == 0 || !file.exists(opath)) { return ""; }
+        if (opath.length == 0 || !file.exists(opath)) {
+            return "object cache: cannot read " + opath + ": file not found";
+        }
         byte[] odata = [];
         try {
             odata = file.read(opath);
         } catch (int e) {
-            return "";
+            return "object cache: cannot read " + opath + ": file not found";
         }
-        if (odata.length == 0) { return ""; }
+        if (odata.length == 0) { return this.corruptEmpty(); }
         ObjReader or = new ObjReader(odata);
-        int[] span = ocTextSpan(or, this.targetOs);
-        if (span.length < 2) { return ""; }
-        return or.bytesAt(span[0], span[1]);
-    }
-
-    // Pack one noted entry into a linkable object for the session target:
-    // the proper container format per target carrying the payload plus a
-    // Silver note (flag set + source hash + stamp) the unifier validates.
-    private int[] emitObject(string payload, int64 hash, int stamp) {
-        int[] pbytes = [];
-        for (int i = 0; i < payload.length; i++) {
-            pbytes.add(int64(payload[i]) & 0xFF);
+        ParsedObj obj = new ParsedObj();
+        string perr = objParseObject(or, this.targetOs, obj);
+        if (perr.length > 0) { return perr; }
+        if (obj.flags != this.flags) {
+            return "object cache: flag-set switch (object has '" + obj.flags + "', build wants '" + this.flags + "') — re-emit required";
         }
-        int[] note = objEncodeNote(this.flags, hash, stamp);
-        ObjWriter w = new ObjWriter();
-        if (this.targetOs == "LINUX") { w.emitElf(pbytes, note); }
-        else if (this.targetOs == "MAC") { w.emitMacho(pbytes, note); }
-        else { w.emitCoff(pbytes, note, stamp); }
-        return w.out;
+        if (obj.hash != expectHash) {
+            return "object cache: stale object (source hash changed) — re-emit required";
+        }
+        return "";
     }
 
-    // Built-in object unifier (no external linker — FORBIDDEN.md): validates
-    // the cached + refreshed .o of one noted entry in deterministic order.
-    private string validateObject(ObjReader r, int notedIdx) {
-        int64 expectHash = int64(this.notedH[notedIdx]);
-        if (this.targetOs == "LINUX") { return objCheckElf(r, this.flags, expectHash); }
-        if (this.targetOs == "MAC") { return objCheckMacho(r, this.flags, expectHash); }
-        return objCheckCoff(r, this.flags, expectHash);
+    // Target-appropriate "empty object" corruption error (mirrors the
+    // reference read_unit spelling per target).
+    private string corruptEmpty() {
+        if (this.targetOs == "LINUX") { return "object cache: corrupt ELF object"; }
+        if (this.targetOs == "MAC") { return "object cache: corrupt Mach-O object"; }
+        return "object cache: corrupt COFF object";
     }
 
     // Deterministic record order: sorted by relative path (matches the
@@ -1016,27 +2155,27 @@ class ObjSession {
     private void sortNoted() {
         for (int i = 1; i < this.notedKeys.length; i++) {
             string k = this.notedKeys[i];
-            string p = this.notedPayloads[i];
             int c = this.notedC[i];
             int m = this.notedM[i];
             int h = this.notedH[i];
             int lc = this.notedStamps[i];
+            int t = this.notedTiers[i];
             int j = i - 1;
             while (j >= 0 && k < this.notedKeys[j]) {
                 this.notedKeys[j + 1] = this.notedKeys[j];
-                this.notedPayloads[j + 1] = this.notedPayloads[j];
                 this.notedC[j + 1] = this.notedC[j];
                 this.notedM[j + 1] = this.notedM[j];
                 this.notedH[j + 1] = this.notedH[j];
                 this.notedStamps[j + 1] = this.notedStamps[j];
+                this.notedTiers[j + 1] = this.notedTiers[j];
                 j--;
             }
             this.notedKeys[j + 1] = k;
-            this.notedPayloads[j + 1] = p;
             this.notedC[j + 1] = c;
             this.notedM[j + 1] = m;
             this.notedH[j + 1] = h;
             this.notedStamps[j + 1] = lc;
+            this.notedTiers[j + 1] = t;
         }
     }
 
