@@ -2,6 +2,18 @@ mod export objcache;
 
 import * from cache;
 
+// Raw OS enablers for the native object runner below (kernel32 executable
+// mapping + high-resolution timing, msvcrt copy) — file-top grant,
+// mirroring the unified std fold shape (cache.sr, resource.sr).
+#on WINDOWS
+import * from win32.kernel32;
+import * from win32.msvcrt;
+#on LINUX
+import * from linux.libc;
+#on MAC
+import * from mac.libsystem;
+#off
+
 // OVERHAUL.md --cache-object — persistent per-target object cache for the
 // interpreter, plus the built-in object validation tier (the third execution
 // tier beside .sr AST interpretation and .srbc bytecode interpretation).
@@ -66,32 +78,65 @@ import * from cache;
 // exactly like a conventional compiler's output.
 //
 // ///////////////////////////////////////////////////////////////////////////
-// // NATIVE-RUNNER BOUNDARY — loud, documented, deliberate (read this all). //
+// // NATIVE RUNNER — LANDED (in-process .o execution, OVERHAUL.md fastest  //
+// // tier). Read this all: what runs natively, what still falls back, why. //
 // ///////////////////////////////////////////////////////////////////////////
 // //
-// // The .o files above are GENUINE relocatable machine-code objects (real
-// // code bytes, real symbols, real relocations, validated byte-shape), but
-// // in-process NATIVE EXECUTION from .text is NOT implemented in this task
-// // and does not happen: there is no loader, no mmap-executable mapping, no
-// // relocation applier, and no call into the emitted bytes anywhere in this
-// // module. That runner is the explicit follow-up.
+// // After verifyObject passes, ObjSession.runNative loads the validated
+// // entry object and EXECUTES its .text in-process: one RWX block from
+// // VirtualAlloc (MEM_COMMIT zero-fill, PAGE_EXECUTE_READWRITE — the same
+// // established file-top DLL-import pattern cache.sr/resource.sr use, no
+// // new FFI shape), the object's own ABS64/REL32 relocations applied
+// // against the loaded base, the UNDEF __slv_interp_run import bound
+// // through an in-block import thunk (15 bytes after the .rdata coat —
+// // silveri.exe's image address and VirtualAlloc's low arena routinely sit
+// // more than ±2 GB apart, beyond REL32 reach, so the seam binds the way
+// // linkers bind far imports: a near REL32 to the thunk, which calls the
+// // compiled seam callback absolutely). The thunk preserves RAX across
+// // the seam call (push rax ... pop rax): the stub materializes the
+// // source hash into RAX BEFORE the call and returns it AFTER, so without
+// // the save the seam's own return would clobber the proof value. Then a
+// // call into the loaded entry marshals that RAX back into the
+// // interpreter's int domain.
 // //
-// // What happens instead (the execution path, see main.sr): finish() parses
-// // every cached + refreshed object back with the built-in readers
-// // (container magic, target machine, section spans, symbol tables,
-// // relocations, SLVOBJ2 note, emitting flag set, source hash) and fails
-// // LOUDLY on any mismatch — never executing stale bytes. verifyObject()
-// // re-checks the entry object on the execution path itself. Execution then
-// // proceeds from the VERIFIED tokens the driver already holds (synced .srbc
-// // text on a bytecode-tier hit, freshly lexed source otherwise) through the
-// // existing AST/bytecode tiers. The validated object is therefore a
-// // freshness + integrity carrier today and becomes the runnable payload
-// // when the native runner lands — everything up to the runner is genuine.
+// // Copying is NUL-safe by construction: Silver strings are C strings, so
+// // .length stops at the first NUL and one memcpy cannot carry NUL bytes.
+// // The RWX block arrives zero-filled, so NUL bytes need no copy at all —
+// // objNatBlit copies only the NUL-free runs between them at their true
+// // offsets (an all-NUL payload copies nothing and is still exact).
 // //
-// // The seam is already named in every emitted object: the stub calls the
-// // UNDEF FUNC symbol __slv_interp_run, which the future runner will define
-// // (bind) at load time. Any dumpbin/nm/objdump of an interpreter-written
-// // .o shows the pending import outright.
+// // The call itself rides the language's own indirect-call shape
+// // (DOCS/259 G3): the entry address sits in an int[] slot and slots[0]()
+// // evaluates to the callee's RAX, so no new call primitive was needed.
+// //
+// // PROOF the bytes ran (not the AST): the stub materializes the source
+// // FNV-1 hash into RAX, so a native run must return RAX == note hash AND
+// // reach the seam. Patching one hash byte in the cached .o (source
+// // untouched) changes the returned RAX, which the runner reports loudly;
+// // freshness still passes (the SLVOBJ2 note is untouched), so the patch
+// // demonstrably flows through executed machine code, never the AST.
+// //
+// // EXACT BOUNDARY (loud fallback to the verified AST/bytecode tiers, never
+// // silent wrong behavior — every case below returns a reason string the
+// // driver prints):
+// //
+// // - Only WINDOWS/x86-64 executes (COFF objects). LINUX (ELF) and MAC
+// //   (Mach-O/ARM64) validate identically but stay on the verified tiers:
+// //   same loader math, unprobed host ceilings — the follow-up.
+// // - Only the __slv_interp_run seam binds (to the compiled void()
+// //   callback below). Any other UNDEF import, linker singleton, or
+// //   extern/data target outside .text/.rdata is unresolvable in-process.
+// // - The seam is void(): it observes no RCX anchor and returns no program
+// //   value (Silver cannot spell richer native signatures), so it raises
+// //   the hit flag and nothing more. The stub carries no program semantics
+// //   by emitter design (hash + seam call, never compiled program logic),
+// //   so program evaluation continues from the verified tokens; the runner
+// //   proves the .o tier is genuine runnable machine code, not where
+// //   program results come from. A real AST-to-machine-code backend is the
+// //   follow-up beyond the runner.
+// // - Oversize objects (>64 MiB), mapping failure, an unreachable seam, a
+// //   RAX/note-hash mismatch (hand-patched or otherwise stale bytes the
+// //   note cannot see), and out-of-range REL32 all fall back loudly.
 // //
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -588,11 +633,12 @@ class ObjReader {
 //
 // The stub is genuine, disassemblable machine code for the session target,
 // deterministic per (owner key, source hash). It is NOT the program
-// compiled: native execution is the follow-up (see the boundary notice at
-// the top of this file). The stub's job today is being a real code payload
-// with real symbols/relocs so the object tier validates byte-identically
-// across the toolchain; its call to __slv_interp_run names the seam the
-// future runner will bind.
+// compiled: program evaluation stays on the verified AST/bytecode tiers
+// (see the NATIVE RUNNER notice at the top of this file). The stub's job
+// is being a real code payload with real symbols/relocs so the object tier
+// validates byte-identically across the toolchain AND executes natively
+// under runNative (RAX == source hash, seam reached); its call to
+// __slv_interp_run names the seam the runner binds at load time.
 // ---------------------------------------------------------------------------
 
 // 34 bytes of real x86-64 (Windows/Linux target):
@@ -1818,6 +1864,163 @@ public string objParseObject(ObjReader r, string targetOs, ParsedObj obj) {
     return objParseCoff(r, obj);
 }
 
+// ---------------------------------------------------------------------------
+// Native object runner helpers (see the NATIVE RUNNER notice at the top).
+// Raw OS calls live each in their own single chained region; everything
+// else is shared portable code. Non-Windows bodies report absence (0) so
+// callers fall back loudly without ever transferring control.
+// ---------------------------------------------------------------------------
+
+// Hit flag the compiled seam callback raises. A one-slot module-global
+// array: bare globals are not valid assignment targets (the type checker
+// rejects them), but array-element stores are, and the seam is a
+// standalone void() function that captures no runner locals.
+int[] objRunSeam = [0];
+
+// Address of the seam callback implementing the __slv_interp_run import: a
+// compiled void() lambda reified to int (fn-typed values ARE code
+// addresses, so the round trip compiles on every backend). The lambda
+// raises the hit flag through the setter below and nothing more — void()
+// observes no RCX anchor and returns no program value (see the boundary
+// notice). The body calls instead of assigning: assignment targets inside
+// a lambda body are restricted to the lambda's own scope.
+private void objNoteSeam() {
+    objRunSeam[0] = 1;
+}
+
+private int objSeamAddr() {
+    void () seamFn = (void () { objNoteSeam(); });
+    int addr = seamFn;
+    return addr;
+}
+
+// One RWX block of `size` bytes (MEM_COMMIT zero-fill,
+// PAGE_EXECUTE_READWRITE): 12288 = MEM_COMMIT|MEM_RESERVE, 64 = PAGE_XRW.
+// 0 when the mapping fails (caller falls back loudly).
+private int objNatAlloc(int size) {
+    #on WINDOWS
+    return VirtualAlloc(null, size, 12288, 64);
+    #else
+    return 0;
+    #off
+}
+
+// Raw copy of `n` bytes from the Silver string `src` to address `dst`.
+// Callers only pass NUL-free chunks (see objNatBlit).
+private void objNatCopy(int dst, string src, int n) {
+    #on WINDOWS
+    memcpy(dst, src, n);
+    #else
+    return;
+    #off
+}
+
+// Call the machine code at `addr` with no arguments and marshal RAX back
+// (the DOCS/259 G3 indirect-call shape: the address rides an int[] slot).
+private int objNatCall(int addr) {
+    #on WINDOWS
+    int[] slots = [];
+    slots.add(addr);
+    return slots[0]();
+    #else
+    return 0;
+    #off
+}
+
+// Release one block mapped by objNatAlloc (32768 = MEM_RELEASE).
+private void objNatFree(int addr) {
+    #on WINDOWS
+    VirtualFree(addr, 0, 32768);
+    #else
+    return;
+    #off
+}
+
+// High-resolution tick counter for the native-call timing below.
+private int64 objNatTicks() {
+    #on WINDOWS
+    int64 c = 0;
+    QueryPerformanceCounter(&c);
+    return c;
+    #else
+    return 0;
+    #off
+}
+
+// Tick frequency matching objNatTicks (0 when unavailable: no timing).
+private int64 objNatFreq() {
+    #on WINDOWS
+    int64 f = 0;
+    QueryPerformanceFrequency(&f);
+    return f;
+    #else
+    return 0;
+    #off
+}
+
+// Copy `bytes` (low-byte int[] values, NULs included) onto the RWX block at
+// `base`: Silver strings are C strings, so .length stops at the first NUL
+// and one memcpy cannot carry NUL bytes. The block arrives zero-filled, so
+// NUL positions need no copy — only the NUL-free runs between them move,
+// at their true offsets. Exact for every payload, including all-NUL ones.
+private void objNatBlit(int base, int[] bytes) {
+    int start = 0;
+    while (start < bytes.length) {
+        while (start < bytes.length && bytes[start] == 0) { start++; }
+        if (start >= bytes.length) { break; }
+        int end = start;
+        while (end < bytes.length && bytes[end] != 0) { end++; }
+        string chunk = "";
+        for (int i = start; i < end; i++) {
+            chunk = chunk + char(bytes[i]);
+        }
+        objNatCopy(base + start, chunk, chunk.length);
+        start = end;
+    }
+}
+
+// Apply the parsed relocations onto the mutable `code` image for a block
+// laid out as code@[base, base+len) with the .rdata coat at `rdataBase`:
+// ABS64 sites take the datab (or other defined) address, REL32 sites take
+// target-(site+4), and the __slv_interp_run import binds `seamTarget` (the
+// caller's in-block import thunk — always near by construction, so the
+// range check below guards genuinely foreign shapes only). Any other
+// undefined target is unresolvable in-process. Returns "" or the loud
+// fallback reason (never a silent mislink).
+private string objApplyRelocs(ParsedObj obj, int[] code, int base, int rdataBase, int seamTarget) {
+    for (int i = 0; i < obj.relSites.length; i++) {
+        int site = obj.relSites[i];
+        int sni = obj.relSyms[i];
+        int kind = obj.relKinds[i];
+        if (sni < 0 || sni >= obj.symNames.length) { return "object runner: relocation targets a missing symbol"; }
+        string sym = obj.symNames[sni];
+        int sect = obj.symSects[sni];
+        int val = obj.symVals[sni];
+        if (kind == 1) {
+            if (site < 0 || site + 8 > code.length) { return "object runner: ABS64 site out of range"; }
+            int64 target = 0;
+            if (sect == 1) { target = int64(base + val); }
+            else if (sect == 2) { target = int64(rdataBase + val); }
+            else { return "object runner: unresolvable relocation target '" + sym + "'"; }
+            target += obj.relAddends[i];
+            for (int b = 0; b < 8; b++) { code[site + b] = int((target >> (b * 8)) & 0xFF); }
+        } else {
+            if (site < 0 || site + 4 > code.length) { return "object runner: REL32 site out of range"; }
+            int64 target = 0;
+            if (sect == 0) {
+                if (sym == objInterpRunSym()) { target = int64(seamTarget); }
+                else { return "object runner: unresolvable import '" + sym + "'"; }
+            } else if (sect == 1) { target = int64(base + val); }
+            else if (sect == 2) { target = int64(rdataBase + val); }
+            else { return "object runner: unresolvable relocation target '" + sym + "'"; }
+            int64 rel = target - int64(base + site + 4);
+            if (rel < -2147483648 || rel > 2147483647) { return "object runner: REL32 relocation out of range"; }
+            for (int b2 = 0; b2 < 4; b2++) { code[site + b2] = int((rel >> (b2 * 8)) & 0xFF); }
+        }
+    }
+    return "";
+}
+
 // An open object-cache session for one project and one host target.
 class ObjSession {
     public prop bool ok;
@@ -1827,6 +2030,9 @@ class ObjSession {
     public prop string targetOs;
     public prop string flags;
     public prop int createdStamp;
+    // Native-call cost of the last runNative success, in microseconds (-1
+    // when the host clock was unavailable). Read by the driver for --diag.
+    public prop int lastNativeUs;
     // Record arrays keyed by /-separated relative path.
     public prop string[] keys;
     public prop int[] cTimes;
@@ -1865,6 +2071,7 @@ class ObjSession {
         this.notedH = [];
         this.notedStamps = [];
         this.notedTiers = [];
+        this.lastNativeUs = -1;
         string guarded = icSanitize(projName);
         string sub = objTargetDirName(hostOsName);
         #on WINDOWS
@@ -2114,6 +2321,95 @@ class ObjSession {
         }
         if (obj.hash != expectHash) {
             return "object cache: stale object (source hash changed) — re-emit required";
+        }
+        return "";
+    }
+
+    // In-process native execution of the entry's validated object (the
+    // OVERHAUL.md fastest tier: .o execution). Call ONLY after verifyObject
+    // passes on the same entry: the gate owns validation, this owns loading
+    // and calling (it re-checks flags + hash on the bytes it executes, so a
+    // file swapped between the two calls still cannot run stale).
+    //
+    // Returns "" when the validated .text ran natively (RAX == note hash,
+    // seam reached; lastNativeUs carries the call cost), else the loud
+    // fallback reason — the driver prints it and continues from the
+    // verified AST/bytecode tiers, never silently wrong. See the NATIVE
+    // RUNNER notice at the top for the exact execution boundary.
+    public string runNative(string absPath, int64 expectHash) {
+        if (this.targetOs != "WINDOWS") {
+            return "object runner: " + this.targetOs + " execution stays on the verified tiers (in-process runner is COFF/x86-64 only)";
+        }
+        string verr = this.verifyObject(absPath, expectHash);
+        if (verr.length > 0) { return verr; }
+        string key = icRelPath(this.root, absPath);
+        string opath = this.objectPath(key);
+        byte[] odata = [];
+        try {
+            odata = file.read(opath);
+        } catch (int e) {
+            return "object cache: cannot read " + opath + ": file not found";
+        }
+        ObjReader or = new ObjReader(odata);
+        ParsedObj obj = new ParsedObj();
+        string perr = objParseObject(or, this.targetOs, obj);
+        if (perr.length > 0) { return perr; }
+        if (obj.flags != this.flags) {
+            return "object cache: flag-set switch (object has '" + obj.flags + "', build wants '" + this.flags + "') — re-emit required";
+        }
+        if (obj.hash != expectHash) {
+            return "object cache: stale object (source hash changed) — re-emit required";
+        }
+        if (obj.code.length == 0) { return "object runner: empty .text"; }
+        // Layout: code, then the .rdata coat, then the 15-byte import thunk
+        // (push rax; movabs rax,seam; call rax; pop rax; ret) the seam
+        // REL32 binds to — near by construction, whatever the seam's
+        // absolute address is. The push/pop preserves the stub's RAX hash
+        // across the seam call (see the NATIVE RUNNER notice).
+        int total = obj.code.length + obj.data.length + 15;
+        if (total > 67108864) { return "object runner: object too large (" + (string)total + " bytes)"; }
+        // Entry offset: the file's own entry stub by name, else the first
+        // defined .text function. Anything else has no callable entry.
+        int entryOff = -1;
+        string wantEntry = objInterpEntrySym(obj.filekey, obj.hash);
+        for (int s = 0; s < obj.symNames.length; s++) {
+            if (obj.symSects[s] == 1 && obj.symIsFunc[s] == 1) {
+                if (entryOff < 0) { entryOff = obj.symVals[s]; }
+                if (obj.symNames[s] == wantEntry) { entryOff = obj.symVals[s]; }
+            }
+        }
+        if (entryOff < 0 || entryOff >= obj.code.length) { return "object runner: no executable entry"; }
+        int seam = objSeamAddr();
+        if (seam == 0) { return "object runner: seam address unavailable"; }
+        int base = objNatAlloc(total);
+        if (base == 0) { return "object runner: executable mapping failed"; }
+        int rdataBase = base + obj.code.length;
+        int thunkBase = rdataBase + obj.data.length;
+        int[] image = [];
+        for (int c = 0; c < obj.code.length; c++) { image.add(obj.code[c]); }
+        string rerr = objApplyRelocs(obj, image, base, rdataBase, thunkBase);
+        if (rerr.length > 0) {
+            objNatFree(base);
+            return rerr;
+        }
+        objRunSeam[0] = 0;
+        objNatBlit(base, image);
+        objNatBlit(rdataBase, obj.data);
+        int[] thunk = [80, 72, 184, 0, 0, 0, 0, 0, 0, 0, 0, 255, 208, 88, 195];
+        for (int t = 0; t < 8; t++) { thunk[3 + t] = int((int64(seam) >> (t * 8)) & 0xFF); }
+        objNatBlit(thunkBase, thunk);
+        int64 t0 = objNatTicks();
+        int rax = objNatCall(base + entryOff);
+        int64 t1 = objNatTicks();
+        objNatFree(base);
+        if (objRunSeam[0] == 0) { return "object runner: entry did not reach the __slv_interp_run seam"; }
+        if (int64(rax) != obj.hash) {
+            return "object runner: native result mismatch (RAX " + (string)rax + ", note hash " + (string)obj.hash + ")";
+        }
+        this.lastNativeUs = -1;
+        int64 freq = objNatFreq();
+        if (freq > 0 && t1 > t0) {
+            this.lastNativeUs = int((t1 - t0) * 1000000 / freq);
         }
         return "";
     }
