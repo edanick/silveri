@@ -1349,15 +1349,16 @@ void main() {
     // A corrupt, foreign, or stale object fails loudly (never silently);
     // an undeterminable cache root degrades to the tiers above.
     //
-    // NATIVE-RUNNER BOUNDARY (loud, documented — see objcache.sr): the .o
-    // is a freshness + integrity carrier, NOT the runnable payload yet.
-    // In-process native execution from .text machine code is the explicit
-    // follow-up (the stub already calls the UNDEF seam __slv_interp_run).
-    // Execution therefore continues from the VERIFIED tokens above — synced
-    // .srbc text on a bytecode-tier hit, freshly lexed source otherwise —
-    // through the existing AST/bytecode tiers. The --diag line below says
-    // so out loud on opted-in runs; quiet runs stay byte-identical to the
-    // uncached tiers (parity demand: no extra stdout on the normal path).
+    // NATIVE RUNNER (landed — see objcache.sr): after verifyObject passes,
+    // runNative() loads the validated entry object and executes its .text
+    // in-process (RWX block, own relocations applied, __slv_interp_run
+    // bound, RAX marshaled back). Success stays silent unless --diag;
+    // any fallback prints LOUDLY and execution continues from the VERIFIED
+    // tokens above — synced .srbc text on a bytecode-tier hit, freshly
+    // lexed source otherwise — through the existing AST/bytecode tiers
+    // (the stub carries no program semantics by design). Quiet runs stay
+    // byte-identical to the uncached tiers (parity demand: no extra stdout
+    // on the normal path).
     if (cacheObject) {
         ObjSession objs = new ObjSession(cacheRoot, cacheProject, target);
         if (objs.ok) {
@@ -1372,10 +1373,13 @@ void main() {
                 printline(objErr);
                 exit(1);
             }
-            if (diagCrumbs) {
-                string objTier = "source";
-                if (bcPayload.length > 0) { objTier = "bytecode"; }
-                printline("[objcache] genuine " + objTargetDirName(target) + " object validated (flags interp); running from verified " + objTier + " tier — native in-process execution is the follow-up");
+            string objTier = "source";
+            if (bcPayload.length > 0) { objTier = "bytecode"; }
+            string runNote = objs.runNative(filename, cache.icFnv1(inputSource));
+            if (runNote.length > 0) {
+                printline(runNote + " — continuing from verified " + objTier + " tier");
+            } else if (diagCrumbs) {
+                printline("[objcache] native object execution: genuine " + objTargetDirName(target) + " entry ran in-process (RAX == note hash, __slv_interp_run seam reached via import thunk, " + (string)objs.lastNativeUs + " us) — running from verified " + objTier + " tier");
             }
         }
     }
