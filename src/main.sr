@@ -12,6 +12,7 @@ import exception_std;
 import project;
 import guard;
 import cache;
+import objcache;
 
 // Nested module resolution (flat-first), mirroring silverc-rs
 // push_module_candidates (c7744ac) and the self-host drvDottedPath port:
@@ -85,10 +86,11 @@ int findCI(string text, string needle, int start) {
     return result;
 }
 
-// The interpreter's host OS default, resolved at silveri's own compile
-// time (mirrors preprocess.sr ppTargetOs): a LINUX-built silveri reports
-// LINUX, a WINDOWS-built one WINDOWS, a MAC-built one MAC. An explicit
-// `--os` override wins via interpTargetOsFor below.
+// The interpreter's host OS, resolved at silveri's own compile time
+// (mirrors preprocess.sr ppTargetOs): a LINUX-built silveri reports
+// LINUX, a WINDOWS-built one WINDOWS, a MAC-built one MAC. There is no
+// --os flag (OVERHAUL.md): the host selects the std region filter target
+// and the --cache-object <os>-<arch> directory alike.
 string interpHostOs() {
     #on WINDOWS
     return "WINDOWS";
@@ -97,21 +99,9 @@ string interpHostOs() {
     #on MAC
     // MAC host default (MAC.md section 3b.8). UNVALIDATED code-only
     // (MAC.md section 10): the default path cannot execution-test without
-    // Mac hardware; the explicit `--os mac` override path is what the
-    // code-only phase executes here.
+    // Mac hardware.
     return "MAC";
     #off
-}
-
-// Explicit `--os` override (lowercase windows/linux/mac is the documented
-// form; WINDOWS/LINUX/MAC and mixed-case also accepted, mirroring
-// silverc/compiler/cli_flags.sr); "" or anything else falls back to the
-// host default (never fatal).
-string interpTargetOsFor(string overrideOs) {
-    if (overrideOs.toLower() == "windows") { return "WINDOWS"; }
-    if (overrideOs.toLower() == "linux") { return "LINUX"; }
-    if (overrideOs.toLower() == "mac") { return "MAC"; }
-    return interpHostOs();
 }
 
 // True when `name` is a build-mode `#on` name (`DEBUG` / `RELEASE`,
@@ -171,7 +161,7 @@ bool stdRegionBranchMatches(string src, int nameStart, int contentEnd, string ta
 // parser. This filter runs on std module text BEFORE it is prepended into
 // the aggregate:
 //   - `#on <target>` region bodies are kept, where target is the host OS
-//     default (interpHostOs) unless `--os windows|linux|mac` overrides it.
+//     the interpreter itself was built for (interpHostOs).
 //     Build-mode names test their own axis (DOCS/253): `RELEASE` feeds by
 //     default (no flag; the interpreter has no `--debug` flag) while
 //     `DEBUG` bodies stay blanked. Each name is tested against its own
@@ -188,8 +178,8 @@ bool stdRegionBranchMatches(string src, int nameStart, int contentEnd, string ta
 //     no preceding `#on` of the region matched (compiler semantics).
 //   - Directive lines themselves are blank-replaced (CRLF shape preserved)
 //     so line numbers stay stable, mirroring preprocess.sr's line mapping.
-// Directive names stay `#on`-UPPERCASE-only (like the compilers); only the
-// `--os` flag values accept lowercase. Lenient by design (this is not the
+// Directive names stay `#on`-UPPERCASE-only (like the compilers).
+// Lenient by design (this is not the
 // compiler's strict validator): the filter NEVER errors. An `#else`/`#off`
 // without an open region, an unknown or missing OS or build-mode name, an unclosed region
 // at EOF, or a `#on` after `#else` just drops the directive line and the
@@ -1156,7 +1146,7 @@ void printHelp() {
     printline("  -i <file>      Input Silver source file");
     printline("  -o <file>      Output file (ignored in interpreter)");
     printline("  --cache-bytecode  Run bytecode interpretation via the persistent cache");
-    printline("  --os windows|linux|mac  Target OS for std region filtering (default: host)");
+    printline("  --cache-object   Persistent per-target object cache (<os>-<arch> under the same root)");
     printline("  --diag  Write per-call/per-block diagnostic crumbs to build/diag/ (slow)");
     printline("  --help, -h     Show this help message");
     printline("  --version      Show version information");
@@ -1164,6 +1154,9 @@ void printHelp() {
     printline("Examples:");
     printline("  silveri source.sr              Run a Silver source file");
     printline("  silveri -i source.sr           Run a Silver source file");
+    printline("  silveri -i source.sr --cache-bytecode  Run bytecode interpretation");
+    printline("  silveri -i source.sr --cache-object  Run object-cached execution (host target)");
+    printline("  silveri -i source.sr --cache-bytecode --cache-object  Fastest: both tiers");
 }
 
 void main() {
@@ -1181,7 +1174,7 @@ void main() {
     string filename = "";
     string[] sourceArgs = [];
     bool cacheBytecode = false;
-    string osOverride = "";
+    bool cacheObject = false;
     bool diagCrumbs = false;
 
     for (int i = 1; i < args.length; i++) {
@@ -1199,27 +1192,10 @@ void main() {
         }
         if (arg == "--cache-bytecode") {
             cacheBytecode = true;
+        } else if (arg == "--cache-object") {
+            cacheObject = true;
         } else if (arg == "--diag") {
             diagCrumbs = true;
-        } else if (arg == "--os") {
-            // Preprocessor target override (lowercase windows/linux/mac is
-            // the documented form; UPPERCASE also accepted, mirroring
-            // silverc/compiler/cli_flags.sr). A missing or unknown value
-            // is fatal here, like the compilers' flag validation.
-            string v = cli.valueAfter(args, i);
-            if (v.toLower() == "windows") {
-                osOverride = "WINDOWS";
-                i++;
-            } else if (v.toLower() == "linux") {
-                osOverride = "LINUX";
-                i++;
-            } else if (v.toLower() == "mac") {
-                osOverride = "MAC";
-                i++;
-            } else {
-                printline("Error: --os expects one of windows, linux, mac (WINDOWS, LINUX, MAC also accepted), got '" + v + "'");
-                exit(1);
-            }
         } else if (arg == "-i") {
             string v = cli.valueAfter(args, i);
             if (v != "") {
@@ -1260,9 +1236,9 @@ void main() {
     }
 
     string inputSource = "";
-    // Region-filter target: explicit `--os` wins, otherwise the host OS
-    // the interpreter itself was built for (interpHostOs).
-    string target = interpTargetOsFor(osOverride);
+    // Region-filter target: the host OS the interpreter itself was built
+    // for (interpHostOs). There is no --os flag (OVERHAUL.md).
+    string target = interpHostOs();
     if (filename.endsWith(".srp")) {
         // Own-source load point (v2 fold): the .srp aggregate builder reads
         // each source file raw, so the region filter runs on the assembled
@@ -1307,9 +1283,15 @@ void main() {
 
     Token[] tokens;
     int[] lineLens = [];
-    if (cacheBytecode) {
-        string cacheRoot = projDirname(filename);
-        string cacheProject = "";
+    // Synced .srbc text from the bytecode tier ("" on a miss): the object
+    // tier packs it as the .o payload when present and falls back to source
+    // otherwise (two-tier flow).
+    string bcPayload = "";
+    string cacheRoot = "";
+    string cacheProject = "";
+    if (cacheBytecode || cacheObject) {
+        cacheRoot = projDirname(filename);
+        cacheProject = "";
         int lastDot = -1;
         int lastSep = -1;
         for (int di = 0; di < filename.length; di++) {
@@ -1321,8 +1303,11 @@ void main() {
         } else {
             cacheProject = "silveri_default";
         }
+    }
+    if (cacheBytecode) {
         CacheSession cache = new CacheSession(cacheRoot, cacheProject);
         tokens = cache.tokensFor(filename, inputSource);
+        bcPayload = cache.lastPayload;
         cache.flush();
         // Cached-path lex diagnostics print grouped under the entry header
         // like the direct path; control flow is unchanged (historically the
@@ -1354,6 +1339,41 @@ void main() {
         // (tokenize/lineLengths/messages hand out refs the driver keeps, and
         // release only reassigns the lexer's own fields, so those stay live).
         lexer.release();
+    }
+
+    // OVERHAUL.md --cache-object: the still-faster object-cached path for
+    // the auto-detected host target. The session packs the synced .srbc text
+    // when the bytecode tier hit and falls back to source otherwise; after
+    // the built-in unify validation the run continues from the validated .o
+    // payload — the third execution tier, all inside the interpreter. A
+    // corrupt or missing object fails loudly (never silently); an
+    // undeterminable cache root degrades to the tiers above.
+    if (cacheObject) {
+        ObjSession objs = new ObjSession(cacheRoot, cacheProject, target);
+        if (objs.ok) {
+            objs.noteFile(filename, inputSource, bcPayload);
+            string objErr = objs.finish();
+            if (objErr.length > 0) {
+                printline(objErr);
+                exit(1);
+            }
+            string objText = objs.extractPayload(filename);
+            if (objText.length > 0 && objText != inputSource) {
+                Token[] objTokens = cache.icTokensFromText(objText, (string)cache.icFnv1(inputSource));
+                if (objTokens.length > 0) {
+                    tokens = objTokens;
+                } else {
+                    Lexer objLexer = new Lexer(objText);
+                    Token[] objLexed = objLexer.tokenize();
+                    if (objLexer.errorCount() > 0) {
+                        printGroupedDiagnostics(objLexer.messages(), filename);
+                        exit(1);
+                    }
+                    tokens = objLexed;
+                    objLexer.release();
+                }
+            }
+        }
     }
 
     Parser p = new Parser(tokens);

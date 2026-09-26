@@ -143,7 +143,7 @@ class Parser {
     }
 
     // DOCS/261 -- target OS for custom bare-name resolution ("WINDOWS",
-    // "LINUX" or "MAC", set by the driver from `--os` or the host default).
+    // "LINUX" or "MAC", set by the driver from the host default).
     public void setCustomTarget(string target) {
         this.customTarget = target;
     }
