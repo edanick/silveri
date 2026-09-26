@@ -1341,37 +1341,41 @@ void main() {
         lexer.release();
     }
 
-    // OVERHAUL.md --cache-object: the still-faster object-cached path for
-    // the auto-detected host target. The session packs the synced .srbc text
-    // when the bytecode tier hit and falls back to source otherwise; after
-    // the built-in unify validation the run continues from the validated .o
-    // payload — the third execution tier, all inside the interpreter. A
-    // corrupt or missing object fails loudly (never silently); an
-    // undeterminable cache root degrades to the tiers above.
+    // OVERHAUL.md --cache-object: the object-cached path for the
+    // auto-detected host target. The session emits a genuine machine-code
+    // .o (objcache.sr) and finish() runs the built-in unify validation over
+    // it; verifyObject() re-checks this entry's object on the execution
+    // path itself (container magic, target machine, flag set, source hash).
+    // A corrupt, foreign, or stale object fails loudly (never silently);
+    // an undeterminable cache root degrades to the tiers above.
+    //
+    // NATIVE-RUNNER BOUNDARY (loud, documented — see objcache.sr): the .o
+    // is a freshness + integrity carrier, NOT the runnable payload yet.
+    // In-process native execution from .text machine code is the explicit
+    // follow-up (the stub already calls the UNDEF seam __slv_interp_run).
+    // Execution therefore continues from the VERIFIED tokens above — synced
+    // .srbc text on a bytecode-tier hit, freshly lexed source otherwise —
+    // through the existing AST/bytecode tiers. The --diag line below says
+    // so out loud on opted-in runs; quiet runs stay byte-identical to the
+    // uncached tiers (parity demand: no extra stdout on the normal path).
     if (cacheObject) {
         ObjSession objs = new ObjSession(cacheRoot, cacheProject, target);
         if (objs.ok) {
-            objs.noteFile(filename, inputSource, bcPayload);
+            objs.noteFile(filename, inputSource, bcPayload.length > 0);
             string objErr = objs.finish();
             if (objErr.length > 0) {
                 printline(objErr);
                 exit(1);
             }
-            string objText = objs.extractPayload(filename);
-            if (objText.length > 0 && objText != inputSource) {
-                Token[] objTokens = cache.icTokensFromText(objText, (string)cache.icFnv1(inputSource));
-                if (objTokens.length > 0) {
-                    tokens = objTokens;
-                } else {
-                    Lexer objLexer = new Lexer(objText);
-                    Token[] objLexed = objLexer.tokenize();
-                    if (objLexer.errorCount() > 0) {
-                        printGroupedDiagnostics(objLexer.messages(), filename);
-                        exit(1);
-                    }
-                    tokens = objLexed;
-                    objLexer.release();
-                }
+            objErr = objs.verifyObject(filename, cache.icFnv1(inputSource));
+            if (objErr.length > 0) {
+                printline(objErr);
+                exit(1);
+            }
+            if (diagCrumbs) {
+                string objTier = "source";
+                if (bcPayload.length > 0) { objTier = "bytecode"; }
+                printline("[objcache] genuine " + objTargetDirName(target) + " object validated (flags interp); running from verified " + objTier + " tier — native in-process execution is the follow-up");
             }
         }
     }
