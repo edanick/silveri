@@ -42,9 +42,13 @@ import * from mac.libsystem;
 // relocatable object format for the target, emitted by the built-in writers
 // below — COFF (IMAGE_FILE_MACHINE_AMD64) on Windows, ELF relocatable
 // (ET_REL, EM_X86_64) on Linux, Mach-O object (MH_OBJECT, ARM64) on mac.
-// No external linker, assembler, or object toolchain of any kind
-// (FORBIDDEN.md): the containers are assembled here with plain byte pushes
-// over int[] buffers so cached objects validate across the toolchain.
+// The Linux object carries 9 section headers (NULL, .text, .rdata, .slvnote,
+// .shstrtab, .symtab, .strtab, .rela.text, and the empty-but-present
+// .rela.data), exactly like the references; older 8-section objects (no
+// .rela.data) still validate. No external linker, assembler, or object
+// toolchain of any kind (FORBIDDEN.md): the containers are assembled here
+// with plain byte pushes over int[] buffers so cached objects validate
+// across the toolchain.
 //
 // Every object carries three real sections plus the container's symbol and
 // relocation tables:
@@ -75,7 +79,12 @@ import * from mac.libsystem;
 // Relocations cover the position-dependent sites in .text: REL32 (the E8
 // call to the runner seam) and ABS64 (the 8-byte absolute data address).
 // Intra-stub relative flow is already final and carries no relocation,
-// exactly like a conventional compiler's output.
+// exactly like a conventional compiler's output. On Linux they ride
+// .rela.text (R_X86_64_PC32 / R_X86_64_64) with .rela.data present but
+// size-0 (.rdata carries no pointers by construction, so a data relocation
+// has no meaning the linker could apply); a non-empty .rela.data is
+// corruption (loud, never silently ignored), a missing one an older object
+// that still validates.
 //
 // ///////////////////////////////////////////////////////////////////////////
 // // NATIVE RUNNER — LANDED (in-process .o execution, OVERHAUL.md fastest  //
@@ -155,11 +164,17 @@ import * from mac.libsystem;
 // never drops unnoted records (dropping would evict other entries' objects
 // when alternating entry files).
 //
-// Cross-acceptance: a compiler-emitted windows-x86-64 object parses with the
-// readers below (same containers, same SLVOBJ2 shape) and is then either
-// fresh-planned (same flags + hash, which only an "interp" emitter can
-// produce) or detected as a flag-set/hash mismatch and re-emitted — accepted
-// structurally, never executed stale.
+// Cross-acceptance: a compiler-emitted object for ANY target parses with
+// the readers below (same containers, same 9-section ELF / 3-section COFF
+// shape, same SLVOBJ2 note) and is then either fresh-planned (same flags +
+// hash, which only an "interp" emitter can produce) or detected as a
+// flag-set/hash mismatch and re-emitted — accepted structurally, never
+// executed stale. The note's globals-block size agrees the same way: the
+// interpreter always records gas 0 (no globals block; execution stays on
+// the AST/bytecode tiers), while the self-host counts bytes and silverc-rs
+// counts slots, so any nonzero foreign gas fails LOUDLY at the agreement
+// check in finish() / verifyObject() instead of mislinking — the same rule
+// the linkers enforce.
 //
 // - The record is the same .sbcr family (v3: v2 fields plus the emitting
 //   flag-set string), with text companion project.sbcri. Each <os>-<arch>
@@ -493,12 +508,17 @@ class ObjSymTab {
     public prop int[] sects;
     public prop int[] vals;
     public prop int[] funcs;
+    // ELF st_size per symbol (anchors, the datab, and undefined symbols
+    // carry 0; defined FUNCs carry their code size) — mirrors the reference
+    // build_out_syms order.
+    public prop int[] sizes;
 
     construct {
         this.names = [];
         this.sects = [];
         this.vals = [];
         this.funcs = [];
+        this.sizes = [];
     }
 }
 
@@ -752,31 +772,37 @@ public void interpBuildUnit(string filekey, int64 hash, int srcLen, int stamp, s
 
 // Internal symbol order shared by every writer (mirrors the references):
 // section anchors, defined functions, the data anchor, then undefined
-// symbols (functions, singletons, imports).
+// symbols (functions, singletons, imports). Sizes ride alongside for the
+// ELF st_size field (anchors, the datab, and undefined symbols carry 0).
 private void objBuildSyms(ObjUnit unit, ObjSymTab t) {
     t.names.add(".text");
     t.sects.add(1);
     t.vals.add(0);
     t.funcs.add(0);
+    t.sizes.add(0);
     t.names.add(".rdata");
     t.sects.add(2);
     t.vals.add(0);
     t.funcs.add(0);
+    t.sizes.add(0);
     for (int i = 0; i < unit.defNames.length; i++) {
         t.names.add(unit.defNames[i]);
         t.sects.add(1);
         t.vals.add(unit.defOffs[i]);
         t.funcs.add(1);
+        t.sizes.add(unit.defSizes[i]);
     }
     t.names.add(unit.datab);
     t.sects.add(2);
     t.vals.add(0);
     t.funcs.add(0);
+    t.sizes.add(0);
     for (int i = 0; i < unit.undefFuncs.length; i++) {
         t.names.add(unit.undefFuncs[i]);
         t.sects.add(0);
         t.vals.add(0);
         t.funcs.add(1);
+        t.sizes.add(0);
     }
     for (int i = 0; i < unit.undefSingles.length; i++) {
         int s = unit.undefSingles[i];
@@ -786,12 +812,14 @@ private void objBuildSyms(ObjUnit unit, ObjSymTab t) {
         t.sects.add(0);
         t.vals.add(0);
         t.funcs.add(0);
+        t.sizes.add(0);
     }
     for (int i = 0; i < unit.undefImports.length; i++) {
         t.names.add(objImportPrefix() + (string)unit.undefImports[i]);
         t.sects.add(0);
         t.vals.add(0);
         t.funcs.add(0);
+        t.sizes.add(0);
     }
 }
 
@@ -954,16 +982,22 @@ public int[] emitCoff(ObjUnit unit, int[] note, int stamp) {
 
 // Minimal ELF relocatable object (Linux target): ELF64 header (ET_REL,
 // EM_X86_64) + .text (genuine machine code) + .rdata (data) + .slvnote
-// (Silver note) + .shstrtab + .symtab + .strtab + .rela.text. Mirrors the
-// reference emit_elf_rel byte-exactly (8 section headers, null + SECTION +
-// GLOBAL syms, R_X86_64_64 = 1 / R_X86_64_PC32 = 2 relas with the written
-// symbol index shifted by one for the leading null entry). Built only with
-// byte pushes.
+// (Silver note) + .shstrtab + .symtab + .strtab + .rela.text + .rela.data.
+// Mirrors the reference emit_elf_rel byte-exactly (9 section headers, null +
+// SECTION + GLOBAL syms, R_X86_64_64 = 1 / R_X86_64_PC32 = 2 relas with the
+// written symbol index shifted by one for the leading null entry). Built
+// only with byte pushes.
+//
+// .rela.data is always size-0: .rdata carries no pointers by construction,
+// so no data-section relocation can exist. The section is still emitted
+// (with the .symtab link, the .rdata info, alignment, and entry size) so
+// every object carries the full relocation-section pair; the reader treats
+// a non-empty .rela.data as corruption (loud, never silently ignored).
 public int[] emitElf(ObjUnit unit, int[] note) {
     ObjSymTab syms = new ObjSymTab();
     objBuildSyms(unit, syms);
     // Section names and their offsets in .shstrtab.
-    string[] secNames = [".text", ".rdata", ".slvnote", ".shstrtab", ".symtab", ".strtab", ".rela.text"];
+    string[] secNames = [".text", ".rdata", ".slvnote", ".shstrtab", ".symtab", ".strtab", ".rela.text", ".rela.data"];
     ObjWriter sw = new ObjWriter();
     sw.u8(0);
     int[] nameOff = [];
@@ -1022,34 +1056,33 @@ public int[] emitElf(ObjUnit unit, int[] note) {
     w.u16(0);
     w.u16(0);
     w.u16(64);
-    w.u16(8);
+    w.u16(9);
     w.u16(4);
     w.rawBytes(unit.code);
     w.rawBytes(unit.data);
     w.rawBytes(note);
     w.rawBytes(shstr);
     while (w.out.length < symOff) { w.u8(0); }
-    // .symtab (24 bytes each): null, SECTION .text, SECTION .rdata, datab
-    // (GLOBAL OBJECT), defined FUNCs, undefined symbols.
+    // .symtab (24 bytes each): null, SECTION .text, SECTION .rdata, the
+    // datab (GLOBAL OBJECT), defined FUNCs, undefined symbols.
     for (int zi = 0; zi < 24; zi++) { w.u8(0); }
     for (int i = 0; i < syms.names.length; i++) {
         int sect = syms.sects[i];
         int isFunc = syms.funcs[i];
         int bind = 0;
         int typ = 3;
-        if (i < 2) {
-            bind = 0;
-            typ = 3;
-        } else if (sect == 0) {
-            bind = 1;
-            typ = 0;
-            if (isFunc == 1) { typ = 2; }
-        } else if (isFunc == 1) {
-            bind = 1;
-            typ = 2;
-        } else {
-            bind = 1;
-            typ = 1;
+        if (i >= 2) {
+            if (sect == 0) {
+                bind = 1;
+                if (isFunc == 1) { typ = 2; }
+                else { typ = 0; }
+            } else if (isFunc == 1) {
+                bind = 1;
+                typ = 2;
+            } else {
+                bind = 1;
+                typ = 1;
+            }
         }
         int shndx = 0;
         if (sect == 1) { shndx = 1; }
@@ -1059,23 +1092,23 @@ public int[] emitElf(ObjUnit unit, int[] note) {
         w.u8(0);
         w.u16(shndx);
         w.u64(syms.vals[i]);
-        if (i >= 2 && sect == 1 && isFunc == 1) {
-            int didx = i - 2;
-            if (didx >= 0 && didx < unit.defSizes.length) { w.u64(unit.defSizes[didx]); }
-            else { w.u64(0); }
-        } else {
-            w.u64(0);
-        }
+        w.u64(syms.sizes[i]);
     }
     w.rawBytes(strtab);
-    // .rela.text (24 bytes each): offset, ((symidx+1)<<32)|rtype, addend.
+    // .rela.text (24 bytes each, sorted by site): Rel32 calls become
+    // R_X86_64_PC32, Abs64 addresses R_X86_64_64. Written symbol indices
+    // shift by one for the leading null entry. The ABS64 addend rides the
+    // entry read back out of the site bytes the emitter wrote (data offsets;
+    // zero everywhere else), so raw inspection and RELA agree.
     for (int i = 0; i < unit.relSites.length; i++) {
         int symidx = objSymIndexFor(unit, unit.relTargets[i], unit.relIdx[i], unit.relNames[i]);
         int rtype = 2;
         int64 addend = 0;
         if (unit.relKinds[i] == 1) {
             rtype = 1;
-            addend = unit.relIdx[i];
+            for (int b = 0; b < 8; b++) {
+                addend = addend | (int64(unit.code[unit.relSites[i] + b] & 0xFF) << (b * 8));
+            }
         }
         w.u64(unit.relSites[i]);
         w.u64((int64(symidx + 1) << 32) | int64(rtype));
@@ -1083,7 +1116,7 @@ public int[] emitElf(ObjUnit unit, int[] note) {
     }
     while (w.out.length < shoff) { w.u8(0); }
     // Section headers (64 bytes each): NULL, .text, .rdata, .slvnote,
-    // .shstrtab, .symtab, .strtab, .rela.text.
+    // .shstrtab, .symtab, .strtab, .rela.text, .rela.data.
     w.sh(0, 0, 0, 0, 0, 0, 0, 0, 0);
     w.sh(nameOff[0], 1, 6, textOff, unit.code.length, 0, 0, 16, 0);
     w.sh(nameOff[1], 1, 2, rdataOff, unit.data.length, 0, 0, 1, 0);
@@ -1092,6 +1125,9 @@ public int[] emitElf(ObjUnit unit, int[] note) {
     w.sh(nameOff[4], 2, 0, symOff, nsymsWritten * 24, 6, 3, 8, 24);
     w.sh(nameOff[5], 3, 0, strOff, strtab.length, 0, 0, 1, 0);
     w.sh(nameOff[6], 4, 0, relaOff, relaLen, 5, 1, 8, 24);
+    // .rela.data is size-0 by construction (see above); sh_info still names
+    // .rdata (index 2) and sh_link the .symtab (index 5).
+    w.sh(nameOff[7], 4, 0, relaOff + relaLen, 0, 5, 2, 8, 24);
     return w.out;
 }
 
@@ -1425,10 +1461,8 @@ private string objSplitCoff(ObjReader r, int[] out) {
 }
 
 // Split an ELF relocatable object into its section spans: out holds
-// [textOff, textLen, rdataOff, rdataLen, noteOff, noteLen, shstrOff,
-// shstrLen]. Returns "" on success, else the exact reference error (ELF
-// magic, 64-bit LE, ET_REL + EM_X86_64, sane section-header table, all
-// three sections found by name through .shstrtab with in-bounds spans).
+// [textOff, textLen, rdataOff, rdataLen, noteOff, noteLen].
+// Returns "" on success, else the exact reference error.
 private string objSplitElf(ObjReader r, int[] out) {
     string bad = "object cache: corrupt ELF object";
     if (r.size < 64) { return bad; }
@@ -1450,16 +1484,17 @@ private string objSplitElf(ObjReader r, int[] out) {
     int rdataLen = 0;
     int noteOff = -1;
     int noteLen = 0;
-    for (int i = 1; i < shnum; i++) {
+    for (int i = 0; i < shnum; i++) {
         int base = shoff + i * 64;
-        int nameOff = int(r.u32At(base));
+        int noff = int(r.u32At(base));
         int off = int(r.u64At(base + 24));
         int size = int(r.u64At(base + 32));
-        if (nameOff < 0 || off < 0 || size < 0 || off + size > r.size) { return bad; }
-        string secName = objCStr(r, strOff, strSize, nameOff);
-        if (secName == ".text") { textOff = off; textLen = size; }
-        else if (secName == ".rdata") { rdataOff = off; rdataLen = size; }
-        else if (secName == ".slvnote") { noteOff = off; noteLen = size; }
+        if (noff < 0 || off < 0 || size < 0 || off + size > r.size) { return bad; }
+        string sname = "";
+        if (i > 0) { sname = objCStr(r, strOff, strSize, noff); }
+        if (sname == ".text") { textOff = off; textLen = size; }
+        else if (sname == ".rdata") { rdataOff = off; rdataLen = size; }
+        else if (sname == ".slvnote") { noteOff = off; noteLen = size; }
     }
     if (textOff < 0 || rdataOff < 0 || noteOff < 0) { return bad; }
     out.add(textOff);
@@ -1468,8 +1503,6 @@ private string objSplitElf(ObjReader r, int[] out) {
     out.add(rdataLen);
     out.add(noteOff);
     out.add(noteLen);
-    out.add(strOff);
-    out.add(strSize);
     return "";
 }
 
@@ -1644,8 +1677,9 @@ public string objParseCoff(ObjReader r, ParsedObj obj) {
 }
 
 // Fully parse one ELF relocatable object into obj (mirrors the reference
-// parse_elf_rel: code + data + note + .symtab with section-index mapping +
-// .rela.text with R_X86_64_64 = 1 / R_X86_64_PC32 = 2 type checks).
+// parse_elf_rel: sections by name, symbols from .symtab/.strtab,
+// relocations from .rela.text; a non-empty .rela.data is corruption — a
+// missing one is an older object and still validates).
 // Hard errors on any corruption.
 public string objParseElf(ObjReader r, ParsedObj obj) {
     string bad = "object cache: corrupt ELF object";
@@ -1674,64 +1708,91 @@ public string objParseElf(ObjReader r, ParsedObj obj) {
     obj.filekey = note.filekey;
     int shoff = int(r.u64At(40));
     int shnum = int(r.u16At(60));
-    int symTabOff = -1;
-    int symTabSize = 0;
-    int strTabOff = -1;
-    int strTabSize = 0;
-    int relaOff = -1;
-    int relaSize = 0;
+    int shstrndx = int(r.u16At(62));
+    int sbase = shoff + shstrndx * 64;
+    int strOff = int(r.u64At(sbase + 24));
+    int strSize = int(r.u64At(sbase + 32));
+    // Section index -> name (for STT_SECTION symbols).
+    string[] secNames = [];
     for (int i = 0; i < shnum; i++) {
         int base = shoff + i * 64;
-        int nameOff = int(r.u32At(base));
+        int noff = int(r.u32At(base));
+        if (i == 0) { secNames.add(""); }
+        else { secNames.add(objCStr(r, strOff, strSize, noff)); }
+    }
+    // Locate .symtab, .strtab, .rela.text, .rela.data by name.
+    int symOff = -1;
+    int symSize = 0;
+    int stabOff = -1;
+    int stabSize = 0;
+    int relaOff = -1;
+    int relaSize = 0;
+    bool hasRelaData = false;
+    int relaDataSize = 0;
+    for (int i = 1; i < shnum; i++) {
+        int base = shoff + i * 64;
         int stype = int(r.u32At(base + 4));
         int off = int(r.u64At(base + 24));
         int size = int(r.u64At(base + 32));
-        if (nameOff < 0 || off < 0 || size < 0 || off + size > r.size) { return bad; }
-        string secName = objCStr(r, spans[6], spans[7], nameOff);
-        if (secName == ".symtab") {
+        if (secNames[i] == ".symtab") {
             if (stype != 2) { return bad; }
-            symTabOff = off;
-            symTabSize = size;
-        } else if (secName == ".strtab") {
-            strTabOff = off;
-            strTabSize = size;
-        } else if (secName == ".rela.text") {
+            symOff = off;
+            symSize = size;
+        } else if (secNames[i] == ".strtab") {
+            stabOff = off;
+            stabSize = size;
+        } else if (secNames[i] == ".rela.text") {
             relaOff = off;
             relaSize = size;
+        } else if (secNames[i] == ".rela.data") {
+            hasRelaData = true;
+            relaDataSize = size;
         }
     }
-    if (symTabOff < 0 || strTabOff < 0) { return bad; }
-    if (symTabOff + symTabSize > r.size || strTabOff + strTabSize > r.size) { return bad; }
-    int nsyms = symTabSize / 24;
-    if (nsyms < 2 || symTabSize % 24 != 0) { return bad; }
+    if (symOff < 0 || stabOff < 0) { return bad; }
+    // .rela.data must be empty when present: .rdata carries no pointers by
+    // construction, so a data relocation has no meaning the linker could
+    // apply. A missing section is an older object and still validates.
+    if (hasRelaData && relaDataSize != 0) { return bad; }
+    int nsyms = symSize / 24;
+    if (symOff + symSize > r.size || stabOff + stabSize > r.size) { return bad; }
     obj.symNames = [];
     obj.symSects = [];
     obj.symVals = [];
     obj.symIsFunc = [];
     for (int i = 0; i < nsyms; i++) {
-        int base = symTabOff + i * 24;
-        int nameRef = int(r.u32At(base));
+        int base = symOff + i * 24;
+        if (base + 24 > r.size) { return bad; }
+        int nameOff = int(r.u32At(base));
         int info = int(r.u8At(base + 4));
         int shndx = int(r.u16At(base + 6));
         int64 value = r.u64At(base + 8);
-        if (nameRef < 0 || info < 0 || shndx < 0 || value < 0) { return bad; }
-        int typ = info & 15;
+        int64 size = r.u64At(base + 16);
+        int typ = info & 0x0F;
         string name = "";
         if (i == 0) {
             name = "";
         } else if (typ == 3) {
-            if (shndx == 1) { name = ".text"; }
-            else if (shndx == 2) { name = ".rdata"; }
-            else { return bad; }
+            if (shndx < 0 || shndx >= secNames.length) { return bad; }
+            name = secNames[shndx];
         } else {
-            name = objCStr(r, strTabOff, strTabSize, nameRef);
-            if (name.length == 0) { return bad; }
+            // String-table reference: the offset must land inside .strtab
+            // with a terminator past it (an immediate NUL decodes to the
+            // empty name, exactly like the reference).
+            if (nameOff < 0 || nameOff >= stabSize) { return bad; }
+            bool term = false;
+            for (int t = stabOff + nameOff; t < stabOff + stabSize; t++) {
+                if (r.u8At(t) == 0) { term = true; break; }
+            }
+            if (!term) { return bad; }
+            name = objCStr(r, stabOff, stabSize, nameOff);
         }
         int sect = -1;
         if (shndx == 0) { sect = 0; }
         else if (shndx == 1) { sect = 1; }
         else if (shndx == 2) { sect = 2; }
         else { return bad; }
+        if (value < 0 || value > 4294967295 || size < 0 || size > 4294967295) { return bad; }
         obj.symNames.add(name);
         obj.symSects.add(sect);
         obj.symVals.add(int(value));
@@ -1743,26 +1804,21 @@ public string objParseElf(ObjReader r, ParsedObj obj) {
     obj.relKinds = [];
     obj.relAddends = [];
     if (relaOff >= 0) {
-        if (relaSize % 24 != 0 || relaOff + relaSize > r.size) { return bad; }
+        if (relaSize % 24 != 0) { return bad; }
+        if (relaOff + relaSize > r.size) { return bad; }
         int nrel = relaSize / 24;
         for (int i = 0; i < nrel; i++) {
             int base = relaOff + i * 24;
             int64 site = r.u64At(base);
-            int64 info = r.u64At(base + 8);
+            int64 rinfo = r.u64At(base + 8);
             int64 addend = r.u64At(base + 16);
-            if (site < 0 || info < 0) { return bad; }
-            int sni = int((info >> 32)) - 1;
-            int rtype = int(info & 0xFFFFFFFF);
-            if (sni < 0 || sni >= obj.symNames.length) { return bad; }
+            int sni = int(rinfo >> 32);
+            int rtype = int(rinfo & 0xFFFFFFFF);
+            if (site < 0 || site > 4294967295 || sni < 0 || sni >= obj.symNames.length) { return bad; }
             int kind = -1;
             if (rtype == 2) { kind = 0; }
             else if (rtype == 1) { kind = 1; }
             else { return bad; }
-            if (kind == 1) {
-                if (int(site) + 8 > obj.code.length) { return bad; }
-            } else {
-                if (int(site) + 4 > obj.code.length) { return bad; }
-            }
             obj.relSites.add(int(site));
             obj.relSyms.add(sni);
             obj.relKinds.add(kind);
@@ -2053,6 +2109,15 @@ class ObjSession {
     // targeting the auto-detected host (`hostOsName`, interpHostOs). When
     // the per-host cache root cannot be determined the session reports
     // !ok and callers fall back to the uncached tiers.
+    //
+    // Cross-target use: constructing with "LINUX" opens the linux-x86-64
+    // directory under the same per-host cache root (the #on regions below
+    // pick the ROOT by build host, objTargetDirName picks the SUBDIR by
+    // this parameter) — the same trigger rule as the compilers' --os linux,
+    // with per-target freshness from that directory's own project.sbcr.
+    // The driver always passes the auto-detected host (there is no --os
+    // flag); the LINUX writer/validators are the implementation that serves
+    // that directory, on a Linux host and for cross-target caches alike.
     construct (string rootDir, string projName, string hostOsName) {
         this.ok = false;
         this.root = rootDir;
@@ -2263,8 +2328,8 @@ class ObjSession {
 
         // Built-in unification: every object of this run must be present
         // and fully valid (container magic, target machine, sections,
-        // symbols, relocations, flag set, source hash) before the driver
-        // executes from the verified tokens.
+        // symbols, relocations, flag set, source hash, globals-block
+        // agreement) before the driver executes from the verified tokens.
         for (int u = 0; u < this.notedKeys.length; u++) {
             string upath = this.objectPath(this.notedKeys[u]);
             if (!file.exists(upath)) {
@@ -2287,15 +2352,18 @@ class ObjSession {
             if (parsed.hash != int64(this.notedH[u])) {
                 return "object cache: stale object (source hash changed) — re-emit required";
             }
+            string gasErr = this.checkGas(parsed);
+            if (gasErr.length > 0) { return gasErr; }
         }
         return "";
     }
 
     // Execution-path gate (called by the driver after finish()): re-read
     // the entry's object and fully validate it (magic, machine, sections,
-    // symbols, relocations, flag set, source hash). Returns "" when the
-    // object is verified — execution then proceeds from the verified
-    // tokens — else the exact loud error. Stale bytes are never executed.
+    // symbols, relocations, flag set, source hash, globals-block agreement).
+    // Returns "" when the object is verified — execution then proceeds from
+    // the verified tokens — else the exact loud error. Stale bytes are never
+    // executed.
     public string verifyObject(string absPath, int64 expectHash) {
         string key = icRelPath(this.root, absPath);
         if (key.length == 0) {
@@ -2321,6 +2389,19 @@ class ObjSession {
         }
         if (obj.hash != expectHash) {
             return "object cache: stale object (source hash changed) — re-emit required";
+        }
+        return this.checkGas(obj);
+    }
+
+    // Globals-block agreement check (the same rule the linkers enforce):
+    // the interpreter always records gas 0 (interpBuildUnit sets no globals
+    // block; execution stays on the AST/bytecode tiers), while the self-host
+    // counts bytes and silverc-rs counts slots — so mixed-toolchain objects
+    // disagree by construction. Any nonzero foreign gas fails LOUDLY here
+    // instead of validating silently. Returns "" when the object agrees.
+    private string checkGas(ParsedObj obj) {
+        if (obj.gas != 0) {
+            return "object cache: globals-block mismatch ('" + obj.filekey + "' vs 'interp') — re-emit required";
         }
         return "";
     }
@@ -2360,6 +2441,8 @@ class ObjSession {
         if (obj.hash != expectHash) {
             return "object cache: stale object (source hash changed) — re-emit required";
         }
+        string gasErr = this.checkGas(obj);
+        if (gasErr.length > 0) { return gasErr; }
         if (obj.code.length == 0) { return "object runner: empty .text"; }
         // Layout: code, then the .rdata coat, then the 15-byte import thunk
         // (push rax; movabs rax,seam; call rax; pop rax; ret) the seam
