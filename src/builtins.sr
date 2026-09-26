@@ -235,19 +235,22 @@ class BuiltinMethods {
 
     private static Value[] splitValues(string text, string delim) {
         Value[] result = [];
-        string rest = text;
         if (delim.length == 0) {
-            result.add(makeString(rest));
+            result.add(makeString(text));
             return result;
         }
+        // Index-windowed scan: each piece is sliced once, the shrinking
+        // `rest` remainder is never re-copied (the old loop copied the
+        // whole tail per delimiter). Identical pieces in identical order.
+        int start = 0;
         while (true) {
-            int at = rest.indexOf(delim);
+            int at = text.indexOf(delim, start);
             if (at < 0) {
-                result.add(makeString(rest));
+                result.add(makeString(text.substr(start)));
                 break;
             }
-            result.add(makeString(rest.substr(0, at)));
-            rest = rest.substr(at + delim.length);
+            result.add(makeString(text.substr(start, at - start)));
+            start = at + delim.length;
         }
         return result;
     }
@@ -335,10 +338,10 @@ class BuiltinMethods {
         }
         if (method == "repeat") {
             if (args.length < 1) { return s; }
-            string result = "";
             int n = args[0].toInt();
-            for (int i = 0; i < n; i++) { result += s.strVal; }
-            return makeString(result);
+            string[] pieces = [];
+            for (int i = 0; i < n; i++) { pieces.add(s.strVal); }
+            return makeString(pieces.join(""));
         }
         if (method == "slice") {
             int start = 0;
@@ -408,31 +411,34 @@ class BuiltinMethods {
             }
             if (count <= 0 || fill.length == 0) { return s; }
             string unit = fill[0].toString();
-            string left = "";
-            string right = "";
+            string[] leftPieces = [];
+            string[] rightPieces = [];
             if (method == "pad" || method == "padLeft") {
-                for (int i = 0; i < count; i++) { left += unit; }
+                for (int i = 0; i < count; i++) { leftPieces.add(unit); }
             }
             if (method == "pad" || method == "padRight") {
-                for (int i = 0; i < count; i++) { right += unit; }
+                for (int i = 0; i < count; i++) { rightPieces.add(unit); }
             }
-            return makeString(left + s.strVal + right);
+            return makeString(leftPieces.join("") + s.strVal + rightPieces.join(""));
         }
         if (method == "slugify") {
-            string result = "";
+            // Pieces + one join: every piece is a single char (or "-"), so
+            // the last piece IS the last output char and the dash rules
+            // below read exactly what the old `result[...]` indexing read.
+            string[] pieces = [];
             for (int i = 0; i < s.strVal.length; i++) {
                 char c = s.strVal[i];
-                if (c >= 'a' && c <= 'z') { result += c; }
-                else if (c >= 'A' && c <= 'Z') { result += char(c + 32); }
-                else if (c >= '0' && c <= '9') { result += c; }
+                if (c >= 'a' && c <= 'z') { pieces.add("" + c); }
+                else if (c >= 'A' && c <= 'Z') { pieces.add("" + char(c + 32)); }
+                else if (c >= '0' && c <= '9') { pieces.add("" + c); }
                 else if (c == ' ' || c == '-' || c == '_') {
-                    if (result.length > 0 && result[result.length - 1] != '-') { result += "-"; }
+                    if (pieces.length > 0 && pieces[pieces.length - 1] != "-") { pieces.add("-"); }
                 }
             }
-            if (result.length > 0 && result[result.length - 1] == '-') {
-                result = result.substr(0, result.length - 1);
+            if (pieces.length > 0 && pieces[pieces.length - 1] == "-") {
+                pieces.pop();
             }
-            return makeString(result);
+            return makeString(pieces.join(""));
         }
         if (method == "toString") { return makeString(s.strVal); }
         if (method == "parse" || method == "toInt") {
@@ -981,7 +987,7 @@ class BuiltinMethods {
             // DOCS/247 -- The interpreter cannot pop a real Win32 tray
             // balloon, so we simulate the side effect by emitting a labelled
             // stdout line that matches the title and body. Long-running
-            // scripts that poll for notifications in tests can detect this
+            // sources that poll for notifications in tests can detect this
             // by matching on the "NOTIFY:" prefix.
             string title = args.length > 0 && args[0].tag == VAL_STRING ? args[0].strVal : "";
             string body = args.length > 1 && args[1].tag == VAL_STRING ? args[1].strVal : "";

@@ -51,10 +51,10 @@ class Evaluator {
     // stub on a non-native host). customTarget is set by the driver.
     public prop string[] customGrants;
     public prop string customTarget;
-    // DOCS/124 -- the script's command-line arguments, exposed to user code as
+    // DOCS/124 -- the source's command-line arguments, exposed to user code as
     // both the `cargs` array variable and the `cargs()` function.
-    public prop string[] scriptArgs;
-    public prop Value scriptCargs;
+    public prop string[] sourceArgs;
+    public prop Value sourceCargs;
     // Source position of the current call's first argument, set by
     // evalCall/evalMethodCall so runtime VALUE_EXCEPTION.md diagnostics can
     // point at the offending value.
@@ -130,8 +130,8 @@ class Evaluator {
         this.macGrants = [];
         this.customGrants = [];
         this.customTarget = "";
-        this.scriptArgs = [];
-        this.scriptCargs = null;
+        this.sourceArgs = [];
+        this.sourceCargs = null;
         this.diagLine = 0;
         this.diagCol = 0;
         this.diagHasPos = false;
@@ -150,8 +150,8 @@ class Evaluator {
         file.writeBytes("build/diag/TE1_ctor_end.txt", [49]);
     }
 
-    // DOCS/124 -- install the script's command-line arguments. The first entry
-    // is the script name (matching the compiled `cargs` convention where
+    // DOCS/124 -- install the source's command-line arguments. The first entry
+    // is the source name (matching the compiled `cargs` convention where
     // cargs[0] is the program name). Exposed both as the `cargs` array global
     // and via the `cargs()` builtin function.
     // Opt into the per-call / per-block diagnostic breadcrumb files
@@ -161,14 +161,14 @@ class Evaluator {
         this.diagCrumbs = on;
     }
 
-    public void setScriptArgs(string[] args) {
-        this.scriptArgs = args;
+    public void setSourceArgs(string[] args) {
+        this.sourceArgs = args;
         Value[] items = [];
         for (int i = 0; i < args.length; i++) {
             items.add(makeString(args[i]));
         }
-        this.scriptCargs = makeArray(items);
-        this.globals.define("cargs", this.scriptCargs);
+        this.sourceCargs = makeArray(items);
+        this.globals.define("cargs", this.sourceCargs);
     }
 
     // ------------------------------------------------------------------
@@ -401,7 +401,7 @@ class Evaluator {
 
         // DOCS/213 -- raw Win32 free identifiers (keybd_event, CloseHandle,
         // GetModuleHandleA, ...) are NO LONGER predefined globals. They become
-        // available only when the script imports the owning module:
+        // available only when the source imports the owning module:
         //   import * from win32.user32;   /   import kernel32 from win32;
         // See registerWin32Import / defineGrantedExports below.
 
@@ -448,7 +448,7 @@ class Evaluator {
 
     // ------------------------------------------------------------------
     // DOCS/213 -- win32 module system. Raw Win32 free identifiers become
-    // available only after the script imports the owning DLL module.
+    // available only after the source imports the owning DLL module.
     // ------------------------------------------------------------------
 
     // The raw Win32 exports the interpreter's callBuiltin can execute,
@@ -630,7 +630,7 @@ class Evaluator {
 
     // LINUX (additive, mirrors silverc/compiler/mini_cg.sr linux tables):
     // linux module system beside the win32 one above. Raw libc free
-    // identifiers become available only after the script imports the owning
+    // identifiers become available only after the source imports the owning
     // module (`import * from linux.libc;`). Universal string logic (no OS
     // calls), so no region -- compiles on both targets like the win32
     // tables. Export strings mirror mini_cg.sr linuxExportTable word for
@@ -790,7 +790,7 @@ class Evaluator {
     // MAC (additive, mirrors silverc-rs/src/macos.rs module_to_lib and the
     // LIBSYSTEM/OBJC tables): mac module system beside the win32/linux ones
     // above. Raw libSystem free identifiers become available only after the
-    // script imports the owning module (`import * from mac.libsystem;`).
+    // source imports the owning module (`import * from mac.libsystem;`).
     // Export strings mirror macos.rs LIBSYSTEM/OBJC word for word so grants
     // resolve identically. AppKit/Quartz carry no direct C grants (Aqua APIs
     // route through the mac.objc bridge; see MAC.md section 7), so their
@@ -1646,20 +1646,19 @@ class Evaluator {
         if (op == OP_REPEAT) {
             string s = lhs.toString();
             int64 n = rhs.toInt();
-            string result = "";
-            for (int64 i = 0; i < n; i++) { result += s; }
-            return makeString(result);
+            string[] pieces = [];
+            for (int64 i = 0; i < n; i++) { pieces.add(s); }
+            return makeString(pieces.join(""));
         }
 
         if (op == OP_JOIN) {
             if (lhs.tag == VAL_ARRAY) {
                 string sep = rhs.strVal;
-                string result = "";
+                string[] pieces = [];
                 for (int i = 0; i < lhs.arrVal.length; i++) {
-                    if (i > 0) { result += sep; }
-                    result += lhs.arrVal[i].toString();
+                    pieces.add(lhs.arrVal[i].toString());
                 }
-                return makeString(result);
+                return makeString(pieces.join(sep));
             }
         }
 
@@ -2011,7 +2010,7 @@ mirrorPut(obj, target.name, val);
         if (node.name == "super") {
             result = this.evalSuper(args, env);
         } else if (node.name == "cargs") {
-            if (this.scriptCargs != null) { result = this.scriptCargs; }
+            if (this.sourceCargs != null) { result = this.sourceCargs; }
             else { result = makeArray([]); }
         } else if ((node.name == "QueryPerformanceFrequency" || node.name == "QueryPerformanceCounter" || node.name == "GetLocalTime" || node.name == "GetSystemTime")
             && this.win32HasExport("kernel32.dll", node.name)) {
@@ -2927,17 +2926,17 @@ mirrorPut(obj, target.name, val);
     }
 
     private Value evalInterp(Node node, Env env) {
-        string result = "";
+        string[] pieces = [];
         for (int i = 0; i < node.childCount(); i++) {
             Node part = node.child(i);
             if (part.kind == ND_STRING_LIT) {
-                result += part.strVal;
+                pieces.add(part.strVal);
             } else {
                 Value val = this.evalExpr(part, env);
-                result += val.toString();
+                pieces.add(val.toString());
             }
         }
-        return makeString(result);
+        return makeString(pieces.join(""));
     }
 
     private Value evalMatch(Node node, Env env) {

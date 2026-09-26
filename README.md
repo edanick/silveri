@@ -3,7 +3,7 @@
 Run Silver ideas immediately, with no compilation wait.
 
 `silveri` executes Silver source files directly, making it easy to explore the
-language, test an idea, run a script, and see the result without first creating
+language, test an idea, run a source file, and see the result without first creating
 a native executable.
 
 ## Credits
@@ -116,11 +116,11 @@ Options:
 Examples:
 
 ```bash
-# Execute a Silver script directly
-silveri script.sr
+# Execute a Silver source file directly
+silveri source.sr
 
 # Provide the input file explicitly
-silveri -i script.sr
+silveri -i source.sr
 
 # Inspect the available commands
 silveri --help
@@ -137,7 +137,7 @@ The `-o` option is accepted for command compatibility but is ignored because
 - Execute Silver code immediately
 - Experiment without a compilation step
 - Iterate quickly while learning the language
-- Run scripts and small command-line tools directly
+- Run sources and small command-line tools directly
 - Explore language features through short source files
 - Use the same `.sr` source files with the Silver toolchain
 
