@@ -73,6 +73,11 @@ class CacheSession {
     public prop string oldIndexText;
     public prop int dirtyCount;
     public prop int lexErrors;
+    // Raw .srbc.t companion text of the last tokensFor call: the synced
+    // bytecode itself on a cache hit, "" on a miss. The --cache-object tier
+    // packs this as the object payload when present (two-tier flow) and
+    // falls back to source otherwise (mirrors silverc/compiler/bcache.sr).
+    public prop string lastPayload;
     // Buffered lex diagnostic bodies from the last tokensFor lexing, in
     // source order. Surfaced so the driver can print them under the `[file]`
     // header exactly like the non-cached path (bodies byte-identical).
@@ -93,6 +98,7 @@ class CacheSession {
         this.dirtyCount = 0;
         this.lexErrors = 0;
         this.lexMessages = [];
+        this.lastPayload = "";
         // Linux cache root (mirrors silverc/compiler/bcache.sr): same
         // .sbcr/.srbc formats under /var/cache/silver/<project>/ with `/`
         // separators. The WINDOWS APPDATA construction below is untouched.
@@ -137,6 +143,7 @@ class CacheSession {
     // bytecode, and return those tokens. Source is the combined, import-
     // resolved text that would otherwise be handed to the Lexer.
     public Token[] tokensFor(string absPath, string source) {
+        this.lastPayload = "";
         if (!this.ok) { return this.icLexSet(source); }
         string key = this.relKey(absPath);
         if (key.length == 0) { return this.icLexSet(source); }
@@ -445,34 +452,9 @@ class CacheSession {
         if (path.length == 0) { return []; }
         string text = icTryReadText(path + ".t");
         if (text.length == 0) { return []; }
-        int pos = 0;
-        string header = "";
-        while (pos < text.length && text[pos] != '\n') {
-            header += text[pos];
-            pos++;
-        }
-        pos++;
-        // The header is "<fnv1 hash> <cached at millis> <token count>"; the
-        // hash must match the record's, mirroring the reference load_srbc.
-        string headerHash = icWordAt(header, 0);
-        if (headerHash != expectHash) { return []; }
-        string countStr = icWordAt(header, 2);
-        if (countStr.length == 0) { return []; }
-        int count = icStrToInt(countStr);
-        if (count <= 0) { return []; }
-        Token[] tokens = [];
-        for (int i = 0; i < count && pos < text.length; i++) {
-            string line = "";
-            while (pos < text.length && text[pos] != '\n') {
-                line += text[pos];
-                pos++;
-            }
-            pos++;
-            Token t = icTokenFromLine(line);
-            if (t == null) { return []; }
-            tokens.add(t);
-        }
-        if (tokens.length != count) { return []; }
+        this.lastPayload = text;
+        Token[] tokens = icTokensFromText(text, expectHash);
+        if (tokens.length == 0) { this.lastPayload = ""; return []; }
         return tokens;
     }
 
@@ -492,19 +474,62 @@ class CacheSession {
     }
 
     private string relKey(string absPath) {
-        string norm = icNormalizeSlashes(absPath);
-        string rootNorm = icNormalizeSlashes(this.root);
-        if (rootNorm.length > 0 && norm.length > rootNorm.length + 1) {
-            bool prefix = true;
-            for (int i = 0; i < rootNorm.length; i++) {
-                if (norm[i] != rootNorm[i]) { prefix = false; break; }
-            }
-            if (prefix && norm[rootNorm.length] == '/') {
-                return icSliceRange(norm, rootNorm.length + 1, norm.length);
-            }
-        }
-        return norm;
+        return icRelPath(this.root, absPath);
     }
+}
+
+// Decode .srbc.t companion text into tokens (the authoritative read side,
+// shared by the bytecode tier and the --cache-object runner). Returns []
+// on any malformation — header hash mismatch, bad count, undecodable line,
+// or length mismatch — so callers fall back to a fresh lex.
+public Token[] icTokensFromText(string text, string expectHash) {
+    int pos = 0;
+    string header = "";
+    while (pos < text.length && text[pos] != '\n') {
+        header += text[pos];
+        pos++;
+    }
+    pos++;
+    // The header is "<fnv1 hash> <cached at millis> <token count>"; the
+    // hash must match the record's, mirroring the reference load_srbc.
+    string headerHash = icWordAt(header, 0);
+    if (headerHash != expectHash) { return []; }
+    string countStr = icWordAt(header, 2);
+    if (countStr.length == 0) { return []; }
+    int count = icStrToInt(countStr);
+    if (count <= 0) { return []; }
+    Token[] tokens = [];
+    for (int i = 0; i < count && pos < text.length; i++) {
+        string line = "";
+        while (pos < text.length && text[pos] != '\n') {
+            line += text[pos];
+            pos++;
+        }
+        pos++;
+        Token t = icTokenFromLine(line);
+        if (t == null) { return []; }
+        tokens.add(t);
+    }
+    if (tokens.length != count) { return []; }
+    return tokens;
+}
+
+// '/'-separated path of absPath relative to rootDir ("" when absPath is not
+// under the root). Shared by the bytecode record keys and the --cache-object
+// record keys so both tiers key entries identically.
+public string icRelPath(string rootDir, string absPath) {
+    string norm = icNormalizeSlashes(absPath);
+    string rootNorm = icNormalizeSlashes(rootDir);
+    if (rootNorm.length > 0 && norm.length > rootNorm.length + 1) {
+        bool prefix = true;
+        for (int i = 0; i < rootNorm.length; i++) {
+            if (norm[i] != rootNorm[i]) { prefix = false; break; }
+        }
+        if (prefix && norm[rootNorm.length] == '/') {
+            return icSliceRange(norm, rootNorm.length + 1, norm.length);
+        }
+    }
+    return norm;
 }
 
 // ---------------------------------------------------------------------------
