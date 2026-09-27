@@ -1,6 +1,7 @@
 mod export objcache;
 
 import * from cache;
+import * from ast;
 
 // Raw OS enablers for the native object runner below (kernel32 executable
 // mapping + high-resolution timing, msvcrt copy) — file-top grant,
@@ -35,7 +36,7 @@ import * from mac.libsystem;
 //
 // (On Linux/macOS the same tree applies with / separators.)
 //
-// Object format (v4 — mirrors silverc-rs src/objcache.rs and
+// Object format (v5 — mirrors silverc-rs src/objcache.rs and
 // silverc/compiler/objcache.sr byte-exactly):
 //
 // The extension is always .o (never .obj); the contents are the proper
@@ -45,7 +46,9 @@ import * from mac.libsystem;
 // The Linux object carries 9 section headers (NULL, .text, .rdata, .slvnote,
 // .shstrtab, .symtab, .strtab, .rela.text, and the empty-but-present
 // .rela.data), exactly like the references; older 8-section objects (no
-// .rela.data) still validate. No external linker, assembler, or object
+// .rela.data) still validate. The mac object carries LC_SEGMENT_64
+// (__TEXT with __text, __rdata, __slvnote) + LC_SYMTAB + LC_DYSYMTAB,
+// exactly like the references. No external linker, assembler, or object
 // toolchain of any kind (FORBIDDEN.md): the containers are assembled here
 // with plain byte pushes over int[] buffers so cached objects validate
 // across the toolchain.
@@ -56,16 +59,17 @@ import * from mac.libsystem;
 // - .text — GENUINE MACHINE CODE assembled by the interpreter's own Silver
 //   emitter (interpBuildUnit below, following the silverc port's approach:
 //   one entry stub per file, cross-tier references left as relocations).
-//   Never source text, never a token stream — the v3 era packed source/.srbc
-//   text into .text and is gone. On x86-64 targets the stub is real x86-64
-//   (frame prologue, hash materialization, a REL32 call to the runner seam,
-//   an ABS64 data reference, epilogue); on mac it is real ARM64
-//   (hash materialization + ret). v3 objects (SLVOBJ1 note, _slvobj marker,
-//   no relocations) fail the v4 note parse and are treated as stale
-//   (re-emitted), never as a hard error.
+//   Never source text, never a token stream. On x86-64 targets the stub is
+//   real x86-64 (frame prologue, hash materialization, a REL32 call to the
+//   runner seam, an ABS64 data reference, epilogue); on mac it is real
+//   ARM64 (an adrp+add pair addressing the data anchor, a BRANCH26 bl to
+//   the runner seam, hash materialization into x0, ret). v4 objects
+//   (SLVOBJ2 note, including the relocation-less ARM64 stub era) fail the
+//   v5 note parse and are treated as stale (re-emitted), never as a hard
+//   error.
 // - .rdata — the owning file's real data bytes (source hash, source length,
 //   emission stamp, owner key). May be empty in principle; never text.
-// - .slvnote — the Silver note (magic SLVOBJ2, emitting flag set, source
+// - .slvnote — the Silver note (magic SLVOBJ3, emitting flag set, source
 //   FNV-1 hash, emission stamp, globals-block size, the full import list,
 //   and the owning file key). The planner reads this for freshness.
 //
@@ -77,14 +81,17 @@ import * from mac.libsystem;
 // (__slv_interp_run — the future native runner, see below).
 //
 // Relocations cover the position-dependent sites in .text: REL32 (the E8
-// call to the runner seam) and ABS64 (the 8-byte absolute data address).
-// Intra-stub relative flow is already final and carries no relocation,
-// exactly like a conventional compiler's output. On Linux they ride
-// .rela.text (R_X86_64_PC32 / R_X86_64_64) with .rela.data present but
-// size-0 (.rdata carries no pointers by construction, so a data relocation
-// has no meaning the linker could apply); a non-empty .rela.data is
-// corruption (loud, never silently ignored), a missing one an older object
-// that still validates.
+// call to the runner seam) and ABS64 (the 8-byte absolute data address) on
+// x86-64; BRANCH26 (the bl to the runner seam) and PAGE21/PAGEOFF12 (the
+// adrp+add pair addressing the data anchor) on ARM64. Intra-stub relative
+// flow is already final and carries no relocation, exactly like a
+// conventional compiler's output. On Linux they ride .rela.text
+// (R_X86_64_PC32 / R_X86_64_64) with .rela.data present but size-0 (.rdata
+// carries no pointers by construction, so a data relocation has no meaning
+// the linker could apply); a non-empty .rela.data is corruption (loud,
+// never silently ignored), a missing one an older object that still
+// validates. On mac they ride the __text section (extern, pc-relative,
+// 4-byte length) against the datab anchor and the seam UNDEF.
 //
 // ///////////////////////////////////////////////////////////////////////////
 // // NATIVE RUNNER — LANDED (in-process .o execution, OVERHAUL.md fastest  //
@@ -122,7 +129,7 @@ import * from mac.libsystem;
 // // FNV-1 hash into RAX, so a native run must return RAX == note hash AND
 // // reach the seam. Patching one hash byte in the cached .o (source
 // // untouched) changes the returned RAX, which the runner reports loudly;
-// // freshness still passes (the SLVOBJ2 note is untouched), so the patch
+// // freshness still passes (the SLVOBJ3 note is untouched), so the patch
 // // demonstrably flows through executed machine code, never the AST.
 // //
 // // EXACT BOUNDARY (loud fallback to the verified AST/bytecode tiers, never
@@ -155,9 +162,9 @@ import * from mac.libsystem;
 // place of mtimes) is compared against the per-target project.sbcr record
 // (v3 — unchanged fields, existing records are reused), which additionally
 // keys on the emitting flag set, so a flag switch re-emits. Fresh means: the
-// record matches (hash + size), the .o exists, AND its v4 note peeks with the
+// record matches (hash + size), the .o exists, AND its v5 note peeks with the
 // expected flag set + hash (plan() in the references). Anything else —
-// including a v3-era object or a compiler-emitted object whose flag set is
+// including a v4-era object or a compiler-emitted object whose flag set is
 // not "interp" — is stale (re-emitted), never a hard error on the plan path
 // and never silently reused. Unlike the compilers — which note every project
 // file per run — the interpreter notes its single entry per run, so finish()
@@ -165,11 +172,12 @@ import * from mac.libsystem;
 // when alternating entry files).
 //
 // Cross-acceptance: a compiler-emitted object for ANY target parses with
-// the readers below (same containers, same 9-section ELF / 3-section COFF
-// shape, same SLVOBJ2 note) and is then either fresh-planned (same flags +
-// hash, which only an "interp" emitter can produce) or detected as a
-// flag-set/hash mismatch and re-emitted — accepted structurally, never
-// executed stale. The note's globals-block size agrees the same way: the
+// the readers below (same containers, same 9-section ELF / 3-section COFF /
+// LC_SEGMENT_64+LC_SYMTAB+LC_DYSYMTAB Mach-O shape, same SLVOBJ3 note) and
+// is then either fresh-planned (same flags + hash, which only an "interp"
+// emitter can produce) or detected as a flag-set/hash mismatch and
+// re-emitted — accepted structurally, never executed stale. The note's
+// globals-block size agrees the same way: the
 // interpreter always records gas 0 (no globals block; execution stays on
 // the AST/bytecode tiers), while the self-host counts bytes and silverc-rs
 // counts slots, so any nonzero foreign gas fails LOUDLY at the agreement
@@ -460,7 +468,11 @@ class ObjUnit {
     public prop int[] undefImports;
     // Relocations, sorted by site (parallel arrays).
     public prop int[] relSites;
-    // 0 = Rel32 (E8 call), 1 = Abs64 (8-byte absolute address).
+    // 0 = Rel32 (x86-64 E8 call), 1 = Abs64 (x86-64 8-byte absolute
+    // address), 2 = ArmBranch26 (ARM64 bl), 3 = ArmPage21 (ARM64 adrp),
+    // 4 = ArmPageOff12 (ARM64 add). Absolute ABS64 has no ARM64 form:
+    // Mach-O ARM64 defines no absolute code relocations, so ARM64
+    // addresses are always PC-relative pairs.
     public prop int[] relKinds;
     // 0 = Defined, 1 = Extern, 2 = Data, 3 = Singleton, 4 = Import.
     public prop int[] relTargets;
@@ -542,7 +554,9 @@ class ParsedObj {
     public prop int[] symVals;
     public prop int[] symIsFunc;
     // Relocations (parallel arrays): site, symbol index, kind (0 = Rel32,
-    // 1 = Abs64), addend.
+    // 1 = Abs64, 2 = ArmBranch26, 3 = ArmPage21, 4 = ArmPageOff12), addend
+    // (COFF/ELF addends ride the site bytes; Mach-O ARM64 addends ride the
+    // instruction immediates).
     public prop int[] relSites;
     public prop int[] relSyms;
     public prop int[] relKinds;
@@ -569,7 +583,7 @@ class ParsedObj {
     }
 }
 
-// Decoded v4 note: emitting flag set, source hash, emission stamp,
+// Decoded v5 note: emitting flag set, source hash, emission stamp,
 // globals-block size, full import list, and owner file key.
 class ObjNote {
     public prop string flags;
@@ -690,23 +704,88 @@ public int[] interpBuildX86(int64 hash) {
     return code;
 }
 
-// 16 bytes of real ARM64 (Mac target): materialize the low 48 bits of the
-// source hash into x0 (movz + 2x movk) and return. No relocations: GOT
-// emission for ARM64 is the follow-up alongside native execution.
+// Fixed-width 32-bit ARM64 instruction encoders (mirrors silverc-rs
+// src/arm64.rs and silverc/compiler/objcache.sr, which the Mach-O side
+// also uses for dyld stubs). Every encoder takes plain ints and returns
+// the word as an int (all words fit in 32 unsigned bits, so shifts stay
+// logical). Bit layouts follow the ARM ARM for A-profile (DDI0487).
+private int a64Adrp(int rd, int pageOff) {
+    int64 u = int64(pageOff) & 0x1FFFFF;
+    return int(0x90000000 | ((u & 0x3) << 29) | (((u >> 2) & 0x7FFFF) << 5) | (rd & 31));
+}
+
+// add Xd, Xn, #imm12 (64-bit, no shift — the only form the tier emits).
+private int a64AddImm(int rd, int rn, int imm12) {
+    return int(0x91000000 | ((imm12 & 0xFFF) << 10) | ((rn & 31) << 5) | (rd & 31));
+}
+
+// bl <label>: branch with link.
+private int a64Bl(int off) {
+    return int(0x94000000 | ((int64(off / 4) & 0x3FFFFFF)));
+}
+
+// movz Xd, #imm16, lsl #hw*16.
+private int a64Movz(int rd, int imm16, int hw) {
+    return int(0xD2800000 | ((hw & 3) << 21) | ((imm16 & 0xFFFF) << 5) | (rd & 31));
+}
+
+// movk Xd, #imm16, lsl #hw*16 (keeps the other halfwords).
+private int a64Movk(int rd, int imm16, int hw) {
+    return int(0xF2800000 | ((hw & 3) << 21) | ((imm16 & 0xFFFF) << 5) | (rd & 31));
+}
+
+// ret Xn: return (default X30).
+private int a64Ret(int rn) {
+    return int(0xD65F0000 | ((rn & 31) << 5));
+}
+
+// Decode the page offset of an adrp word (the object reader recovers
+// data-reference addends with this).
+private int a64DecodeAdrpPage(int word) {
+    int64 raw = (((int64(word) >> 5) & 0x7FFFF) << 2) | ((int64(word) >> 29) & 0x3);
+    if ((raw & 0x100000) != 0) { return int(raw - 0x200000); }
+    return int(raw);
+}
+
+// Decode the imm12 of an add (immediate) word.
+private int a64DecodeAddImm12(int word) {
+    return int((int64(word) >> 10) & 0xFFF);
+}
+
+// Decode the 26-bit displacement of a bl word (in words, like the
+// reference decode_bl_imm26).
+private int a64DecodeBlImm26(int word) {
+    int64 raw = int64(word) & 0x3FFFFFF;
+    if ((raw & 0x2000000) != 0) { return int(raw - 0x4000000); }
+    return int(raw);
+}
+
+private int macWordAt(int[] code, int pos) {
+    int64 w = 0;
+    for (int i = 0; i < 4; i++) { w = w | (int64(code[pos + i] & 0xFF) << (i * 8)); }
+    return int(w);
+}
+
+// 28 bytes of real ARM64 (Mac target): an adrp+add pair addressing the
+// data anchor at unit-relative offset 0 (PAGE21/PAGEOFF12 relocs), a bl to
+// the runner seam (BRANCH26 reloc, zero placeholder per the Mach-O ARM64
+// convention), the low 48 bits of the source hash materialized into x0
+// (movz + 2x movk, proving content-derivation in bytes), and ret.
+// Assembled with the encoders above — disassemblable, relocatable, and
+// reader-validated exactly like compiler-emitted objects.
 public int[] interpBuildArm(int64 hash) {
+    int[] code = [];
+    int64[] words = [];
+    words.add(a64Adrp(9, 0));
+    words.add(a64AddImm(9, 9, 0));
+    words.add(a64Bl(0));
     int lo = int(hash & 65535);
     int mid = int((hash >> 16) & 65535);
     int hi = int((hash >> 32) & 65535);
-    int64 w0 = 3531603968 + (int64(lo) << 5);
-    int64 w1 = 4070572032 + (int64(mid) << 5);
-    int64 w2 = 4072669184 + (int64(hi) << 5);
-    int64 w3 = 3596551104;
-    int[] code = [];
-    int64[] words = [];
-    words.add(w0);
-    words.add(w1);
-    words.add(w2);
-    words.add(w3);
+    words.add(a64Movz(0, lo, 0));
+    words.add(a64Movk(0, mid, 1));
+    words.add(a64Movk(0, hi, 2));
+    words.add(a64Ret(30));
     for (int i = 0; i < words.length; i++) {
         for (int b = 0; b < 4; b++) { code.add((words[i] >> (b * 8)) & 0xFF); }
     }
@@ -726,8 +805,10 @@ public int[] interpBuildData(string filekey, int64 hash, int srcLen, int stamp) 
 }
 
 // Fill `unit` for one entry file: machine code + data + the defined entry
-// FUNC + the data anchor + the UNDEF runner seam + the two relocations
-// (x86-64) or none (ARM64 — see interpBuildArm). Sorted + deterministic.
+// FUNC + the data anchor + the UNDEF runner seam + the position-dependent
+// relocations (REL32 + ABS64 on x86-64; PAGE21 + PAGEOFF12 + BRANCH26 on
+// ARM64 — the adrp+add pair addresses the data anchor at unit-relative
+// offset 0, the bl calls the seam). Sorted + deterministic.
 public void interpBuildUnit(string filekey, int64 hash, int srcLen, int stamp, string targetOs, ObjUnit unit) {
     unit.filekey = filekey;
     unit.datab = databName(filekey);
@@ -755,7 +836,24 @@ public void interpBuildUnit(string filekey, int64 hash, int srcLen, int stamp, s
     unit.relTargets = [];
     unit.relIdx = [];
     unit.relNames = [];
-    if (targetOs != "MAC") {
+    if (targetOs == "MAC") {
+        unit.undefFuncs.add(objInterpRunSym());
+        unit.relSites.add(0);
+        unit.relKinds.add(3);
+        unit.relTargets.add(2);
+        unit.relIdx.add(0);
+        unit.relNames.add("");
+        unit.relSites.add(4);
+        unit.relKinds.add(4);
+        unit.relTargets.add(2);
+        unit.relIdx.add(0);
+        unit.relNames.add("");
+        unit.relSites.add(8);
+        unit.relKinds.add(2);
+        unit.relTargets.add(1);
+        unit.relIdx.add(-1);
+        unit.relNames.add(objInterpRunSym());
+    } else {
         unit.undefFuncs.add(objInterpRunSym());
         unit.relSites.add(16);
         unit.relKinds.add(1);
@@ -1131,109 +1229,119 @@ public int[] emitElf(ObjUnit unit, int[] note) {
     return w.out;
 }
 
-// Minimal Mach-O object (Mac target): mach_header_64 (ARM64, MH_OBJECT)
-// + LC_SEGMENT_64 (__TEXT with __text, __rdata and __slvnote sections) +
-// LC_SYMTAB. Mirrors the reference emit_macho_object byte-exactly
-// (nlist order [entry?][datab][defined...][undefs...], ARM64 reloc kinds).
-// The interpreter's ARM64 stub carries no relocations (see interpBuildArm),
-// so the relocation list is empty — full ARM64 GOT-reloc emission is the
-// follow-up alongside native execution (NATIVE-RUNNER BOUNDARY above).
-// Built only with byte pushes.
+// Minimal Mach-O object (Mac target): mach_header_64 (ARM64, MH_OBJECT) +
+// LC_SEGMENT_64 (__TEXT with __text, __rdata and __slvnote sections) +
+// LC_SYMTAB + LC_DYSYMTAB + section relocations. Byte-compatible with the
+// reference emit_macho_object (same order, same values), so objects
+// interoperate across compilers. Built only with byte pushes.
+//
+// The symbol table is genuine: two non-extern section anchors (__text,
+// __rdata), one defined FUNC symbol per function owned by the file (the
+// entry stub — the interpreter's emitter owns one function per file), the
+// global data-anchor symbol (offset 0 in __rdata), and UNDEF entries for
+// every cross-unit reference (the runner seam). Relocations cover the bl
+// call (ARM64_RELOC_BRANCH26) and the adrp+add data pair
+// (ARM64_RELOC_PAGE21 / ARM64_RELOC_PAGEOFF12).
 public int[] emitMacho(ObjUnit unit, int[] note) {
+    // ARM64 reloc types (mach-o/reloc.h): BRANCH26=2, PAGE21=3, PAGEOFF12=4.
     ObjSymTab syms = new ObjSymTab();
     objBuildSyms(unit, syms);
-    int segCmdsize = 72 + 3 * 80;
-    int sizeofcmds = segCmdsize + 24;
-    int textOff = 32 + sizeofcmds;
+    int segCmdSize = 72 + 3 * 80;
+    int sizeOfCmds = segCmdSize + 24 + 80;
+    int textOff = 32 + sizeOfCmds;
     int rdataOff = textOff + unit.code.length;
     int noteOff = rdataOff + unit.data.length;
-    int reloff = noteOff + note.length;
+    int relOff = noteOff + note.length;
     int relLen = unit.relSites.length * 8;
-    int symOff = reloff + relLen;
-    bool hasEntry = unit.code.length > 0;
-    ObjWriter sw = new ObjWriter();
-    sw.u8(0);
-    int[] nlistStrx = [];
-    int[] nlistType = [];
-    int[] nlistSect = [];
-    int64[] nlistVal = [];
+    int symOff = relOff + relLen;
+    // nlist order: the two section anchors, the data anchor, defined
+    // funcs, then undefined functions, singletons, and imports. The
+    // string table lives in a holder object, not a raw array parameter:
+    // arrays received as parameters silently stop growing past 8 entries
+    // in this toolchain, while prop arrays on a passed object keep
+    // growing (see ObjSymTab above).
+    MacStrtab stab = new MacStrtab();
+    int[] nStrx = [];
+    int[] nType = [];
+    int[] nSect = [];
+    int64[] nValue = [];
+    // Map internal sym index -> nlist index (section anchors ARE entries
+    // here, so every internal index maps).
     int[] nlistOf = [];
-    for (int i = 0; i < syms.names.length; i++) { nlistOf.add(-1); }
-    if (hasEntry) {
-        nlistStrx.add(sw.out.length);
-        sw.rawStr("__slv_entry");
-        sw.u8(0);
-        nlistType.add(15);
-        nlistSect.add(1);
-        nlistVal.add(0);
+    for (int i = 0; i < syms.names.length; i++) { nlistOf.add(0); }
+    nlistOf[0] = 0;
+    nStrx.add(stab.add("__text"));
+    nType.add(14);
+    nSect.add(1);
+    nValue.add(0);
+    nlistOf[1] = 1;
+    nStrx.add(stab.add("__rdata"));
+    nType.add(14);
+    nSect.add(2);
+    nValue.add(0);
+    nlistOf[symsDatabIdx(unit)] = nStrx.length;
+    nStrx.add(stab.add(unit.datab));
+    nType.add(15);
+    nSect.add(2);
+    nValue.add(0);
+    for (int d = 0; d < unit.defNames.length; d++) {
+        int symIdx = 2 + d;
+        nlistOf[symIdx] = nStrx.length;
+        string dnm = unit.defNames[d];
+        nStrx.add(stab.add(dnm));
+        nType.add(15);
+        nSect.add(1);
+        int doff = unit.defOffs[d];
+        nValue.add(doff);
     }
-    int databStrx = sw.out.length;
-    sw.rawStr(unit.datab);
-    sw.u8(0);
-    nlistOf[symIdxOf(syms, unit.datab)] = nlistStrx.length;
-    nlistStrx.add(databStrx);
-    nlistType.add(15);
-    nlistSect.add(2);
-    nlistVal.add(0);
-    for (int di = 0; di < unit.defNames.length; di++) {
-        nlistOf[2 + di] = nlistStrx.length;
-        nlistStrx.add(sw.out.length);
-        sw.rawStr(unit.defNames[di]);
-        sw.u8(0);
-        nlistType.add(15);
-        nlistSect.add(1);
-        nlistVal.add(unit.defOffs[di]);
+    for (int f = 0; f < unit.undefFuncs.length; f++) {
+        int symIdx = 2 + unit.defNames.length + 1 + f;
+        nlistOf[symIdx] = nStrx.length;
+        string ufnm = unit.undefFuncs[f];
+        nStrx.add(stab.add(ufnm));
+        nType.add(1);
+        nSect.add(0);
+        nValue.add(0);
     }
-    for (int fi = 0; fi < unit.undefFuncs.length; fi++) {
-        int nlidx = 2 + unit.defNames.length + 1 + fi;
-        nlistOf[nlidx] = nlistStrx.length;
-        nlistStrx.add(sw.out.length);
-        sw.rawStr(unit.undefFuncs[fi]);
-        sw.u8(0);
-        nlistType.add(1);
-        nlistSect.add(0);
-        nlistVal.add(0);
+    for (int q = 0; q < unit.undefSingles.length; q++) {
+        int symIdx = 2 + unit.defNames.length + 1 + unit.undefFuncs.length + q;
+        nlistOf[symIdx] = nStrx.length;
+        string snm = objSingletonGlobals();
+        if (unit.undefSingles[q] == 0) { snm = objSingletonExc(); }
+        else if (unit.undefSingles[q] == 1) { snm = objSingletonTray(); }
+        nStrx.add(stab.add(snm));
+        nType.add(1);
+        nSect.add(0);
+        nValue.add(0);
     }
-    int singleBase = 2 + unit.defNames.length + 1 + unit.undefFuncs.length;
-    for (int si = 0; si < unit.undefSingles.length; si++) {
-        int nlidx = singleBase + si;
-        nlistOf[nlidx] = nlistStrx.length;
-        string sname = objSingletonGlobals();
-        if (unit.undefSingles[si] == 0) { sname = objSingletonExc(); }
-        else if (unit.undefSingles[si] == 1) { sname = objSingletonTray(); }
-        nlistStrx.add(sw.out.length);
-        sw.rawStr(sname);
-        sw.u8(0);
-        nlistType.add(1);
-        nlistSect.add(0);
-        nlistVal.add(0);
+    for (int v = 0; v < unit.undefImports.length; v++) {
+        int symIdx = 2 + unit.defNames.length + 1 + unit.undefFuncs.length + unit.undefSingles.length + v;
+        nlistOf[symIdx] = nStrx.length;
+        nStrx.add(stab.add(objImportPrefix() + (string)unit.undefImports[v]));
+        nType.add(1);
+        nSect.add(0);
+        nValue.add(0);
     }
-    int importBase = singleBase + unit.undefSingles.length;
-    for (int ii = 0; ii < unit.undefImports.length; ii++) {
-        int nlidx = importBase + ii;
-        nlistOf[nlidx] = nlistStrx.length;
-        nlistStrx.add(sw.out.length);
-        sw.rawStr(objImportPrefix() + (string)unit.undefImports[ii]);
-        sw.u8(0);
-        nlistType.add(1);
-        nlistSect.add(0);
-        nlistVal.add(0);
-    }
-    int[] strtab = sw.out;
-    int strOff = symOff + nlistStrx.length * 16;
+    int strOff = symOff + nStrx.length * 16;
+    // Dysymtab ranges over the table above: 2 local anchors, then
+    // 1 + defined external definitions (datab + funcs), then undefineds.
+    int nlocal = 2;
+    int nextdef = 1 + unit.defNames.length;
+    int nundef = unit.undefFuncs.length + unit.undefSingles.length + unit.undefImports.length;
     ObjWriter w = new ObjWriter();
     // mach_header_64 (32 bytes).
-    w.u32(4277009103);
-    w.u32(16777228);
+    // MH_MAGIC_64 0xFEEDFACF.
+    w.u32(int(4277009103));
+    w.u32(int(0x0100000C));
     w.u32(0);
     w.u32(1);
-    w.u32(2);
-    w.u32(sizeofcmds);
+    w.u32(3);
+    w.u32(sizeOfCmds);
     w.u32(0);
     w.u32(0);
     // LC_SEGMENT_64 + 3 sections.
-    w.u32(25);
-    w.u32(segCmdsize);
+    w.u32(int(0x19));
+    w.u32(segCmdSize);
     w.rawName("__TEXT", 16);
     w.u64(0);
     w.u64(unit.code.length + unit.data.length + note.length);
@@ -1250,10 +1358,10 @@ public int[] emitMacho(ObjUnit unit, int[] note) {
     w.u64(unit.code.length);
     w.u32(textOff);
     w.u32(2);
-    if (unit.relSites.length > 0) { w.u32(reloff); }
+    if (unit.relSites.length > 0) { w.u32(relOff); }
     else { w.u32(0); }
     w.u32(unit.relSites.length);
-    w.u32(2147484672);
+    w.u32(int(0x80000400));
     w.u32(0);
     w.u32(0);
     w.u32(0);
@@ -1287,42 +1395,86 @@ public int[] emitMacho(ObjUnit unit, int[] note) {
     w.u32(2);
     w.u32(24);
     w.u32(symOff);
-    w.u32(nlistStrx.length);
+    w.u32(nStrx.length);
     w.u32(strOff);
-    w.u32(strtab.length);
+    w.u32(stab.buf.length);
+    // LC_DYSYMTAB (local anchors, external definitions, undefineds).
+    w.u32(int(0xB));
+    w.u32(80);
+    w.u32(0);
+    w.u32(nlocal);
+    w.u32(nlocal);
+    w.u32(nextdef);
+    w.u32(nlocal + nextdef);
+    w.u32(nundef);
+    for (int z = 0; z < 12; z++) { w.u32(0); }
     w.rawBytes(unit.code);
     w.rawBytes(unit.data);
     w.rawBytes(note);
-    // Relocation entries (8 bytes each; empty for the interpreter stub).
+    // Relocation entries (8 bytes): r_address + packed
+    // (symbolnum[24] | pcrel[1] | length[2] | extern[1] | type[4]).
     for (int i = 0; i < unit.relSites.length; i++) {
-        int symidx = objSymIndexFor(unit, unit.relTargets[i], unit.relIdx[i], unit.relNames[i]);
+        int rsite = unit.relSites[i];
+        int rkind = unit.relKinds[i];
+        int rtarget = unit.relTargets[i];
+        int ridx = unit.relIdx[i];
+        string rname = unit.relNames[i];
+        int symidx = objSymIndexFor(unit, rtarget, ridx, rname);
+        int rtype = 2;
+        if (rkind == 3) { rtype = 3; }
+        else if (rkind == 4) { rtype = 4; }
+        else if (rkind != 2) {
+            printline("object cache: x86 relocation in a Mach-O object");
+            exit(1);
+        }
         int ni = nlistOf[symidx];
-        int rtype = 3;
-        if (unit.relKinds[i] == 1) { rtype = 3; }
-        else { rtype = 4; }
-        int64 packed = int64(ni) | 16777216 | 33554432 | 134217728 | (int64(rtype) << 28);
-        w.u32(unit.relSites[i]);
+        int packed = ni | (1 << 24) | (2 << 25) | (1 << 27) | (rtype << 28);
+        w.u32(rsite);
         w.u32(packed);
     }
     // nlist_64 entries (16 bytes).
-    for (int i = 0; i < nlistStrx.length; i++) {
-        w.u32(nlistStrx[i]);
-        w.u8(nlistType[i]);
-        w.u8(nlistSect[i]);
+    for (int i = 0; i < nStrx.length; i++) {
+        int sx = nStrx[i];
+        int nt = nType[i];
+        int ns = nSect[i];
+        int64 nv = nValue[i];
+        w.u32(sx);
+        w.u8(nt);
+        w.u8(ns);
         w.u16(0);
-        w.u64(nlistVal[i]);
+        w.u64(nv);
     }
-    w.rawBytes(strtab);
+    w.rawBytes(stab.buf);
     return w.out;
 }
 
-// Internal symbol-table index of `name` (-1 when absent; used for the
-// Mach-O datab lookup above).
-private int symIdxOf(ObjSymTab syms, string name) {
-    for (int i = 0; i < syms.names.length; i++) {
-        if (syms.names[i] == name) { return i; }
+// String-table builder on a holder object (see the note at the stab site:
+// raw array parameters stop growing past 8 entries; prop arrays keep
+// growing).
+class MacStrtab {
+    public prop int[] buf;
+
+    construct {
+        this.buf = [];
+        this.buf.add(0);
     }
-    return -1;
+
+    // Append a NUL-terminated name, returning its offset.
+    public int add(string name) {
+        int off = this.buf.length;
+        for (int i = 0; i < name.length; i++) {
+            int c = name[i];
+            this.buf.add(c);
+        }
+        this.buf.add(0);
+        return off;
+    }
+}
+
+// Internal symbol index of the data anchor (see objBuildSyms order:
+// 2 anchors, then defined funcs, then the datab).
+private int symsDatabIdx(ObjUnit unit) {
+    return 2 + unit.defNames.length;
 }
 
 // Serialize one interpreter-built unit for the session target: the proper
@@ -1343,13 +1495,13 @@ public bool objTooManyRelocs(ObjUnit unit) {
     return unit.relSites.length >= 65535;
 }
 
-// Silver object note (v4): SLVOBJ2 + flag-set string + source FNV-1 hash +
+// Silver object note (v5): SLVOBJ3 + flag-set string + source FNV-1 hash +
 // emission stamp + globals-block size + import list + owner file key.
 // Mirrors the reference encode_note byte-exactly (the interpreter always
 // records gas 0 and an empty import list — the shape stays exact).
 public int[] objEncodeNote(ObjUnit unit, string flags, int64 srcHash, int stamp) {
     ObjWriter w = new ObjWriter();
-    w.rawStr("SLVOBJ2");
+    w.rawStr("SLVOBJ3");
     w.strField(flags);
     w.u64(srcHash);
     w.u64(stamp);
@@ -1364,12 +1516,12 @@ public int[] objEncodeNote(ObjUnit unit, string flags, int64 srcHash, int stamp)
 }
 
 // Decode one note span into note. Returns "" when valid, else the exact
-// reference error. A v3-era (SLVOBJ1) note fails here and the planner
+// reference error. A v4-era (SLVOBJ2) note fails here and the planner
 // treats the object as stale — never a hard error.
 private string objDecodeNote(ObjReader r, int noteOff, int noteLen, ObjNote note) {
     string badNote = "object cache: corrupt Silver note section";
     if (noteOff < 0 || noteLen <= 0 || noteOff + noteLen > r.size) { return badNote; }
-    if (r.bytesAt(noteOff, 7) != "SLVOBJ2") { return badNote; }
+    if (r.bytesAt(noteOff, 7) != "SLVOBJ3") { return badNote; }
     int pos = noteOff + 7;
     int flagLen = int(r.u32At(pos));
     pos += 4;
@@ -1507,15 +1659,16 @@ private string objSplitElf(ObjReader r, int[] out) {
 }
 
 // Split a Mach-O object into its section spans: out holds
-// [textOff, textLen, rdataOff, rdataLen, noteOff, noteLen]. Returns "" on
-// success, else the exact reference error (ARM64 MH_OBJECT magic, sane
-// load-command walk, __text/__rdata/__slvnote found with in-bounds spans).
+// [textOff, textLen, rdataOff, rdataLen, noteOff, noteLen].
+// Returns "" on success, else the exact reference error.
 private string objSplitMacho(ObjReader r, int[] out) {
     string bad = "object cache: corrupt Mach-O object";
     if (r.size < 32) { return bad; }
-    if (int(r.u32At(0)) != 4277009103 || int(r.u32At(4)) != 16777228 || int(r.u32At(12)) != 1) { return bad; }
+    // MH_MAGIC_64 0xFEEDFACF.
+    if (r.u32At(0) != int(4277009103)) { return bad; }
+    if (r.u32At(4) != int(0x0100000C)) { return bad; }
+    if (r.u32At(12) != 1) { return bad; }
     int ncmds = int(r.u32At(16));
-    if (ncmds < 0 || ncmds > 100) { return bad; }
     int off = 32;
     int textOff = -1;
     int textLen = 0;
@@ -1523,22 +1676,22 @@ private string objSplitMacho(ObjReader r, int[] out) {
     int rdataLen = 0;
     int noteOff = -1;
     int noteLen = 0;
-    for (int c = 0; c < ncmds; c++) {
+    for (int i = 0; i < ncmds; i++) {
         int cmd = int(r.u32At(off));
         int cmdsize = int(r.u32At(off + 4));
-        if (cmd < 0 || cmdsize < 8 || off + cmdsize > r.size) { return bad; }
-        if (cmd == 25) {
+        if (cmdsize < 8 || off + cmdsize > r.size) { return bad; }
+        if (cmd == int(0x19)) {
             int nsects = int(r.u32At(off + 64));
             if (nsects < 0 || nsects > 100) { return bad; }
-            for (int s = 0; s < nsects; s++) {
-                int base = off + 72 + s * 80;
-                string sname = r.bytesAt(base, 16);
+            for (int q = 0; q < nsects; q++) {
+                int base = off + 72 + q * 80;
+                if (base + 80 > r.size) { return bad; }
                 int size = int(r.u64At(base + 40));
                 int fileoff = int(r.u32At(base + 48));
                 if (size < 0 || fileoff < 0 || fileoff + size > r.size) { return bad; }
-                if (sname.startsWith("__text")) { textOff = fileoff; textLen = size; }
-                else if (sname.startsWith("__rdata")) { rdataOff = fileoff; rdataLen = size; }
-                else if (sname.startsWith("__slvnote")) { noteOff = fileoff; noteLen = size; }
+                if (r.bytesAt(base, 6) == "__text") { textOff = fileoff; textLen = size; }
+                else if (r.bytesAt(base, 7) == "__rdata") { rdataOff = fileoff; rdataLen = size; }
+                else if (r.bytesAt(base, 9) == "__slvnote") { noteOff = fileoff; noteLen = size; }
             }
         }
         off += cmdsize;
@@ -1554,9 +1707,9 @@ private string objSplitMacho(ObjReader r, int[] out) {
 }
 
 // Parse just the Silver note (cheap freshness probe, mirrors the reference
-// peek_note): split the container for the session target, decode the v4
-// note into note. Returns true when the container and note are valid v4 —
-// v3-era and foreign objects fail here and the planner treats them as
+// peek_note): split the container for the session target, decode the v5
+// note into note. Returns true when the container and note are valid v5 —
+// v4-era and foreign objects fail here and the planner treats them as
 // stale, never a hard error.
 public bool objPeekNote(ObjReader r, string targetOs, ObjNote note) {
     int[] spans = [];
@@ -1828,9 +1981,11 @@ public string objParseElf(ObjReader r, ParsedObj obj) {
     return "";
 }
 
-// Fully parse one Mach-O object into obj: code + data + note + LC_SYMTAB
-// bounds (symbol/string tables must sit inside the file). Section relocs
-// are bounds-checked when present. Hard errors on any corruption.
+// Fully parse one Mach-O object into obj (hard errors on any corruption).
+// Relocation addends ride in the instruction immediates (Mach-O ARM64
+// convention): bl placeholders must be zero; adrp/add immediates carry the
+// unit-relative data offset, which the linker pairs by site adjacency (add
+// at adrp + 4, same symbol).
 public string objParseMacho(ObjReader r, ParsedObj obj) {
     string bad = "object cache: corrupt Mach-O object";
     int[] spans = [];
@@ -1857,58 +2012,148 @@ public string objParseMacho(ObjReader r, ParsedObj obj) {
     obj.impNames = note.impNames;
     obj.filekey = note.filekey;
     int ncmds = int(r.u32At(16));
-    int off = 32;
-    int symOff = -1;
+    // Locate the LC_SYMTAB string table and the __text relocations. Spans
+    // ride a holder object (raw array parameters stop growing past 8
+    // entries; a foreign object could name many __text sections).
+    int symoff = -1;
     int nsyms = 0;
-    int strOff = -1;
-    int strSize = 0;
-    for (int c = 0; c < ncmds; c++) {
+    int stroff = -1;
+    MacRelSpans relSpans = new MacRelSpans();
+    int off = 32;
+    for (int i = 0; i < ncmds; i++) {
         int cmd = int(r.u32At(off));
         int cmdsize = int(r.u32At(off + 4));
-        if (cmd < 0 || cmdsize < 8 || off + cmdsize > r.size) { return bad; }
-        if (cmd == 25) {
+        if (cmdsize < 8 || off + cmdsize > r.size) { return bad; }
+        if (cmd == int(0x19)) {
             int nsects = int(r.u32At(off + 64));
-            if (nsects < 0 || nsects > 100) { return bad; }
-            for (int s = 0; s < nsects; s++) {
-                int base = off + 72 + s * 80;
-                int nreloc = int(r.u32At(base + 60));
-                int reloff = int(r.u32At(base + 56));
-                if (nreloc < 0) { return bad; }
-                if (nreloc > 0 && (reloff < 0 || reloff + nreloc * 8 > r.size)) { return bad; }
+            for (int q = 0; q < nsects; q++) {
+                int base = off + 72 + q * 80;
+                if (base + 80 > r.size) { return bad; }
+                if (r.bytesAt(base, 6) == "__text") {
+                    int reloff = int(r.u32At(base + 56));
+                    int nreloc = int(r.u32At(base + 60));
+                    if (nreloc < 0) { return bad; }
+                    if (nreloc > 0) {
+                        relSpans.offs.add(reloff);
+                        relSpans.counts.add(nreloc);
+                    }
+                }
             }
         } else if (cmd == 2) {
-            symOff = int(r.u32At(off + 8));
+            symoff = int(r.u32At(off + 8));
             nsyms = int(r.u32At(off + 12));
-            strOff = int(r.u32At(off + 16));
-            strSize = int(r.u32At(off + 20));
+            stroff = int(r.u32At(off + 16));
         }
         off += cmdsize;
     }
-    if (symOff < 0 || nsyms <= 0 || strOff < 0 || strSize <= 0) { return bad; }
-    if (symOff + nsyms * 16 > r.size || strOff + strSize > r.size) { return bad; }
+    if (symoff < 0 || nsyms <= 0 || stroff < 0) { return bad; }
+    if (symoff + nsyms * 16 > r.size) { return bad; }
     obj.symNames = [];
     obj.symSects = [];
     obj.symVals = [];
     obj.symIsFunc = [];
     for (int i = 0; i < nsyms; i++) {
-        int base = symOff + i * 16;
+        int base = symoff + i * 16;
+        if (base + 16 > r.size) { return bad; }
         int strx = int(r.u32At(base));
         int ntype = int(r.u8At(base + 4));
         int nsect = int(r.u8At(base + 5));
         int64 nvalue = r.u64At(base + 8);
-        if (strx < 0 || ntype < 0 || nsect < 0 || nvalue < 0) { return bad; }
-        string name = objCStr(r, strOff, strSize, strx);
-        if (name.length == 0) { return bad; }
+        string[] nm = [];
+        if (!macStrtabName(r, stroff, strx, nm)) { return bad; }
+        string name = nm[0];
+        if (nvalue < 0 || nvalue > 4294967295) { return bad; }
+        if ((ntype & 224) != 0) { return bad; }
+        int sect = -1;
+        int isFunc = 0;
+        if ((ntype & 14) == 14) {
+            if (nsect != 1 && nsect != 2) { return bad; }
+            sect = nsect;
+            if (nsect == 1 && (ntype & 1) != 0) { isFunc = 1; }
+        } else if ((ntype & 14) == 0) {
+            if ((ntype & 1) == 0) { return bad; }
+            sect = 0;
+        } else {
+            return bad;
+        }
         obj.symNames.add(name);
-        obj.symSects.add(nsect);
+        obj.symSects.add(sect);
         obj.symVals.add(int(nvalue));
-        obj.symIsFunc.add(0);
+        obj.symIsFunc.add(isFunc);
     }
     obj.relSites = [];
     obj.relSyms = [];
     obj.relKinds = [];
     obj.relAddends = [];
+    for (int t = 0; t < relSpans.offs.length; t++) {
+        for (int i = 0; i < relSpans.counts[t]; i++) {
+            int base = relSpans.offs[t] + i * 8;
+            if (base + 8 > r.size) { return bad; }
+            int address = int(r.u32At(base));
+            int packed = int(r.u32At(base + 4));
+            int symnum = packed & 16777215;
+            int pcrel = (packed >> 24) & 1;
+            int length = (packed >> 25) & 3;
+            int ext = (packed >> 27) & 1;
+            int rtype = int((int64(packed) >> 28) & 15);
+            if (ext != 1 || pcrel != 1 || length != 2 || symnum < 0 || symnum >= obj.symNames.length) { return bad; }
+            if (address < 0 || address + 4 > obj.code.length) { return bad; }
+            int word = macWordAt(obj.code, address);
+            int kind = -1;
+            int64 addend = 0;
+            if (rtype == 2) {
+                if (a64DecodeBlImm26(word) != 0 || (word >> 26) != 37) { return bad; }
+                kind = 2;
+            } else if (rtype == 3) {
+                if ((word & int(0x9F000000)) != int(0x90000000)) { return bad; }
+                kind = 3;
+                addend = int64(a64DecodeAdrpPage(word)) << 12;
+            } else if (rtype == 4) {
+                if ((word & int(0xFF000000)) != int(0x91000000)) { return bad; }
+                kind = 4;
+                addend = a64DecodeAddImm12(word);
+            } else {
+                return bad;
+            }
+            obj.relSites.add(address);
+            obj.relSyms.add(symnum);
+            obj.relKinds.add(kind);
+            obj.relAddends.add(addend);
+        }
+    }
     return "";
+}
+
+// __text relocation spans on a holder object (see the note at the spans
+// site: raw array parameters stop growing past 8 entries).
+class MacRelSpans {
+    public prop int[] offs;
+    public prop int[] counts;
+
+    construct {
+        this.offs = [];
+        this.counts = [];
+    }
+}
+
+// NUL-terminated name at strOff + strx (an immediate NUL decodes to the
+// empty name, exactly like the reference). Returns false when the offset
+// lands outside the file or no terminator follows.
+private bool macStrtabName(ObjReader r, int strOff, int strx, string[] out) {
+    if (strx < 0 || strOff + strx >= r.size) { return false; }
+    string[] parts = [];
+    int p = strOff + strx;
+    bool term = false;
+    while (p < r.size) {
+        int64 b = r.u8At(p);
+        if (b < 0) { return false; }
+        if (b == 0) { term = true; break; }
+        parts.add((string)char(int(b)));
+        p++;
+    }
+    if (!term) { return false; }
+    out.add(parts.join(""));
+    return true;
 }
 
 // Fully parse one cached object for the session target (hard errors: a
@@ -1918,6 +2163,773 @@ public string objParseObject(ObjReader r, string targetOs, ParsedObj obj) {
     if (targetOs == "LINUX") { return objParseElf(r, obj); }
     if (targetOs == "MAC") { return objParseMacho(r, obj); }
     return objParseCoff(r, obj);
+}
+
+// Fully parse one cached object for the session target (hard errors: a
+// fresh-planned file whose object is corrupt fails loudly instead of being
+// reused silently). Fills obj, returns "" or the exact reference error.
+public string objParseObject(ObjReader r, string targetOs, ParsedObj obj) {
+    if (targetOs == "LINUX") { return objParseElf(r, obj); }
+    if (targetOs == "MAC") { return objParseMacho(r, obj); }
+    return objParseCoff(r, obj);
+}
+
+// ---------------------------------------------------------------------------
+// mac-aarch64 object-tier boundary predicate (mirrors silverc-rs
+// mac_tier_fallback_reason and silverc/compiler/objcache.sr macTierReason
+// exactly: same boundary, same reason strings).
+//
+// A program is in-tier when ALL of these hold:
+//
+// - Items are only free functions, const integer/bool/char items with
+//   literal values, and import items. No structs, classes, enums, modules,
+//   type aliases, globals, or any other item kind.
+// - Exactly one main with no parameters and void return.
+// - Every other function is free-standing (no overloads — duplicate names
+//   fall back), takes at most 8 parameters, has no default values, and uses
+//   only int/bool/char parameter and return types (void return allowed).
+// - No user function is named print, printline, printf, or exit (those
+//   names are the tier's builtins/imports).
+// - Statements: local int/bool/char declarations with an initializer,
+//   plain/compound (+=, -=, *=, and the << move form) assignment to locals,
+//   if/else, while, break/continue inside while, return, calls, and
+//   print/printline with exactly one argument. No for/foreach,
+//   match/switch, exceptions, or destructuring. (This AST desugars ++/--
+//   into +=/-= 1, so they ride the assignment arm with identical strings.)
+// - Expressions: integer/bool/char literals, const reads, local and
+//   parameter reads, +/-/* (no division or modulo), unary -, !,
+//   comparisons, short-circuit &&/||, parentheses, calls to program-defined
+//   functions with exact arity, and string literals ONLY as the direct
+//   argument of print/printline.
+// - Total frame (parameters + locals + operand slots) fits in 500 8-byte
+//   slots.
+//
+// Kind/operator numbers below are this interpreter's ND_*/OP_* constants
+// (ast.sr); the port's raw numbers ride in comments (Pnn) so the mapping
+// stays reviewable. Reason strings are byte-identical to the references.
+//
+// The driver consults this on the mac path after parsing: an out-of-tier
+// entry prints the loud fallback (reference reason + the interpreter's
+// verified-tier continuation) and runs from the verified AST/bytecode
+// tiers. The interpreter's mac objects carry the entry stub only — never
+// lowered program semantics — so the predicate never gates emission, only
+// the loudness of the boundary.
+// ---------------------------------------------------------------------------
+
+// Whole-program tier context: function signatures, const values, and
+// whether any print needs the printf import. Parameter and return kinds
+// are single letters (i = int, b = bool, c = char, v = void) mirroring the
+// reference TierCtx.
+class MacCtx {
+    public prop string[] sigNames;
+    public prop string[] sigParams;
+    public prop string[] sigRets;
+    public prop string[] constNames;
+    public prop string[] constKinds;
+    public prop int64[] constVals;
+    public prop bool usesPrintf;
+
+    construct {
+        this.sigNames = [];
+        this.sigParams = [];
+        this.sigRets = [];
+        this.constNames = [];
+        this.constKinds = [];
+        this.constVals = [];
+        this.usesPrintf = false;
+    }
+}
+
+// Per-function layout: variable slots plus operand-stack depth.
+class MacLayout {
+    public prop string[] varNames;
+    public prop string[] varKinds;
+    public prop int[] varSlots;
+    public prop int totalSlots;
+    public prop int maxDepth;
+    public prop int frameBytes;
+
+    construct {
+        this.varNames = [];
+        this.varKinds = [];
+        this.varSlots = [];
+        this.totalSlots = 0;
+        this.maxDepth = 0;
+        this.frameBytes = 0;
+    }
+}
+
+// Checked-expression value: scalar kind (0 = int, 1 = bool, 2 = char,
+// 3 = bare string literal) plus the operand-stack slots it needs.
+class MacVal {
+    public prop int kind;
+    public prop int depth;
+
+    construct {
+        this.kind = 0;
+        this.depth = 0;
+    }
+}
+
+// Walker state for the boundary check (mirrors the reference Walker:
+// locals accumulate slots, maxDepth tracks the operand area, loopDepth
+// gates break/continue).
+class MacWalk {
+    public prop MacCtx ctx;
+    public prop string fname;
+    public prop bool voidFn;
+    public prop string[] varNames;
+    public prop string[] varKinds;
+    public prop int nextSlot;
+    public prop int maxDepth;
+    public prop int loopDepth;
+
+    construct (MacCtx c) {
+        this.ctx = c;
+        this.fname = "";
+        this.voidFn = false;
+        this.varNames = [];
+        this.varKinds = [];
+        this.nextSlot = 0;
+        this.maxDepth = 0;
+        this.loopDepth = 0;
+    }
+}
+
+// Tier scalar letter for a declared type spelling, or "" when the type is
+// outside the tier (only int/bool/char lower as 64-bit values).
+private string macScalarOf(string t) {
+    if (t == "int") { return "i"; }
+    if (t == "bool") { return "b"; }
+    if (t == "char") { return "c"; }
+    return "";
+}
+
+private int macMax(int a, int b) {
+    if (a > b) { return a; }
+    return b;
+}
+
+private int macFindSig(MacCtx ctx, string name) {
+    for (int i = 0; i < ctx.sigNames.length; i++) {
+        if (ctx.sigNames[i] == name) { return i; }
+    }
+    return -1;
+}
+
+private int macFindConst(MacCtx ctx, string name) {
+    for (int i = 0; i < ctx.constNames.length; i++) {
+        if (ctx.constNames[i] == name) { return i; }
+    }
+    return -1;
+}
+
+private int macFindVar(MacWalk w, string name) {
+    for (int i = 0; i < w.varNames.length; i++) {
+        if (w.varNames[i] == name) { return i; }
+    }
+    return -1;
+}
+
+// Why a program is outside the mac object tier ("" = in-tier). Reason
+// strings mirror the reference mac_tier_fallback_reason exactly.
+public string macTierReason(Node[] program) {
+    MacCtx ctx = new MacCtx();
+    // Pass 1: items and signatures.
+    for (int i = 0; i < program.length; i++) {
+        Node item = program[i];
+        if (item.kind == ND_FUNC) {
+            if (item.name == "print" || item.name == "printline" || item.name == "printf" || item.name == "exit") {
+                return "user function '" + item.name + "' collides with a tier builtin";
+            }
+            if (macFindSig(ctx, item.name) >= 0) {
+                return "overloaded function '" + item.name + "' (duplicate name)";
+            }
+            if (item.childCount() < 2) {
+                return "function '" + item.name + "' has no body";
+            }
+            Node params = item.child(0);
+            if (params.childCount() > 8) {
+                return "function '" + item.name + "' takes " + (string)params.childCount() + " parameters (tier limit 8)";
+            }
+            string kinds = "";
+            for (int pi = 0; pi < params.childCount(); pi++) {
+                Node p = params.child(pi);
+                string pk = macScalarOf(p.typeHint);
+                if (pk.length == 0) {
+                    return "parameter '" + p.name + "' of '" + item.name + "' has non-tier type";
+                }
+                if (p.childCount() > 0) {
+                    return "default value on parameter '" + p.name + "' of '" + item.name + "'";
+                }
+                // No isVariadic field exists in this AST (only the `void ()`
+                // fn-typed shape survives parsing as a non-scalar); either
+                // way the reference string names both spellings.
+                if (p.typeHint == "void ()") {
+                    return "parameter '" + p.name + "' of '" + item.name + "' is variadic or function-typed";
+                }
+                kinds += pk;
+            }
+            string ret = "v";
+            if (item.typeHint != "" && item.typeHint != "void") {
+                ret = macScalarOf(item.typeHint);
+                if (ret.length == 0) {
+                    return "function '" + item.name + "' has non-tier return type";
+                }
+            }
+            ctx.sigNames.add(item.name);
+            ctx.sigParams.add(kinds);
+            ctx.sigRets.add(ret);
+        } else if (item.kind == ND_CONST) {
+            string ck = macScalarOf(item.typeHint);
+            if (ck.length == 0) {
+                return "const '" + item.name + "' has non-tier type";
+            }
+            if (item.childCount() == 0) {
+                return "const '" + item.name + "' needs a literal value";
+            }
+            Node v = item.child(0);
+            if (v.kind == ND_INT_LIT) {
+                ctx.constNames.add(item.name);
+                ctx.constKinds.add(ck);
+                ctx.constVals.add(v.intVal);
+            } else if (v.kind == ND_BOOL_LIT) {
+                ctx.constNames.add(item.name);
+                ctx.constKinds.add(ck);
+                if (v.boolVal) { ctx.constVals.add(1); }
+                else { ctx.constVals.add(0); }
+            } else if (v.kind == ND_CHAR_LIT) {
+                ctx.constNames.add(item.name);
+                ctx.constKinds.add(ck);
+                int cv = v.charVal;
+                ctx.constVals.add(int64(cv));
+            } else {
+                return "const '" + item.name + "' needs a literal value";
+            }
+        } else if (item.kind == ND_IMPORT) {
+            // Import items carry no code.
+        } else if (item.kind == ND_STRUCT_DEF) {
+            return "struct definitions";
+        } else if (item.kind == ND_CLASS_DEF) {
+            return "class definitions";
+        } else if (item.kind == ND_ENUM_DEF) {
+            return "enum definitions";
+        } else if (item.kind == ND_MODULE) {
+            return "inline module blocks";
+        } else if (item.kind == ND_TYPE_ALIAS) {
+            return "type aliases";
+        } else if (item.kind == ND_FOUND) {
+            return "found items";
+        } else if (item.kind == ND_COLLECT) {
+            return "collect items";
+        } else if (item.kind == ND_DEF_UNIT) {
+            return "defunit items";
+        } else if (item.kind == ND_ANNOTATION) {
+            return "annotations";
+        } else {
+            return "top-level statements";
+        }
+    }
+    // The entry contract: exactly one void main() with no parameters.
+    int mi = macFindSig(ctx, "main");
+    if (mi < 0) {
+        return "no main function";
+    }
+    string mainParams = ctx.sigParams[mi];
+    if (mainParams.length > 0) {
+        return "main takes parameters";
+    }
+    string mainRet = ctx.sigRets[mi];
+    if (mainRet != "v") {
+        return "main returns a value";
+    }
+    // Pass 2: every function body (also flags printf use).
+    for (int i = 0; i < program.length; i++) {
+        Node item = program[i];
+        if (item.kind == ND_FUNC) {
+            MacLayout layout = new MacLayout();
+            string err = macCheckFunc(ctx, item, layout);
+            if (err.length > 0) { return err; }
+        }
+    }
+    return "";
+}
+
+// Check one function body and compute its layout. Shared by the predicate
+// and any future lowering, so they can never disagree about the boundary.
+private string macCheckFunc(MacCtx ctx, Node func, MacLayout layout) {
+    int si = macFindSig(ctx, func.name);
+    if (si < 0) { return "missing signature in '" + func.name + "'"; }
+    if (func.childCount() < 2) { return "missing body in '" + func.name + "'"; }
+    MacWalk w = new MacWalk(ctx);
+    w.fname = func.name;
+    w.voidFn = ctx.sigRets[si] == "v";
+    string pks = ctx.sigParams[si];
+    Node params = func.child(0);
+    for (int i = 0; i < params.childCount(); i++) {
+        Node p = params.child(i);
+        w.varNames.add(p.name);
+        w.varKinds.add(pks[i..i + 1]);
+    }
+    w.nextSlot = params.childCount();
+    Node body = func.child(1);
+    string err = macWalkBlock(w, body, 0);
+    if (err.length > 0) { return err; }
+    if (w.nextSlot + w.maxDepth > 500) {
+        return "frame too large in '" + func.name + "'";
+    }
+    layout.varNames = w.varNames;
+    layout.varKinds = w.varKinds;
+    layout.varSlots = [];
+    for (int i = 0; i < w.varNames.length; i++) { layout.varSlots.add(i); }
+    layout.totalSlots = w.nextSlot + w.maxDepth;
+    layout.maxDepth = w.maxDepth;
+    layout.frameBytes = (layout.totalSlots * 8 + 15) / 16 * 16;
+    return "";
+}
+
+private string macWalkBlock(MacWalk w, Node block, int base) {
+    if (block.kind == ND_BLOCK) {
+        for (int i = 0; i < block.childCount(); i++) {
+            string err = macWalkStmt(w, block.child(i), base);
+            if (err.length > 0) { return err; }
+        }
+        return "";
+    }
+    return macWalkStmt(w, block, base);
+}
+
+private string macWalkStmt(MacWalk w, Node s, int base) {
+    if (s.kind == ND_EXPR_STMT) {
+        if (s.childCount() == 0) { return ""; }
+        MacVal v = new MacVal();
+        string err = macWalkExpr(w, s.child(0), true, base, v);
+        if (err.length > 0) { return err; }
+        w.maxDepth = macMax(w.maxDepth, base + v.depth);
+        return "";
+    }
+    if (s.kind == ND_VAR_DECL) {
+        if (s.childCount() == 0) {
+            return "uninitialized local '" + s.name + "' in '" + w.fname + "'";
+        }
+        MacVal v = new MacVal();
+        string err = macWalkExpr(w, s.child(0), false, base, v);
+        if (err.length > 0) { return err; }
+        if (v.kind == 3) {
+            return "string values in '" + w.fname + "'";
+        }
+        string vk = "";
+        if (v.kind == 0) { vk = "i"; }
+        else if (v.kind == 1) { vk = "b"; }
+        else { vk = "c"; }
+        if (s.typeHint != "" && s.typeHint != "var") {
+            vk = macScalarOf(s.typeHint);
+            if (vk.length == 0) {
+                return "local '" + s.name + "' has non-tier type in '" + w.fname + "'";
+            }
+        }
+        if (w.nextSlot >= 500) {
+            return "frame too large in '" + w.fname + "'";
+        }
+        w.varNames.add(s.name);
+        w.varKinds.add(vk);
+        w.nextSlot++;
+        w.maxDepth = macMax(w.maxDepth, base + v.depth);
+        return "";
+    }
+    if (s.kind == ND_RETURN) {
+        if (s.childCount() == 0) {
+            if (!w.voidFn) {
+                return "empty return in '" + w.fname + "'";
+            }
+            return "";
+        }
+        if (w.voidFn) {
+            return "return with a value in '" + w.fname + "'";
+        }
+        MacVal v = new MacVal();
+        string err = macWalkExpr(w, s.child(0), false, base, v);
+        if (err.length > 0) { return err; }
+        if (v.kind == 3) {
+            return "string values in '" + w.fname + "'";
+        }
+        w.maxDepth = macMax(w.maxDepth, base + v.depth);
+        return "";
+    }
+    if (s.kind == ND_IF_STMT) {
+        if (s.childCount() < 2) {
+            return "unsupported statement in '" + w.fname + "'";
+        }
+        MacVal v = new MacVal();
+        string err = macWalkExpr(w, s.child(0), false, base, v);
+        if (err.length > 0) { return err; }
+        if (v.kind == 3) {
+            return "string values in '" + w.fname + "'";
+        }
+        w.maxDepth = macMax(w.maxDepth, base + v.depth);
+        err = macWalkBlock(w, s.child(1), base);
+        if (err.length > 0) { return err; }
+        if (s.childCount() > 2) {
+            err = macWalkBlock(w, s.child(2), base);
+            if (err.length > 0) { return err; }
+        }
+        return "";
+    }
+    if (s.kind == ND_WHILE) {
+        if (s.childCount() < 2) {
+            return "unsupported statement in '" + w.fname + "'";
+        }
+        MacVal v = new MacVal();
+        string err = macWalkExpr(w, s.child(0), false, base, v);
+        if (err.length > 0) { return err; }
+        if (v.kind == 3) {
+            return "string values in '" + w.fname + "'";
+        }
+        w.maxDepth = macMax(w.maxDepth, base + v.depth);
+        w.loopDepth++;
+        err = macWalkBlock(w, s.child(1), base);
+        w.loopDepth--;
+        if (err.length > 0) { return err; }
+        return "";
+    }
+    // Port kinds 62/63 are break/continue; this AST numbers them 63/64
+    // (62 is switch) — same strings.
+    if (s.kind == ND_BREAK || s.kind == ND_CONTINUE) {
+        if (w.loopDepth == 0) {
+            return "break/continue outside a loop in '" + w.fname + "'";
+        }
+        return "";
+    }
+    // Port kind 55 is the C for loop; this AST splits range-for (56) out —
+    // same string for both.
+    if (s.kind == ND_FOR_C || s.kind == ND_FOR_RANGE) {
+        return "for loops in '" + w.fname + "'";
+    }
+    // Port kind 64 is foreach; here it is 57 — same string.
+    if (s.kind == ND_FOREACH) {
+        return "foreach loops in '" + w.fname + "'";
+    }
+    // Port kind 76 is switch; here it is 62 — same string.
+    if (s.kind == ND_SWITCH) {
+        return "switch statements in '" + w.fname + "'";
+    }
+    if (s.kind == ND_TRY_CATCH) {
+        return "try/catch in '" + w.fname + "'";
+    }
+    // Port kind 68 is throw; here it is 65 — same string.
+    if (s.kind == ND_THROW) {
+        return "throw in '" + w.fname + "'";
+    }
+    if (s.kind == ND_DESTRUCT) {
+        return "tuple destructuring in '" + w.fname + "'";
+    }
+    // Port kind 73 is the alias declaration; here it is 66 — same string.
+    if (s.kind == ND_ALIAS_DECL) {
+        return "alias declarations in '" + w.fname + "'";
+    }
+    return "unsupported statement in '" + w.fname + "'";
+}
+
+// Check an expression, filling out with its scalar kind and the
+// operand-stack slots it needs above base. inStmt allows the print
+// builtins (void calls are statement-only).
+private string macWalkExpr(MacWalk w, Node e, bool inStmt, int base, MacVal out) {
+    if (e.kind == ND_INT_LIT) {
+        out.kind = 0;
+        out.depth = 1;
+        return "";
+    }
+    if (e.kind == ND_BOOL_LIT) {
+        out.kind = 1;
+        out.depth = 1;
+        return "";
+    }
+    if (e.kind == ND_CHAR_LIT) {
+        out.kind = 2;
+        out.depth = 1;
+        return "";
+    }
+    if (e.kind == ND_FLOAT_LIT) {
+        return "float literals in '" + w.fname + "'";
+    }
+    if (e.kind == ND_STRING_LIT) {
+        out.kind = 3;
+        out.depth = 0;
+        return "";
+    }
+    if (e.kind == ND_IDENT) {
+        int ci = macFindConst(w.ctx, e.name);
+        if (ci >= 0) {
+            string ck = w.ctx.constKinds[ci];
+            if (ck == "i") { out.kind = 0; }
+            else if (ck == "b") { out.kind = 1; }
+            else { out.kind = 2; }
+            out.depth = 1;
+            return "";
+        }
+        int vi = macFindVar(w, e.name);
+        if (vi < 0) {
+            return "unknown variable '" + e.name + "' in '" + w.fname + "'";
+        }
+        string vk = w.varKinds[vi];
+        if (vk == "i") { out.kind = 0; }
+        else if (vk == "b") { out.kind = 1; }
+        else { out.kind = 2; }
+        out.depth = 1;
+        return "";
+    }
+    if (e.kind == ND_PAREN) {
+        if (e.childCount() == 0) {
+            return "unsupported expression in '" + w.fname + "'";
+        }
+        return macWalkExpr(w, e.child(0), false, base, out);
+    }
+    if (e.kind == ND_UNARY) {
+        if (e.childCount() == 0) {
+            return "unsupported expression in '" + w.fname + "'";
+        }
+        if (e.op == UOP_NEG) {
+            MacVal v = new MacVal();
+            string err = macWalkExpr(w, e.child(0), false, base, v);
+            if (err.length > 0) { return err; }
+            if (v.kind == 3) {
+                return "string values in '" + w.fname + "'";
+            }
+            out.kind = 0;
+            out.depth = v.depth;
+            return "";
+        }
+        if (e.op == UOP_NOT) {
+            MacVal v = new MacVal();
+            string err = macWalkExpr(w, e.child(0), false, base, v);
+            if (err.length > 0) { return err; }
+            if (v.kind == 3) {
+                return "string values in '" + w.fname + "'";
+            }
+            out.kind = 1;
+            out.depth = v.depth;
+            return "";
+        }
+        return "unsupported unary operator in '" + w.fname + "'";
+    }
+    if (e.kind == ND_BINARY) {
+        return macWalkBinary(w, e, inStmt, base, out);
+    }
+    // Port kind 10 is the call with an isMember flag; this AST splits plain
+    // calls (9) from method calls (10) — same strings.
+    if (e.kind == ND_CALL) {
+        return macWalkCall(w, e, inStmt, base, out);
+    }
+    if (e.kind == ND_METHOD_CALL) {
+        return "method calls in '" + w.fname + "'";
+    }
+    if (e.kind == ND_MEMBER) {
+        return "member access in '" + w.fname + "'";
+    }
+    // Port kinds 24/67 are index forms; here they are 11/12 — same string.
+    if (e.kind == ND_INDEX || e.kind == ND_SLICE) {
+        return "indexing in '" + w.fname + "'";
+    }
+    // Port kind 65 is ternary; here it is 20 — same string.
+    if (e.kind == ND_TERNARY) {
+        return "ternary expressions in '" + w.fname + "'";
+    }
+    // Port kind 66 is the dictionary literal; here it is 24 — same string.
+    if (e.kind == ND_DICT_LIT) {
+        return "dictionaries in '" + w.fname + "'";
+    }
+    // Port kind 69 is string interpolation; here it is 22 — same string.
+    if (e.kind == ND_INTERP) {
+        return "string interpolation in '" + w.fname + "'";
+    }
+    // Port kind 70 is the tuple literal; here it is 18 — same string.
+    if (e.kind == ND_TUPLE_LIT) {
+        return "tuple literals in '" + w.fname + "'";
+    }
+    if (e.kind == ND_ARRAY_LIT) {
+        return "array literals in '" + w.fname + "'";
+    }
+    // Port kind 74 is the struct literal; here it is 17 — same string.
+    if (e.kind == ND_STRUCT_LIT) {
+        return "struct literals in '" + w.fname + "'";
+    }
+    // Port kind 80 is the lambda; here it is 85 — same string.
+    if (e.kind == ND_ANON_FN) {
+        return "lambdas in '" + w.fname + "'";
+    }
+    // Port kind 86 is the cast; here it is 29 — same string.
+    if (e.kind == ND_CAST) {
+        return "casts in '" + w.fname + "'";
+    }
+    if (e.kind == ND_INDIRECT_CALL) {
+        return "indirect calls in '" + w.fname + "'";
+    }
+    return "unsupported expression in '" + w.fname + "'";
+}
+
+private string macWalkBinary(MacWalk w, Node e, bool inStmt, int base, MacVal out) {
+    int op = e.op;
+    // Port ops 1/2/3 are add/sub/mul; here they are 0/1/2 — same string.
+    if (op == OP_ADD || op == OP_SUB || op == OP_MUL) {
+        if (e.childCount() < 2) {
+            return "unsupported expression in '" + w.fname + "'";
+        }
+        MacVal l = new MacVal();
+        MacVal r = new MacVal();
+        string err = macWalkExpr(w, e.child(0), false, base, l);
+        if (err.length > 0) { return err; }
+        err = macWalkExpr(w, e.child(1), false, base + 1, r);
+        if (err.length > 0) { return err; }
+        if (l.kind == 3 || r.kind == 3) {
+            return "string values in '" + w.fname + "'";
+        }
+        out.kind = 0;
+        out.depth = macMax(l.depth, 1 + r.depth);
+        return "";
+    }
+    // Port op 4 is division; here it is 3 — same string.
+    if (op == OP_DIV) {
+        return "division in '" + w.fname + "'";
+    }
+    // Port op 13 is modulo; here it is 4 — same string.
+    if (op == OP_MOD) {
+        return "modulo in '" + w.fname + "'";
+    }
+    if (op == OP_EQ || op == OP_NEQ || op == OP_LT || op == OP_LEQ || op == OP_GT || op == OP_GEQ) {
+        if (e.childCount() < 2) {
+            return "unsupported expression in '" + w.fname + "'";
+        }
+        MacVal l = new MacVal();
+        MacVal r = new MacVal();
+        string err = macWalkExpr(w, e.child(0), false, base, l);
+        if (err.length > 0) { return err; }
+        err = macWalkExpr(w, e.child(1), false, base + 1, r);
+        if (err.length > 0) { return err; }
+        if (l.kind == 3 || r.kind == 3) {
+            return "string values in '" + w.fname + "'";
+        }
+        out.kind = 1;
+        out.depth = macMax(l.depth, 1 + r.depth);
+        return "";
+    }
+    if (op == OP_AND || op == OP_OR) {
+        if (e.childCount() < 2) {
+            return "unsupported expression in '" + w.fname + "'";
+        }
+        MacVal l = new MacVal();
+        MacVal r = new MacVal();
+        string err = macWalkExpr(w, e.child(0), false, base, l);
+        if (err.length > 0) { return err; }
+        err = macWalkExpr(w, e.child(1), false, base, r);
+        if (err.length > 0) { return err; }
+        if (l.kind == 3 || r.kind == 3) {
+            return "string values in '" + w.fname + "'";
+        }
+        out.kind = 1;
+        out.depth = macMax(l.depth, r.depth);
+        return "";
+    }
+    // Port ops 20/14/15/16/28 are the assign family (plain, +=, -=, *=,
+    // and the << move form); here they are 13/14/15/16/21 — same strings.
+    if (op == OP_ASSIGN || op == OP_ADD_ASSIGN || op == OP_SUB_ASSIGN || op == OP_MUL_ASSIGN || op == OP_MOVE) {
+        if (e.childCount() < 2) {
+            return "unsupported expression in '" + w.fname + "'";
+        }
+        Node t = e.child(0);
+        if (t.kind != ND_IDENT) {
+            return "complex assignment targets in '" + w.fname + "'";
+        }
+        if (macFindVar(w, t.name) < 0) {
+            return "unknown variable '" + t.name + "' in '" + w.fname + "'";
+        }
+        MacVal v = new MacVal();
+        string err = macWalkExpr(w, e.child(1), false, base, v);
+        if (err.length > 0) { return err; }
+        if (v.kind == 3) {
+            return "string values in '" + w.fname + "'";
+        }
+        out.kind = 0;
+        out.depth = v.depth;
+        return "";
+    }
+    // Port op 17 is /=
+    if (op == OP_DIV_ASSIGN) {
+        return "division in '" + w.fname + "'";
+    }
+    // Port op 29 is %=
+    if (op == OP_MOD_ASSIGN) {
+        return "modulo in '" + w.fname + "'";
+    }
+    // No inc/dec operator survives parsing in this AST (++ / -- desugar
+    // to += / -= 1, which ride the assign arm above with identical
+    // strings to the reference PostInc/PreInc handling).
+    if (op == OP_COALESCE) {
+        return "null coalescing in '" + w.fname + "'";
+    }
+    return "unsupported binary operator in '" + w.fname + "'";
+}
+
+private string macWalkCall(MacWalk w, Node e, bool inStmt, int base, MacVal out) {
+    if (e.name == "print" || e.name == "printline") {
+        if (!inStmt) {
+            return "print used as a value in '" + w.fname + "'";
+        }
+        if (e.childCount() != 1) {
+            return "multi-argument print in '" + w.fname + "'";
+        }
+        Node arg = e.child(0);
+        if (arg.kind == ND_STRING_LIT) {
+            w.ctx.usesPrintf = true;
+            out.kind = 0;
+            out.depth = 0;
+            return "";
+        }
+        MacVal v = new MacVal();
+        string err = macWalkExpr(w, arg, false, base, v);
+        if (err.length > 0) { return err; }
+        if (v.kind == 3) {
+            return "string values in '" + w.fname + "'";
+        }
+        w.ctx.usesPrintf = true;
+        out.kind = 0;
+        out.depth = v.depth;
+        return "";
+    }
+    if (e.name == "exit" || e.name == "printf") {
+        return "explicit '" + e.name + "' calls in '" + w.fname + "'";
+    }
+    int si = macFindSig(w.ctx, e.name);
+    if (si < 0) {
+        return "call to unknown function '" + e.name + "' in '" + w.fname + "'";
+    }
+    string pks = w.ctx.sigParams[si];
+    if (e.childCount() != pks.length) {
+        return "arity mismatch calling '" + e.name + "' (takes " + (string)pks.length + ", given " + (string)e.childCount() + ") in '" + w.fname + "'";
+    }
+    int depth = 0;
+    for (int i = 0; i < e.childCount(); i++) {
+        MacVal v = new MacVal();
+        string err = macWalkExpr(w, e.child(i), false, base + i, v);
+        if (err.length > 0) { return err; }
+        if (v.kind == 3) {
+            return "string values in '" + w.fname + "'";
+        }
+        depth = macMax(depth, i + v.depth);
+    }
+    string ret = w.ctx.sigRets[si];
+    if (ret == "v") {
+        if (!inStmt) {
+            return "void call used as a value in '" + w.fname + "'";
+        }
+        out.kind = 0;
+        out.depth = depth;
+        return "";
+    }
+    if (ret == "i") { out.kind = 0; }
+    else if (ret == "b") { out.kind = 1; }
+    else { out.kind = 2; }
+    out.depth = macMax(depth, 1);
+    return "";
 }
 
 // ---------------------------------------------------------------------------
@@ -2114,10 +3126,14 @@ class ObjSession {
     // directory under the same per-host cache root (the #on regions below
     // pick the ROOT by build host, objTargetDirName picks the SUBDIR by
     // this parameter) — the same trigger rule as the compilers' --os linux,
-    // with per-target freshness from that directory's own project.sbcr.
+    // with per-target freshness from that directory's own project.sbcr —
+    // and constructing with "MAC" opens mac-aarch64 the same way (the
+    // Mach-O writer/validators serve that directory, on a Mac host and for
+    // cross-target caches alike).
     // The driver always passes the auto-detected host (there is no --os
-    // flag); the LINUX writer/validators are the implementation that serves
-    // that directory, on a Linux host and for cross-target caches alike.
+    // flag); the LINUX and MAC writers/validators are the implementation
+    // that serves those directories, on their native hosts and for
+    // cross-target caches alike.
     construct (string rootDir, string projName, string hostOsName) {
         this.ok = false;
         this.root = rootDir;
@@ -2217,10 +3233,10 @@ class ObjSession {
     }
 
     // Freshness probe for one noted entry (mirrors the reference plan()):
-    // the record matches (hash + size), the .o exists, and its v4 note
-    // peeks with the expected flag set + hash. Anything else — a changed
-    // source, a missing file, a v3-era object, a foreign object, a
-    // compiler-emitted object under another flag set — is stale (re-emit),
+    // the record matches (hash + size), the .o exists, and its v5 note
+    // peeks with the expected flag set + hash. Anything else - a changed
+    // source, a missing file, a v4-era object, a foreign object, a
+    // compiler-emitted object under another flag set - is stale (re-emit),
     // never a hard error here and never silently reused.
     private bool isFresh(int n) {
         int idx = this.findRecord(this.notedKeys[n]);
