@@ -27,14 +27,21 @@ import * from mac.libsystem;
 // auto-detection (interpHostOs in main.sr), and the architecture follows
 // the target — x86-64 for Windows/Linux, aarch64 for mac.
 //
-// Layout under the same per-host cache root as --cache-bytecode:
+// Layout under the same per-host cache root as --cache-bytecode.
+// Bytecode lives in <project>\bytecode\, objects live in
+// <project>\<os>-<arch>\ (both under that root):
 //
+//   <project>\bytecode\project.sbcr              # record for the bytecode tier
+//   <project>\bytecode\src\main.srbc             # bytecode mirrors the project tree
 //   <project>\windows-x86-64\project.sbcr     # record for THIS target only
 //   <project>\windows-x86-64\src\main.o       # objects mirror the project tree
 //   <project>\linux-x86-64\project.sbcr       # separate record per target
 //   <project>\mac-aarch64\project.sbcr        # separate record per target
 //
 // (On Linux/macOS the same tree applies with / separators.)
+//
+// Two-tier workflow: object emission packs the synced .srbc text (under
+// bytecode\) when the bytecode tier hit, otherwise freshly lexed source.
 //
 // Object format (v5 — mirrors silverc-rs src/objcache.rs and
 // silverc/compiler/objcache.sr byte-exactly):

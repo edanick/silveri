@@ -15,15 +15,24 @@ import * from mac.libsystem;
 #off
 
 // OVERHAUL.md --cache-bytecode — persistent bytecode cache for the
-// interpreter. Same reference binary formats as the compilers:
-//   %APPDATA%\silver cache\<project>\project.sbcr  (record file, WINDOWS)
-//   %APPDATA%\silver cache\<project>\<file>.srbc   (token stream, WINDOWS)
-//   /var/cache/silver/<project>/project.sbcr  (record file, LINUX)
-//   /var/cache/silver/<project>/<file>.srbc   (token stream, LINUX)
-//   /Library/Caches/Silver/<project>/project.sbcr  (record file, MAC)
-//   /Library/Caches/Silver/<project>/<file>.srbc   (token stream, MAC)
+// interpreter. Same reference binary formats as the compilers; everything
+// the tier writes lives under the project's `bytecode\` subdirectory:
+//   %APPDATA%\silver cache\<project>\bytecode\project.sbcr  (record, WINDOWS)
+//   %APPDATA%\silver cache\<project>\bytecode\<file>.srbc   (tokens, WINDOWS)
+//   /var/cache/silver/<project>/bytecode/project.sbcr  (record, LINUX)
+//   /var/cache/silver/<project>/bytecode/<file>.srbc   (tokens, LINUX)
+//   /Library/Caches/Silver/<project>/bytecode/project.sbcr  (record, MAC)
+//   /Library/Caches/Silver/<project>/bytecode/<file>.srbc   (tokens, MAC)
 // (mirrors silverc/compiler/bcache.sr: same .sbcr/.srbc formats, only the
-// root and the separators differ).
+// root and the separators differ). The `<os>-<arch>\` object dirs stay
+// beside `bytecode\`, not under it.
+//
+// Migration (OVERHAUL.md): caches written before this layout (record +
+// `.srbc` files directly under `<project>\`) are legacy. Tools read ONLY
+// the `bytecode\` location — legacy entries are treated as absent (full
+// re-sync into `bytecode\`) and never reused. Orphaned legacy files the
+// tool itself owns may be deleted best-effort, but a legacy layout must
+// never fail a build.
 //
 // MAC.md section 5b (UNVALIDATED code-only): the MAC root is
 // /Library/Caches/Silver/<project>/ (machine-wide Library/Caches,
@@ -100,21 +109,23 @@ class CacheSession {
         this.lexMessages = [];
         this.lastPayload = "";
         // Linux cache root (mirrors silverc/compiler/bcache.sr): same
-        // .sbcr/.srbc formats under /var/cache/silver/<project>/ with `/`
-        // separators. The WINDOWS APPDATA construction below is untouched.
+        // .sbcr/.srbc formats under /var/cache/silver/<project>/bytecode/
+        // with `/` separators. The WINDOWS APPDATA construction below is untouched.
         // MAC root (MAC.md section 5b, UNVALIDATED code-only): same formats
-        // under /Library/Caches/Silver/<project>/ (machine-wide, capital
+        // under /Library/Caches/Silver/<project>/bytecode/ (machine-wide, capital
         // Silver) with `/` separators and a fixed root (no $HOME lookup);
         // an unwritable root degrades gracefully downstream like the Linux
         // branch.
         #on LINUX
-        this.dir = "/var/cache/silver/" + icSanitize(projName);
+        this.dir = "/var/cache/silver/" + icSanitize(projName) + "/bytecode";
+        this.dropLegacyRecords(icDirname(this.dir));
         icEnsureDirTree(this.dir);
         this.loadRecords();
         this.ok = true;
         return;
         #on MAC
-        this.dir = "/Library/Caches/Silver/" + icSanitize(projName);
+        this.dir = "/Library/Caches/Silver/" + icSanitize(projName) + "/bytecode";
+        this.dropLegacyRecords(icDirname(this.dir));
         icEnsureDirTree(this.dir);
         this.loadRecords();
         this.ok = true;
@@ -123,7 +134,8 @@ class CacheSession {
         // fs.getenv lowers to native GetEnvironmentVariableA, "" when unset.
         string appdata = fs.getenv("APPDATA");
         if (appdata.length == 0) { return; }
-        this.dir = appdata + "\\silver cache\\" + icSanitize(projName);
+        this.dir = appdata + "\\silver cache\\" + icSanitize(projName) + "\\bytecode";
+        this.dropLegacyRecords(icDirname(this.dir));
         icEnsureDirTree(this.dir);
         this.loadRecords();
         // A fresh cache stamps its own creation time; an existing record file
@@ -321,6 +333,20 @@ class CacheSession {
         }
     }
 
+    // Migration (OVERHAUL.md): best-effort removal of the orphaned legacy
+    // record files this tool owns (directly under <project>\, never read).
+    // Guarded by exists so a legacy layout never fails a build.
+    private void dropLegacyRecords(string baseDir) {
+        string rec = baseDir + "\\project.sbcr";
+        string idx = baseDir + "\\project.sbcri";
+        #on LINUX or MAC
+        rec = baseDir + "/project.sbcr";
+        idx = baseDir + "/project.sbcri";
+        #off
+        if (file.exists(rec)) { file.delete(rec); }
+        if (file.exists(idx)) { file.delete(idx); }
+    }
+
     private string srbcPathFor(string keyOrAbs) {
         // Linux layout (mirrors silverc/compiler/bcache.sr): `/`
         // separators kept as-is under the cache root. MAC layout is the
@@ -402,6 +428,15 @@ class CacheSession {
             }
         }
         tw.close();
+        // Migration (OVERHAUL.md): best-effort removal of the orphaned
+        // legacy payload this tool owns (same relative file directly under
+        // <project>\). Derived by re-rooting the fresh path, so no path
+        // logic is cloned; guarded by exists so legacy never fails a build.
+        if (path.length > this.dir.length) {
+            string legacySrbc = icDirname(this.dir) + icSliceRange(path, this.dir.length, path.length);
+            if (file.exists(legacySrbc)) { file.delete(legacySrbc); }
+            if (file.exists(legacySrbc + ".t")) { file.delete(legacySrbc + ".t"); }
+        }
     }
 
     // One token as one companion line: <tag> <line> <col> <payload>
