@@ -69,17 +69,17 @@ import * from mac.libsystem;
 //   function, Win64 ABI shapes, cross-file references left as
 //   relocations). On LINUX it is the same lowering under the SysV ABI
 //   (winLowerUnit with abi 1: no shadow space, RDI/RSI/RDX/RCX/R8/R9,
-//   libc.so.6 imports); on MAC it stays the ARM64 entry stub (an
-//   adrp+add pair addressing the data anchor, a BRANCH26 bl to the runner
-//   seam, hash materialization into x0, ret). Never source text, never a
-//   token stream. v4 objects (SLVOBJ2 note, including the relocation-less
-//   ARM64 stub era) fail the v5 note parse and are treated as stale
-//   (re-emitted), never as a hard error. Stub-era x86-64 objects (v5 note
-//   but a seam UNDEF in the symbol table) are likewise stale: the planner
-//   re-emits them with real lowering instead of executing them.
+//   libc.so.6 imports); on MAC it is the real per-file ARM64 lowering
+//   (armLowerUnit below: one FUNC per user function, AAPCS64 shapes —
+//   16-byte frames, x0-x7 arguments, adrp+add data references, bl calls).
+//   Never source text, never a token stream. v4 objects (SLVOBJ2 note,
+//   including the relocation-less ARM64 stub era) fail the v5 note parse
+//   and are treated as stale (re-emitted), never as a hard error. Stub-era
+//   objects (v5 note but a seam UNDEF in the symbol table) are likewise
+//   stale on every target: the planner re-emits them with real lowering
+//   instead of executing them.
 // - .rdata — the owning file's real data bytes. Lowered units carry
-//   the program's strings (printf formats, literals);
-//   stub units carry source hash, source length, emission stamp, owner key.
+//   the program's strings (printf formats, literals).
 //   May be empty in principle; never text.
 // - .slvnote — the Silver note (magic SLVOBJ3, emitting flag set, source
 //   FNV-1 hash, emission stamp, globals-block size, the full import list,
@@ -88,26 +88,29 @@ import * from mac.libsystem;
 // Symbol tables hold, in the reference order (section anchors, defined
 // functions, the data anchor, then undefined symbols): the section anchors,
 // one FUNC symbol per lowered function (main under the file's entry symbol,
-// spelled by objInterpEntrySym exactly like the references spell entries)
-// or one FUNC symbol for the file's entry stub on the MAC stub path, one
+// spelled by objInterpEntrySym exactly like the references spell entries),
+// one
 // global data-anchor symbol (__slv_data_<file>_<hash>, offset 0 in .rdata,
 // spelled by databName exactly like the references), and UNDEF entries for
 // the referenced imports (msvcrt!printf and kernel32!ExitProcess on the
 // Windows lowered path, libc.so.6!printf and libc.so.6!exit on the Linux
-// lowered path; the __slv_interp_run seam on the stub paths).
+// lowered path, libSystem.B.dylib!exit plus libSystem.B.dylib!printf on the
+// Mac lowered path; the __slv_interp_run seam on stub-era objects, which
+// are stale on every target).
 //
 // Relocations cover the position-dependent sites in .text: REL32 (E8 calls
 // to defined functions and to import thunks) and ABS64 (8-byte absolute
-// data addresses) on x86-64; BRANCH26 (the bl to the runner seam) and
-// PAGE21/PAGEOFF12 (the adrp+add pair addressing the data anchor) on
-// ARM64. Intra-function relative flow is already final and carries no
+// data addresses) on x86-64; BRANCH26 (bl calls to defined functions and
+// to imports) and PAGE21/PAGEOFF12 (the adrp+add pair addressing the data
+// anchor) on ARM64. Intra-function relative flow is already final and
 // relocation, exactly like a conventional compiler's output. On Linux they
 // ride .rela.text (R_X86_64_PC32 / R_X86_64_64) with .rela.data present but
 // size-0 (.rdata carries no pointers by construction, so a data relocation
 // has no meaning the linker could apply); a non-empty .rela.data is
 // corruption (loud, never silently ignored), a missing one an older object
 // that still validates. On mac they ride the __text section (extern,
-// pc-relative, 4-byte length) against the datab anchor and the seam UNDEF.
+// pc-relative, 4-byte length) against defined functions, the datab anchor,
+// and the import UNDEFs.
 //
 // ///////////////////////////////////////////////////////////////////////////
 // // NATIVE RUNNER — WINDOWS executes real program logic in-process        //
@@ -158,8 +161,9 @@ import * from mac.libsystem;
 // //   program lowering (SysV ABI) — but it stays on the verified tiers:
 // //   the in-process runner is COFF/x86-64 only (same loader math,
 // //   unprobed host ceilings — the follow-up). MAC (Mach-O/ARM64) likewise
-// //   validates but stays on the verified tiers (different ISA entirely),
-// //   and its entry stub keeps validating exactly as before.
+// //   validates but stays on the verified tiers: a different ISA entirely
+// //   (ARM64 cannot run on the x86-64 host), so its real program lowering
+// //   is validated structurally and executed from the verified tiers.
 // // - Only note-listed __slv_imp_N imports bind (msvcrt!printf and
 // //   kernel32!ExitProcess for Windows lowered units, resolved live). Any other
 // //   UNDEF import — including the retired __slv_interp_run seam, which
@@ -253,10 +257,11 @@ public string objSingletonGlobals() { return "__slv_globals"; }
 public string objDatabPrefix() { return "__slv_data_"; }
 public string objImportPrefix() { return "__slv_imp_"; }
 
-// The seam symbol every interpreter stub calls (UNDEF FUNC in our objects):
-// the future in-process native runner's entry point. Naming it here — in
-// code AND in every emitted symbol table — is the loud marker of the
-// native-runner boundary above.
+// The seam symbol every retired proof stub called (UNDEF FUNC in
+// stub-era objects): the retired entry point that never executes —
+// any object still referencing it is stale by symbol-table inspection
+// (stubEra), never executed. Naming it here — in code AND in the stale
+// check — is the loud marker of the stub-era boundary above.
 public string objInterpRunSym() { return "__slv_interp_run"; }
 
 // Per-file entry-stub symbol: sanitized owner key plus an FNV-1 suffix so
@@ -467,8 +472,8 @@ class ObjWriter {
 }
 
 // One emitted object unit: the owning file's machine code + data with full
-// symbol and relocation tables. Built by interpBuildUnit (the interpreter's
-// own Silver emitter); serialized by emitObject. Mirrors the references'
+// symbol and relocation tables. Built by the real lowerings (winLowerUnit,
+// armLowerUnit); serialized by emitObject. Mirrors the references'
 // unit shape (defined/undefined/reloc tables sorted for determinism).
 class ObjUnit {
     // Session-relative owner key (/-separated).
@@ -684,27 +689,6 @@ class ObjReader {
 }
 
 // ---------------------------------------------------------------------------
-// The interpreter's MAC Silver emitter (following the silverc port's
-// approach: one entry stub per file, machine code + data + symbols +
-// relocations assembled as bytes, no external assembler).
-//
-// The stub is genuine, disassemblable machine code for the session target,
-// deterministic per (owner key, source hash). It is NOT the program
-// compiled: program evaluation stays on the verified AST/bytecode tiers
-// (see the NATIVE RUNNER notice at the top of this file). The stub's job
-// is being a real code payload with real symbols/relocs so the object tier
-// validates byte-identically across the toolchain; its call to
-// __slv_interp_run names the retired seam (stub-era objects carrying
-// it are stale, never executed).
-// WINDOWS and LINUX entries never build here anymore: finish() lowers them
-// with real program logic (winLowerUnit above), and stub-era x86-64 objects
-// are stale by symbol-table inspection, never executed. The ARM64 real
-// lowering is the follow-up increment: then this stub builder goes away too.
-// ---------------------------------------------------------------------------
-
-// x86 proof stub deleted: WINDOWS and LINUX entries lower real program
-// logic now (winLowerUnit above), so no stub builder remains on this path.
-
 // Fixed-width 32-bit ARM64 instruction encoders (mirrors silverc-rs
 // src/arm64.rs and silverc/compiler/objcache.sr, which the Mach-O side
 // also uses for dyld stubs). Every encoder takes plain ints and returns
@@ -792,92 +776,6 @@ private int macWordAt(int[] code, int pos) {
     int64 w = 0;
     for (int i = 0; i < 4; i++) { w = w | (int64(code[pos + i] & 0xFF) << (i * 8)); }
     return int(w);
-}
-
-// 28 bytes of real ARM64 (Mac target): an adrp+add pair addressing the
-// data anchor at unit-relative offset 0 (PAGE21/PAGEOFF12 relocs), a bl to
-// the runner seam (BRANCH26 reloc, zero placeholder per the Mach-O ARM64
-// convention), the low 48 bits of the source hash materialized into x0
-// (movz + 2x movk, proving content-derivation in bytes), and ret.
-// Assembled with the encoders above — disassemblable, relocatable, and
-// reader-validated exactly like compiler-emitted objects.
-public int[] interpBuildArm(int64 hash) {
-    int[] code = [];
-    int64[] words = [];
-    words.add(a64Adrp(9, 0));
-    words.add(a64AddImm(9, 9, 0));
-    words.add(a64Bl(0));
-    int lo = int(hash & 65535);
-    int mid = int((hash >> 16) & 65535);
-    int hi = int((hash >> 32) & 65535);
-    words.add(a64Movz(0, lo, 0));
-    words.add(a64Movk(0, mid, 1));
-    words.add(a64Movk(0, hi, 2));
-    words.add(a64Ret(30));
-    for (int i = 0; i < words.length; i++) {
-        for (int b = 0; b < 4; b++) { code.add((words[i] >> (b * 8)) & 0xFF); }
-    }
-    return code;
-}
-
-// Real data bytes (never text): source hash + source length + emission
-// stamp + owner key. The data anchor (__slv_data_..., offset 0) addresses
-// this slice.
-public int[] interpBuildData(string filekey, int64 hash, int srcLen, int stamp) {
-    ObjWriter w = new ObjWriter();
-    w.u64(hash);
-    w.u32(srcLen);
-    w.u32(stamp);
-    w.rawStr(filekey);
-    return w.out;
-}
-
-// Fill `unit` for one MAC entry file: the ARM64 entry-stub machine code +
-// data + the defined entry FUNC + the data anchor + the UNDEF runner seam +
-// the position-dependent relocations (PAGE21 + PAGEOFF12 for the adrp+add
-// pair addressing the data anchor at unit-relative offset 0, BRANCH26 for
-// the bl calling the seam). Sorted + deterministic. WINDOWS/LINUX entries
-// never build here (real lowering); the ARM64 real lowering is the follow-up
-// increment, when this MAC stub builder goes away too.
-public void interpBuildUnit(string filekey, int64 hash, int srcLen, int stamp, ObjUnit unit) {
-    unit.filekey = filekey;
-    unit.datab = databName(filekey);
-    unit.gas = 0;
-    unit.impDlls = [];
-    unit.impNames = [];
-    unit.undefSingles = [];
-    unit.undefImports = [];
-    unit.code = interpBuildArm(hash);
-    unit.data = interpBuildData(filekey, hash, srcLen, stamp);
-    string entry = objInterpEntrySym(filekey, hash);
-    unit.defNames = [];
-    unit.defOffs = [];
-    unit.defSizes = [];
-    unit.defNames.add(entry);
-    unit.defOffs.add(0);
-    unit.defSizes.add(unit.code.length);
-    unit.undefFuncs = [];
-    unit.relSites = [];
-    unit.relKinds = [];
-    unit.relTargets = [];
-    unit.relIdx = [];
-    unit.relNames = [];
-    unit.undefFuncs.add(objInterpRunSym());
-    unit.relSites.add(0);
-    unit.relKinds.add(3);
-    unit.relTargets.add(2);
-    unit.relIdx.add(0);
-    unit.relNames.add("");
-    unit.relSites.add(4);
-    unit.relKinds.add(4);
-    unit.relTargets.add(2);
-    unit.relIdx.add(0);
-    unit.relNames.add("");
-    unit.relSites.add(8);
-    unit.relKinds.add(2);
-    unit.relTargets.add(1);
-    unit.relIdx.add(-1);
-    unit.relNames.add(objInterpRunSym());
 }
 
 // ---------------------------------------------------------------------------
@@ -2331,6 +2229,1177 @@ public string winLowerUnit(string filekey, int64 hash, int srcLen, int stamp, No
     return "";
 }
 
+// ---------------------------------------------------------------------------
+// mac-aarch64 REAL LOWERING (v1 object tier).
+//
+// AST-to-machine-code backend for the interpreter's mac-aarch64 objects:
+// per-file units whose .text carries the actual compiled program logic (one
+// FUNC per user function, AAPCS64 shapes throughout: 16-byte frames with
+// stp prologues, x0-x7 argument registers, adrp+add data references, bl
+// calls), .rdata carrying the program's real data (printf formats, string
+// literals), and UNDEF externs for the note imports (libSystem.B.dylib!exit
+// always, plus libSystem.B.dylib!printf when used). No stubs: anything
+// outside the tier falls back LOUDLY (the reason string is the whole
+// result) and no unit is produced for it.
+//
+// Boundary: intentionally the SAME subset the tier predicate accepts
+// (macTierReason owns it — armLowerUnit re-checks it first so the two can
+// never disagree). Integer/bool/char programs only: free functions (8 params
+// max, no defaults), const scalars, void main() with no parameters, locals,
+// assignment (plain + compound; the << form evaluates its RHS with no store,
+// exactly like the interpreter and the x86-64 lowering), if/else, while,
+// C-like for (range-for desugared onto it exactly like the predicate),
+// break/continue, return, calls with exact arity, and print/printline of
+// scalars and string literals.
+//
+// Semantics and code shapes mirror the silverc port's mac lowering
+// (silverc/compiler/objcache.sr macLowerOwned/macEmit*, themselves mirroring
+// silverc-rs src/arm64gen.rs): SP-relative frames (locals at slot*8, the
+// operand stack above them in X9/X10 scratch), guarded divide/modulo (zero
+// divisor prints through printf then exits 1; INT64_MIN / -1 traps with brk,
+// mirroring idiv's loud hardware fault), print through the printf import
+// with literal-safe formats (bools print as 1/0 and chars use %c, exactly
+// like the verified tiers), and main ending in bl exit. Layouts come from
+// the shared macCheckFunc, so lowering and predicate agree slot for slot.
+//
+// Two deliberate interpreter-scheme choices (documented, not drift):
+// - Defined symbols use the entry symbol for main plus __slv_fn_<name> for
+//   helpers (the port uses bare names, a linker concern). Single-file
+//   interpreter units have no linker: the runner finds the entry by its
+//   entry symbol regardless of program order.
+// - The emitter is portable byte math (no regions); Mach-O containers stay
+//   in emitMacho below. The runner never executes this path (ARM64 cannot
+//   run on the x86-64 host) — validation only, with the loud boundary.
+// ---------------------------------------------------------------------------
+
+// sub Xd, Xn, #imm12 (64-bit, no shift).
+private int a64SubImm(int rd, int rn, int imm12) {
+    return int(0xD1000000 | ((imm12 & 0xFFF) << 10) | ((rn & 31) << 5) | (rd & 31));
+}
+
+// ldr Xt, [Xn, #off]: unsigned offset, 8-byte units (64-bit).
+private int a64LdrImm(int rt, int rn, int off) {
+    return int(0xF9400000 | (((off / 8) & 0xFFF) << 10) | ((rn & 31) << 5) | (rt & 31));
+}
+
+// str Xt, [Xn, #off]: unsigned offset, 8-byte units (64-bit).
+private int a64StrImm(int rt, int rn, int off) {
+    return int(0xF9000000 | (((off / 8) & 0xFFF) << 10) | ((rn & 31) << 5) | (rt & 31));
+}
+
+// stp Xt1, Xt2, [Xn, #off]!: pre-indexed pair store (64-bit).
+private int a64StpPre(int rt1, int rt2, int rn, int off) {
+    int64 q = int64(off / 8) & 0x7F;
+    return int(0xA9800000 | (q << 15) | ((rt2 & 31) << 10) | ((rn & 31) << 5) | (rt1 & 31));
+}
+
+// ldp Xt1, Xt2, [Xn], #off: post-indexed pair load (64-bit).
+private int a64LdpPost(int rt1, int rt2, int rn, int off) {
+    int64 q = int64(off / 8) & 0x7F;
+    return int(0xA8C00000 | (q << 15) | ((rt2 & 31) << 10) | ((rn & 31) << 5) | (rt1 & 31));
+}
+
+// movn Xd, #imm16, lsl #hw*16 (move inverted).
+private int a64Movn(int rd, int imm16, int hw) {
+    return int(0x92800000 | ((hw & 3) << 21) | ((imm16 & 0xFFFF) << 5) | (rd & 31));
+}
+
+// add Xd, Xn, Xm: shifted-register add, LSL #0 (64-bit).
+private int a64AddReg(int rd, int rn, int rm) {
+    return int(0x8B000000 | ((rm & 31) << 16) | ((rn & 31) << 5) | (rd & 31));
+}
+
+// sub Xd, Xn, Xm: shifted-register subtract, LSL #0 (64-bit).
+private int a64SubReg(int rd, int rn, int rm) {
+    return int(0xCB000000 | ((rm & 31) << 16) | ((rn & 31) << 5) | (rd & 31));
+}
+
+// mul Xd, Xn, Xm: 64-bit multiply.
+private int a64Mul(int rd, int rn, int rm) {
+    return int(0x9B007C00 | ((rm & 31) << 16) | ((rn & 31) << 5) | (rd & 31));
+}
+
+// cmp Xn, Xm: compare (subs XZR, Xn, Xm). Base 0xEB00001F.
+private int a64CmpReg(int rn, int rm) {
+    return int(3942645791 | ((rm & 31) << 16) | ((rn & 31) << 5));
+}
+
+// mov Xd, Xm: register move (orr Xd, XZR, Xm). Base 0xAA0003E0.
+private int a64MovReg(int rd, int rm) {
+    return int(2852127712 | ((rm & 31) << 16) | (rd & 31));
+}
+
+// b <label>: unconditional PC-relative branch.
+private int a64B(int off) {
+    return int(0x14000000 | ((int64(off / 4) & 0x3FFFFFF)));
+}
+
+// cbz Xt, <label>: branch if zero.
+private int a64Cbz(int rt, int off) {
+    return int(0xB4000000 | (((int64(off / 4) & 0x7FFFF) << 5) | (rt & 31)));
+}
+
+// cbnz Xt, <label>: branch if nonzero.
+private int a64Cbnz(int rt, int off) {
+    return int(0xB5000000 | (((int64(off / 4) & 0x7FFFF) << 5) | (rt & 31)));
+}
+
+// b.<cond> <label>: conditional branch (cond 0 = eq, 1 = ne, 10 = ge,
+// 11 = lt, 12 = gt, 13 = le).
+private int a64BCond(int cond, int off) {
+    return int(0x54000000 | (((int64(off / 4) & 0x7FFFF) << 5) | (cond & 15)));
+}
+
+// ARM64 code buffer with intra-function labels. Calls and data references
+// are recorded into the function (bl/data holes, resolved by symbol at unit
+// finalization); jumps between labels patch here via finish() once the
+// function is complete. Mirrors WinEmit's label/fixup shape in words: each
+// fixup carries its base word (with the register/condition baked in) plus
+// its kind (0 = b/bl 26-bit, 1 = cbz/cbnz/bcond 19-bit).
+class ArmEmit {
+    public prop int[] code;
+    public prop int[] labPos;
+    public prop int[] fixPos;
+    public prop int[] fixLab;
+    public prop int[] fixKind;
+    public prop int[] fixBase;
+
+    construct {
+        this.code = [];
+        this.labPos = [];
+        this.fixPos = [];
+        this.fixLab = [];
+        this.fixKind = [];
+        this.fixBase = [];
+    }
+
+    public void word(int w) {
+        for (int i = 0; i < 4; i++) { this.code.add((w >> (i * 8)) & 0xFF); }
+    }
+
+    public int lab() {
+        this.labPos.add(-1);
+        return this.labPos.length - 1;
+    }
+
+    public void bind(int id) {
+        this.labPos[id] = this.code.length;
+    }
+
+    private void fix(int id, int base, int kind) {
+        this.word(base);
+        this.fixPos.add(this.code.length - 4);
+        this.fixLab.add(id);
+        this.fixKind.add(kind);
+        this.fixBase.add(base);
+    }
+
+    public void b(int id) {
+        this.fix(id, a64B(0), 0);
+    }
+
+    public void cbz(int rt, int id) {
+        this.fix(id, a64Cbz(rt, 0), 1);
+    }
+
+    public void cbnz(int rt, int id) {
+        this.fix(id, a64Cbnz(rt, 0), 1);
+    }
+
+    // cond 0 = eq, 1 = ne, 10 = ge, 11 = lt, 12 = gt, 13 = le.
+    public void bcond(int cond, int id) {
+        this.fix(id, a64BCond(cond, 0), 1);
+    }
+
+    public string finish() {
+        for (int i = 0; i < this.fixPos.length; i++) {
+            int id = this.fixLab[i];
+            if (id < 0 || id >= this.labPos.length || this.labPos[id] < 0) { return "unbound label"; }
+            int pos = this.fixPos[i];
+            int64 off = int64(this.labPos[id]) - int64(pos);
+            int w = this.fixBase[i];
+            if (this.fixKind[i] == 1) {
+                if (off % 4 != 0 || off < -1048576 || off > 1048575) { return "branch out of range"; }
+                w = w | int(((off / 4) & 0x7FFFF) << 5);
+            } else {
+                if (off % 4 != 0 || off < -134217728 || off > 134217727) { return "branch out of range"; }
+                w = w | int((off / 4) & 0x3FFFFFF);
+            }
+            for (int k = 0; k < 4; k++) { this.code[pos + k] = int((w >> (k * 8)) & 0xFF); }
+        }
+        return "";
+    }
+
+    // Function epilogue: release the frame, restore the frame chain, return.
+    public void epilogue(int frame) {
+        if (frame > 0) { this.word(a64AddImm(31, 31, frame)); }
+        this.word(a64LdpPost(29, 30, 31, 16));
+        this.word(a64Ret(30));
+    }
+}
+
+// Per-function ARM64 lowering state: the emitter, the shared layout (slots
+// from macCheckFunc), the operand-stack depth, loop label stacks for
+// break/continue, pending call relocations, and pending data references
+// (adrp+add pairs patched with final data offsets at unit finalization).
+class ArmFn {
+    public prop ArmEmit e;
+    public prop string fname;
+    public prop int depth;
+    public prop int[] brkLabs;
+    public prop int[] contLabs;
+    public prop int[] csites;
+    public prop int[] cimported;
+    public prop int[] cidx;
+    public prop string[] cnames;
+    public prop int[] darefAdrp;
+    public prop int[] darefAdd;
+    public prop int[] darefRd;
+    public prop int[] darefOff;
+
+    construct {
+        this.e = new ArmEmit();
+        this.fname = "";
+        this.depth = 0;
+        this.brkLabs = [];
+        this.contLabs = [];
+        this.csites = [];
+        this.cimported = [];
+        this.cidx = [];
+        this.cnames = [];
+        this.darefAdrp = [];
+        this.darefAdd = [];
+        this.darefRd = [];
+        this.darefOff = [];
+    }
+
+    // Record a bl site: import call (imported 1, note import index in cidx)
+    // or a call to a program-defined function (imported 0, ctx signature
+    // index in cidx, name in cnames).
+    public void callRef(int site, int imported, int idx, string name) {
+        this.csites.add(site);
+        this.cimported.add(imported);
+        this.cidx.add(idx);
+        this.cnames.add(name);
+    }
+
+    // Record an adrp+add data-reference pair against data offset off.
+    public void dataRef(int adrpSite, int addSite, int rd, int off) {
+        this.darefAdrp.add(adrpSite);
+        this.darefAdd.add(addSite);
+        this.darefRd.add(rd);
+        this.darefOff.add(off);
+    }
+}
+
+// Lowered-function holder: lowering appends one entry per program function
+// here (prop arrays on a passed object keep growing, unlike raw array
+// parameters), and the unit builder concatenates them with rebased sites.
+class ArmProg {
+    public prop ArmFn[] fns;
+
+    construct {
+        this.fns = [];
+    }
+}
+
+// Scalar kind of an expression: 0 int, 1 bool, 2 char. Mirrors the tier
+// walker's type rules (literals, const/var/param reads, operators, calls)
+// so print lowering picks the format the value actually has. Assignment
+// carries its RHS kind (the value eval produces); the << form evaluates its
+// RHS with no store, exactly like the interpreter.
+// Slot of a layout variable by name (-1 when absent). Slots are assigned
+// in encounter order during lowering, exactly matching the walker's order
+// in macCheckFunc, so this agrees with the predicate slot for slot.
+private int macLayoutSlot(MacLayout layout, string name) {
+    for (int i = 0; i < layout.varNames.length; i++) {
+        if (layout.varNames[i] == name) { return layout.varSlots[i]; }
+    }
+    return -1;
+}
+private int armKindOf(MacCtx ctx, MacLayout layout, Node e) {
+    if (e.kind == ND_INT_LIT) { return 0; }
+    if (e.kind == ND_BOOL_LIT) { return 1; }
+    if (e.kind == ND_CHAR_LIT) { return 2; }
+    if (e.kind == ND_IDENT) {
+        int ci = macFindConst(ctx, e.name);
+        if (ci >= 0) {
+            string ck = ctx.constKinds[ci];
+            if (ck == "b") { return 1; }
+            if (ck == "c") { return 2; }
+            return 0;
+        }
+        int vi = macLayoutSlot(layout, e.name);
+        if (vi >= 0) {
+            string vk = layout.varKinds[vi];
+            if (vk == "b") { return 1; }
+            if (vk == "c") { return 2; }
+            return 0;
+        }
+        return 0;
+    }
+    if (e.kind == ND_PAREN) {
+        if (e.childCount() == 0) { return 0; }
+        return armKindOf(ctx, layout, e.child(0));
+    }
+    if (e.kind == ND_UNARY) {
+        if (e.childCount() == 0) { return 0; }
+        if (e.op == UOP_NOT) { return 1; }
+        return 0;
+    }
+    if (e.kind == ND_BINARY) {
+        int op = e.op;
+        if (op == OP_EQ || op == OP_NEQ || op == OP_LT || op == OP_LEQ || op == OP_GT || op == OP_GEQ || op == OP_AND || op == OP_OR) { return 1; }
+        if (op == OP_MOVE) {
+            if (e.childCount() < 2) { return 0; }
+            return armKindOf(ctx, layout, e.child(1));
+        }
+        if ((op == OP_ASSIGN || op == OP_ADD_ASSIGN || op == OP_SUB_ASSIGN || op == OP_MUL_ASSIGN || op == OP_DIV_ASSIGN || op == OP_MOD_ASSIGN) && e.childCount() >= 2) {
+            return armKindOf(ctx, layout, e.child(1));
+        }
+        return 0;
+    }
+    if (e.kind == ND_CALL) {
+        int si = macFindSig(ctx, e.name);
+        if (si >= 0) {
+            string ret = ctx.sigRets[si];
+            if (ret == "b") { return 1; }
+            if (ret == "c") { return 2; }
+        }
+        return 0;
+    }
+    return 0;
+}
+
+// Minimal movz/movk/movn sequence materializing any 64-bit value into rd
+// (mirrors the port's macMov64 exactly).
+private void armMov64(ArmFn fn, int rd, int64 v) {
+    int h0 = int(v & 0xFFFF);
+    int h1 = int((v >> 16) & 0xFFFF);
+    int h2 = int((v >> 32) & 0xFFFF);
+    int h3 = int((v >> 48) & 0xFFFF);
+    if (h0 == 0 && h1 == 0 && h2 == 0 && h3 == 0) {
+        fn.e.word(a64Movz(rd, 0, 0));
+        return;
+    }
+    if (h0 == 0xFFFF && h1 == 0xFFFF && h2 == 0xFFFF && h3 == 0xFFFF) {
+        fn.e.word(a64Movn(rd, 0, 0));
+        return;
+    }
+    bool first = true;
+    if (h0 != 0) {
+        fn.e.word(a64Movz(rd, h0, 0));
+        first = false;
+    }
+    if (h1 != 0) {
+        if (first) {
+            fn.e.word(a64Movz(rd, h1, 1));
+            first = false;
+        } else {
+            fn.e.word(a64Movk(rd, h1, 1));
+        }
+    }
+    if (h2 != 0) {
+        if (first) {
+            fn.e.word(a64Movz(rd, h2, 2));
+            first = false;
+        } else {
+            fn.e.word(a64Movk(rd, h2, 2));
+        }
+    }
+    if (h3 != 0) {
+        if (first) {
+            fn.e.word(a64Movz(rd, h3, 3));
+        } else {
+            fn.e.word(a64Movk(rd, h3, 3));
+        }
+    }
+}
+
+// Operand-stack push/pop in frame slots (varSlots = layout.totalSlots -
+// layout.maxDepth): values ride SP-relative slots, X9 primary with X10
+// scratch, exactly like the port's macPush/macPopTo.
+private void armPush(ArmFn fn, int varSlots) {
+    int off = (fn.depth + varSlots) * 8;
+    fn.e.word(a64StrImm(9, 31, off));
+    fn.depth++;
+}
+
+private void armPopTo(ArmFn fn, int reg, int varSlots) {
+    fn.depth--;
+    int off = (fn.depth + varSlots) * 8;
+    fn.e.word(a64LdrImm(reg, 31, off));
+}
+
+// Emit adrp+add materializing the address of unit data at dataOff into rd,
+// recording the relocation pair (patched with the final offset plus
+// PAGE21/PAGEOFF12 relocations at unit finalization).
+private void armEmitDataAddr(ArmFn fn, int rd, int dataOff) {
+    int adrpSite = fn.e.code.length;
+    fn.e.word(a64Adrp(rd, 0));
+    int addSite = fn.e.code.length;
+    fn.e.word(a64AddImm(rd, rd, 0));
+    fn.dataRef(adrpSite, addSite, rd, dataOff);
+}
+
+// Emit a bl placeholder recorded against a program-defined function
+// (ctx signature index si) for the unit finalizer.
+private void armEmitCallSym(ArmFn fn, int si, string name) {
+    int site = fn.e.code.length;
+    fn.e.word(a64Bl(0));
+    fn.callRef(site, 0, si, name);
+}
+
+// Emit a bl placeholder recorded against a note import index.
+private void armEmitCallImport(ArmFn fn, int importIdx) {
+    int site = fn.e.code.length;
+    fn.e.word(a64Bl(0));
+    fn.callRef(site, 1, importIdx, "");
+}
+
+// The guarded divide/modulo trap: printf the reference text, then exit(1)
+// through the real import (noreturn — the process is gone, exactly like the
+// compiled binary on a fault). Import 1 is printf, import 0 is exit.
+private void armEmitTrap(MacCtx ctx, ArmFn fn) {
+    int ueOff = ctx.addStr("Unhandled exception\n");
+    ctx.usesPrintf = true;
+    armEmitDataAddr(fn, 0, ueOff);
+    armEmitCallImport(fn, 1);
+    fn.e.word(a64Movz(0, 1, 0));
+    armEmitCallImport(fn, 0);
+}
+
+// Emit the guarded divide/modulo sequence: X9 holds the dividend and X10
+// the divisor on entry; X9 holds the result on exit (X11 scratched, X0
+// clobbered on the trap path only). A zero divisor takes the exact x64
+// uncaught-exception path; INT64_MIN / -1 traps with brk, mirroring x64
+// idiv's loud hardware fault instead of sdiv's silent wrap.
+private void armEmitGuardedDivmod(MacCtx ctx, ArmFn fn, bool isMod) {
+    int okZero = fn.e.lab();
+    fn.e.cbnz(10, okZero);
+    armEmitTrap(ctx, fn);
+    fn.e.bind(okZero);
+    int ok = fn.e.lab();
+    fn.e.word(a64Movz(11, 32768, 3));
+    fn.e.word(a64CmpReg(9, 11));
+    fn.e.bcond(1, ok);
+    armMov64(fn, 11, -1);
+    fn.e.word(a64CmpReg(10, 11));
+    fn.e.bcond(1, ok);
+    fn.e.word(a64Brk(0));
+    fn.e.bind(ok);
+    if (isMod) {
+        fn.e.word(a64Sdiv(11, 9, 10));
+        fn.e.word(a64Msub(11, 11, 10, 9));
+        fn.e.word(a64MovReg(9, 11));
+    } else {
+        fn.e.word(a64Sdiv(9, 9, 10));
+    }
+}
+
+// True when every byte of s passes through printf unchanged except % (the
+// caller doubles those): no NUL (it would truncate), printable ASCII only.
+private bool armStrNative(string s) {
+    if (s.length == 0) { return true; }
+    for (int i = 0; i < s.length; i++) {
+        int64 c = int64(s[i]);
+        if (c < 1 || c > 127) { return false; }
+    }
+    return true;
+}
+
+// Lower one print/printline call (already validated by the tier predicate:
+// exactly one argument, statement position). A string literal passes as the
+// format itself (% escaped to %%, exactly like the port); any other scalar
+// passes its value with a literal-safe format (bools print as 1/0, chars
+// use %c), so native output matches the verified tiers byte for byte.
+private string armLowerPrint(MacCtx ctx, MacLayout layout, ArmFn fn, Node call, bool newline) {
+    Node arg = call.child(0);
+    Node t = arg;
+    while (t.kind == ND_PAREN && t.childCount() > 0) { t = t.child(0); }
+    if (t.kind == ND_STRING_LIT) {
+        string lit = t.strVal;
+        if (!armStrNative(lit)) { return "unicode string literal in '" + fn.fname + "'"; }
+        ObjWriter bw = new ObjWriter();
+        for (int i = 0; i < lit.length; i++) {
+            int64 c = int64(lit[i]);
+            if (c == 37) {
+                bw.u8(37);
+                bw.u8(37);
+            } else {
+                bw.u8(c);
+            }
+        }
+        if (newline) { bw.u8(10); }
+        bw.u8(0);
+        int strOff = ctx.addStrBytes(bw.out);
+        ctx.usesPrintf = true;
+        armEmitDataAddr(fn, 0, strOff);
+        armEmitCallImport(fn, 1);
+        return "";
+    }
+    int kind = armKindOf(ctx, layout, arg);
+    string err = armLowerExpr(ctx, layout, fn, arg);
+    if (err.length > 0) { return err; }
+    ctx.usesPrintf = true;
+    ObjWriter fw = new ObjWriter();
+    if (kind == 2) {
+        fw.u8(37);
+        fw.u8(99);
+        if (newline) { fw.u8(10); }
+        fw.u8(0);
+    } else if (newline) {
+        fw.u8(37);
+        fw.u8(108);
+        fw.u8(108);
+        fw.u8(100);
+        fw.u8(10);
+        fw.u8(0);
+    } else {
+        fw.u8(37);
+        fw.u8(108);
+        fw.u8(108);
+        fw.u8(100);
+        fw.u8(0);
+    }
+    int fmtOff = ctx.addStrBytes(fw.out);
+    int varSlots = layout.totalSlots - layout.maxDepth;
+    armEmitDataAddr(fn, 0, fmtOff);
+    armPopTo(fn, 1, varSlots);
+    armEmitCallImport(fn, 1);
+    return "";
+}
+
+// Lower an expression, leaving its 64-bit value pushed at the operand
+// depth. Stack-neutral per statement (depth resets at each statement, and
+// call sequences use frame slots, so nested calls compose).
+private string armLowerExpr(MacCtx ctx, MacLayout layout, ArmFn fn, Node e) {
+    int varSlots = layout.totalSlots - layout.maxDepth;
+    if (e.kind == ND_INT_LIT) {
+        armMov64(fn, 9, e.intVal);
+        armPush(fn, varSlots);
+        return "";
+    }
+    if (e.kind == ND_BOOL_LIT) {
+        if (e.boolVal) { armMov64(fn, 9, 1); }
+        else { armMov64(fn, 9, 0); }
+        armPush(fn, varSlots);
+        return "";
+    }
+    if (e.kind == ND_CHAR_LIT) {
+        int cv = e.charVal;
+        armMov64(fn, 9, int64(cv));
+        armPush(fn, varSlots);
+        return "";
+    }
+    if (e.kind == ND_STRING_LIT) {
+        return "string values in '" + fn.fname + "'";
+    }
+    if (e.kind == ND_IDENT) {
+        int ci = macFindConst(ctx, e.name);
+        if (ci >= 0) {
+            armMov64(fn, 9, ctx.constVals[ci]);
+        } else {
+            int slot = macLayoutSlot(layout, e.name);
+            if (slot < 0) { return "unknown variable '" + e.name + "' in '" + fn.fname + "'"; }
+            fn.e.word(a64LdrImm(9, 31, slot * 8));
+        }
+        armPush(fn, varSlots);
+        return "";
+    }
+    if (e.kind == ND_PAREN) {
+        if (e.childCount() == 0) { return "unsupported expression in '" + fn.fname + "'"; }
+        return armLowerExpr(ctx, layout, fn, e.child(0));
+    }
+    if (e.kind == ND_UNARY) {
+        if (e.childCount() == 0) { return "unsupported expression in '" + fn.fname + "'"; }
+        string uerr = armLowerExpr(ctx, layout, fn, e.child(0));
+        if (uerr.length > 0) { return uerr; }
+        armPopTo(fn, 9, varSlots);
+        if (e.op == UOP_NEG) {
+            fn.e.word(a64Movz(10, 0, 0));
+            fn.e.word(a64SubReg(9, 10, 9));
+            armPush(fn, varSlots);
+            return "";
+        }
+        if (e.op == UOP_NOT) {
+            int isFalse = fn.e.lab();
+            int done = fn.e.lab();
+            fn.e.cbnz(9, isFalse);
+            fn.e.word(a64Movz(9, 1, 0));
+            fn.e.b(done);
+            fn.e.bind(isFalse);
+            fn.e.word(a64Movz(9, 0, 0));
+            fn.e.bind(done);
+            armPush(fn, varSlots);
+            return "";
+        }
+        return "unsupported unary operator in '" + fn.fname + "'";
+    }
+    if (e.kind == ND_BINARY) {
+        return armLowerBinary(ctx, layout, fn, e);
+    }
+    if (e.kind == ND_CALL) {
+        if (e.name == "print" || e.name == "printline") {
+            return "print used as a value in '" + fn.fname + "'";
+        }
+        if (e.name == "exit" || e.name == "printf") {
+            return "explicit '" + e.name + "' calls in '" + fn.fname + "'";
+        }
+        return armLowerCall(ctx, layout, fn, e);
+    }
+    return "unsupported expression in '" + fn.fname + "'";
+}
+
+// Binary operators. Arithmetic and comparisons evaluate lhs, then rhs, pop
+// divisor-first — the reference stack-machine shape with X9 primary and
+// X10 scratch. Division and modulo go through the guarded sequence (zero
+// divisor and INT64_MIN / -1 trap).
+private string armLowerBinary(MacCtx ctx, MacLayout layout, ArmFn fn, Node e) {
+    int op = e.op;
+    string cur = fn.fname;
+    int varSlots = layout.totalSlots - layout.maxDepth;
+    if (op == OP_ADD || op == OP_SUB || op == OP_MUL) {
+        if (e.childCount() < 2) { return "unsupported expression in '" + cur + "'"; }
+        string err = armLowerExpr(ctx, layout, fn, e.child(0));
+        if (err.length > 0) { return err; }
+        err = armLowerExpr(ctx, layout, fn, e.child(1));
+        if (err.length > 0) { return err; }
+        armPopTo(fn, 10, varSlots);
+        armPopTo(fn, 9, varSlots);
+        if (op == OP_ADD) { fn.e.word(a64AddReg(9, 9, 10)); }
+        else if (op == OP_SUB) { fn.e.word(a64SubReg(9, 9, 10)); }
+        else { fn.e.word(a64Mul(9, 9, 10)); }
+        armPush(fn, varSlots);
+        return "";
+    }
+    if (op == OP_DIV || op == OP_MOD) {
+        if (e.childCount() < 2) { return "unsupported expression in '" + cur + "'"; }
+        string derr = armLowerExpr(ctx, layout, fn, e.child(0));
+        if (derr.length > 0) { return derr; }
+        derr = armLowerExpr(ctx, layout, fn, e.child(1));
+        if (derr.length > 0) { return derr; }
+        armPopTo(fn, 10, varSlots);
+        armPopTo(fn, 9, varSlots);
+        if (op == OP_MOD) { armEmitGuardedDivmod(ctx, fn, true); }
+        else { armEmitGuardedDivmod(ctx, fn, false); }
+        armPush(fn, varSlots);
+        return "";
+    }
+    if (op == OP_EQ || op == OP_NEQ || op == OP_LT || op == OP_LEQ || op == OP_GT || op == OP_GEQ) {
+        if (e.childCount() < 2) { return "unsupported expression in '" + cur + "'"; }
+        string cerr = armLowerExpr(ctx, layout, fn, e.child(0));
+        if (cerr.length > 0) { return cerr; }
+        cerr = armLowerExpr(ctx, layout, fn, e.child(1));
+        if (cerr.length > 0) { return cerr; }
+        armPopTo(fn, 10, varSlots);
+        armPopTo(fn, 9, varSlots);
+        fn.e.word(a64CmpReg(9, 10));
+        int isTrue = fn.e.lab();
+        int done = fn.e.lab();
+        int cond = 10;
+        if (op == OP_EQ) { cond = 0; }
+        else if (op == OP_NEQ) { cond = 1; }
+        else if (op == OP_LT) { cond = 11; }
+        else if (op == OP_LEQ) { cond = 13; }
+        else if (op == OP_GT) { cond = 12; }
+        fn.e.bcond(cond, isTrue);
+        fn.e.word(a64Movz(9, 0, 0));
+        fn.e.b(done);
+        fn.e.bind(isTrue);
+        fn.e.word(a64Movz(9, 1, 0));
+        fn.e.bind(done);
+        armPush(fn, varSlots);
+        return "";
+    }
+    if (op == OP_AND || op == OP_OR) {
+        if (e.childCount() < 2) { return "unsupported expression in '" + cur + "'"; }
+        string aerr = armLowerExpr(ctx, layout, fn, e.child(0));
+        if (aerr.length > 0) { return aerr; }
+        armPopTo(fn, 9, varSlots);
+        int isFalse = fn.e.lab();
+        int endLab = fn.e.lab();
+        if (op == OP_AND) { fn.e.cbz(9, isFalse); }
+        else {
+            int isTrue = fn.e.lab();
+            fn.e.cbnz(9, isTrue);
+            aerr = armLowerExpr(ctx, layout, fn, e.child(1));
+            if (aerr.length > 0) { return aerr; }
+            armPopTo(fn, 9, varSlots);
+            fn.e.cbnz(9, isTrue);
+            fn.e.word(a64Movz(9, 0, 0));
+            fn.e.b(endLab);
+            fn.e.bind(isTrue);
+            fn.e.word(a64Movz(9, 1, 0));
+            fn.e.bind(endLab);
+            armPush(fn, varSlots);
+            return "";
+        }
+        aerr = armLowerExpr(ctx, layout, fn, e.child(1));
+        if (aerr.length > 0) { return aerr; }
+        armPopTo(fn, 9, varSlots);
+        fn.e.cbz(9, isFalse);
+        fn.e.word(a64Movz(9, 1, 0));
+        fn.e.b(endLab);
+        fn.e.bind(isFalse);
+        fn.e.word(a64Movz(9, 0, 0));
+        fn.e.bind(endLab);
+        armPush(fn, varSlots);
+        return "";
+    }
+    if (op == OP_ASSIGN || op == OP_ADD_ASSIGN || op == OP_SUB_ASSIGN || op == OP_MUL_ASSIGN || op == OP_MOVE || op == OP_DIV_ASSIGN || op == OP_MOD_ASSIGN) {
+        if (e.childCount() < 2) { return "unsupported expression in '" + cur + "'"; }
+        Node t = e.child(0);
+        if (t.kind != ND_IDENT) { return "complex assignment targets in '" + cur + "'"; }
+        int slot = macLayoutSlot(layout, t.name);
+        if (slot < 0) { return "unknown variable '" + t.name + "' in '" + cur + "'"; }
+        string verr = armLowerExpr(ctx, layout, fn, e.child(1));
+        if (verr.length > 0) { return verr; }
+        armPopTo(fn, 10, varSlots);
+        // Plain assignment and the << move form both leave the RHS value in
+        // X9; only plain assignment stores (the move form evaluates its RHS
+        // with no store, exactly like the interpreter).
+        if (op == OP_ASSIGN || op == OP_MOVE) {
+            fn.e.word(a64MovReg(9, 10));
+        } else if (op == OP_DIV_ASSIGN || op == OP_MOD_ASSIGN) {
+            fn.e.word(a64LdrImm(9, 31, slot * 8));
+            if (op == OP_MOD_ASSIGN) { armEmitGuardedDivmod(ctx, fn, true); }
+            else { armEmitGuardedDivmod(ctx, fn, false); }
+        } else {
+            fn.e.word(a64LdrImm(9, 31, slot * 8));
+            if (op == OP_ADD_ASSIGN) { fn.e.word(a64AddReg(9, 9, 10)); }
+            else if (op == OP_SUB_ASSIGN) { fn.e.word(a64SubReg(9, 9, 10)); }
+            else { fn.e.word(a64Mul(9, 9, 10)); }
+        }
+        if (op == OP_MOVE) {
+            armPush(fn, varSlots);
+            return "";
+        }
+        fn.e.word(a64StrImm(9, 31, slot * 8));
+        armPush(fn, varSlots);
+        return "";
+    }
+    return "unsupported binary operator in '" + cur + "'";
+}
+
+// Lower a call to a program-defined function (exact arity checked by the
+// tier predicate). Arguments evaluate left to right onto the operand stack,
+// then pop into X0.. in reverse, call, and push X0 back for value calls
+// (void calls in statement position push nothing). AAPCS64 passes all 8
+// tier-allowed parameters in registers, so no stack arguments exist here.
+private string armLowerCall(MacCtx ctx, MacLayout layout, ArmFn fn, Node e) {
+    string cur = fn.fname;
+    int si = macFindSig(ctx, e.name);
+    if (si < 0) { return "call to unknown function '" + e.name + "' in '" + cur + "'"; }
+    string pks = ctx.sigParams[si];
+    if (e.childCount() != pks.length) { return "arity mismatch calling '" + e.name + "' in '" + cur + "'"; }
+    int varSlots = layout.totalSlots - layout.maxDepth;
+    for (int i = 0; i < e.childCount(); i++) {
+        string argErr = armLowerExpr(ctx, layout, fn, e.child(i));
+        if (argErr.length > 0) { return argErr; }
+    }
+    for (int r = e.childCount() - 1; r >= 0; r--) {
+        armPopTo(fn, r, varSlots);
+    }
+    armEmitCallSym(fn, si, e.name);
+    string ret = ctx.sigRets[si];
+    if (ret != "v") {
+        fn.e.word(a64StrImm(0, 31, (fn.depth + varSlots) * 8));
+        fn.depth++;
+    }
+    return "";
+}
+
+// Lower one statement. Value-producing positions (return) leave X0 set;
+// statement calls and prints are depth-neutral by abandonment (depth
+// resets at the next statement).
+private string armLowerStmt(MacCtx ctx, MacLayout layout, ArmFn fn, Node s, bool isVoid, int mainEnd) {
+    string cur = fn.fname;
+    int varSlots = layout.totalSlots - layout.maxDepth;
+    int frame = layout.frameBytes;
+    fn.depth = 0;
+    if (s.kind == ND_EXPR_STMT) {
+        if (s.childCount() > 0) {
+            Node inner = s.child(0);
+            if (inner.kind == ND_CALL && (inner.name == "print" || inner.name == "printline")) {
+                bool nl = inner.name == "printline";
+                if (inner.childCount() != 1) { return "multi-argument print in '" + cur + "'"; }
+                return armLowerPrint(ctx, layout, fn, inner, nl);
+            }
+            return armLowerExprAsStmt(ctx, layout, fn, inner);
+        }
+        return "";
+    }
+    if (s.kind == ND_VAR_DECL) {
+        return armLowerLocalDecl(ctx, layout, fn, s);
+    }
+    if (s.kind == ND_RETURN) {
+        if (s.childCount() == 0) {
+            if (fn.fname == "main") {
+                fn.e.b(mainEnd);
+            } else {
+                fn.e.epilogue(frame);
+            }
+            return "";
+        }
+        string rerr = armLowerExpr(ctx, layout, fn, s.child(0));
+        if (rerr.length > 0) { return rerr; }
+        armPopTo(fn, 0, varSlots);
+        if (fn.fname == "main") {
+            fn.e.b(mainEnd);
+        } else {
+            fn.e.epilogue(frame);
+        }
+        return "";
+    }
+    if (s.kind == ND_IF_STMT) {
+        if (s.childCount() < 2) { return "unsupported statement in '" + cur + "'"; }
+        string cerr = armLowerExpr(ctx, layout, fn, s.child(0));
+        if (cerr.length > 0) { return cerr; }
+        armPopTo(fn, 9, varSlots);
+        int elseLab = fn.e.lab();
+        int endLab = fn.e.lab();
+        fn.e.cbz(9, elseLab);
+        cerr = armLowerBlock(ctx, layout, fn, s.child(1), isVoid, mainEnd);
+        if (cerr.length > 0) { return cerr; }
+        fn.e.b(endLab);
+        fn.e.bind(elseLab);
+        if (s.childCount() > 2) {
+            cerr = armLowerBlock(ctx, layout, fn, s.child(2), isVoid, mainEnd);
+            if (cerr.length > 0) { return cerr; }
+        }
+        fn.e.bind(endLab);
+        return "";
+    }
+    if (s.kind == ND_WHILE) {
+        if (s.childCount() < 2) { return "unsupported statement in '" + cur + "'"; }
+        int top = fn.e.lab();
+        int endLab = fn.e.lab();
+        fn.e.bind(top);
+        string werr = armLowerExpr(ctx, layout, fn, s.child(0));
+        if (werr.length > 0) { return werr; }
+        armPopTo(fn, 9, varSlots);
+        fn.e.cbz(9, endLab);
+        fn.brkLabs.add(endLab);
+        fn.contLabs.add(top);
+        werr = armLowerBlock(ctx, layout, fn, s.child(1), isVoid, mainEnd);
+        if (werr.length > 0) { return werr; }
+        fn.brkLabs.pop();
+        fn.contLabs.pop();
+        fn.e.b(top);
+        fn.e.bind(endLab);
+        return "";
+    }
+    if (s.kind == ND_BREAK) {
+        if (fn.brkLabs.length == 0) { return "break/continue outside a loop in '" + cur + "'"; }
+        fn.e.b(fn.brkLabs[fn.brkLabs.length - 1]);
+        return "";
+    }
+    if (s.kind == ND_CONTINUE) {
+        if (fn.contLabs.length == 0) { return "break/continue outside a loop in '" + cur + "'"; }
+        fn.e.b(fn.contLabs[fn.contLabs.length - 1]);
+        return "";
+    }
+    if (s.kind == ND_FOR_RANGE) {
+        Node desugared = winDesugarRange(s);
+        return armLowerStmt(ctx, layout, fn, desugared, isVoid, mainEnd);
+    }
+    if (s.kind == ND_FOR_C) {
+        return armLowerForC(ctx, layout, fn, s, isVoid, mainEnd);
+    }
+    return "unsupported statement in '" + cur + "'";
+}
+
+// An expression in statement position: calls to program functions run for
+// effect, assignments store, everything else evaluates and is abandoned.
+private string armLowerExprAsStmt(MacCtx ctx, MacLayout layout, ArmFn fn, Node inner) {
+    string cur = fn.fname;
+    if (inner.kind == ND_CALL) {
+        if (inner.name == "print" || inner.name == "printline") {
+            return "print used as a value in '" + cur + "'";
+        }
+        if (inner.name == "exit" || inner.name == "printf") {
+            return "explicit '" + inner.name + "' calls in '" + cur + "'";
+        }
+        return armLowerCall(ctx, layout, fn, inner);
+    }
+    return armLowerExpr(ctx, layout, fn, inner);
+}
+
+private string armLowerLocalDecl(MacCtx ctx, MacLayout layout, ArmFn fn, Node s) {
+    string cur = fn.fname;
+    if (s.childCount() == 0) { return "uninitialized local '" + s.name + "' in '" + cur + "'"; }
+    int kind = armKindOf(ctx, layout, s.child(0));
+    string vk = "i";
+    if (kind == 1) { vk = "b"; }
+    else if (kind == 2) { vk = "c"; }
+    if (s.typeHint != "" && s.typeHint != "var") {
+        vk = macScalarOf(s.typeHint);
+        if (vk.length == 0) { return "local '" + s.name + "' has non-tier type in '" + cur + "'"; }
+    }
+    string err = armLowerExpr(ctx, layout, fn, s.child(0));
+    if (err.length > 0) { return err; }
+    int varSlots = layout.totalSlots - layout.maxDepth;
+    armPopTo(fn, 9, varSlots);
+    int slot = macLayoutSlot(layout, s.name);
+    fn.e.word(a64StrImm(9, 31, slot * 8));
+    return "";
+}
+
+private string armLowerBlock(MacCtx ctx, MacLayout layout, ArmFn fn, Node block, bool isVoid, int mainEnd) {
+    if (block.kind == ND_BLOCK) {
+        for (int i = 0; i < block.childCount(); i++) {
+            string err = armLowerStmt(ctx, layout, fn, block.child(i), isVoid, mainEnd);
+            if (err.length > 0) { return err; }
+        }
+        return "";
+    }
+    return armLowerStmt(ctx, layout, fn, block, isVoid, mainEnd);
+}
+
+// C-like for: init once, then cond-check / body / update; continue runs the
+// update, break leaves. Mirrors the predicate's desugar onto while.
+private string armLowerForC(MacCtx ctx, MacLayout layout, ArmFn fn, Node s, bool isVoid, int mainEnd) {
+    string cur = fn.fname;
+    int varSlots = layout.totalSlots - layout.maxDepth;
+    if (s.childCount() < 4) { return "unsupported statement in '" + cur + "'"; }
+    Node init = s.child(0);
+    if (init.kind == ND_VAR_DECL) {
+        string derr = armLowerLocalDecl(ctx, layout, fn, init);
+        if (derr.length > 0) { return derr; }
+    } else if (init.kind == ND_EXPR_STMT) {
+        if (init.childCount() > 0) {
+            string ierr = armLowerExprAsStmt(ctx, layout, fn, init.child(0));
+            if (ierr.length > 0) { return ierr; }
+        }
+    } else if (init.kind == ND_BINARY) {
+        string berr = armLowerExpr(ctx, layout, fn, init);
+        if (berr.length > 0) { return berr; }
+    } else {
+        return "unsupported for initializer in '" + cur + "'";
+    }
+    int top = fn.e.lab();
+    int updLab = fn.e.lab();
+    int endLab = fn.e.lab();
+    fn.brkLabs.add(endLab);
+    fn.contLabs.add(updLab);
+    fn.e.bind(top);
+    string cerr = armLowerExpr(ctx, layout, fn, s.child(1));
+    if (cerr.length > 0) { return cerr; }
+    armPopTo(fn, 9, varSlots);
+    fn.e.cbz(9, endLab);
+    cerr = armLowerBlock(ctx, layout, fn, s.child(3), isVoid, mainEnd);
+    if (cerr.length > 0) { return cerr; }
+    fn.brkLabs.pop();
+    fn.contLabs.pop();
+    fn.e.bind(updLab);
+    fn.depth = 0;
+    string uerr = armLowerExprAsStmt(ctx, layout, fn, s.child(2));
+    if (uerr.length > 0) { return uerr; }
+    fn.e.b(top);
+    fn.e.bind(endLab);
+    return "";
+}
+
+// Lower one function into prog: frame-chain prologue, parameter spills,
+// body, then the function-end sequence (bl exit for main, epilogue
+// fall-through otherwise — the port's shape).
+private string armLowerFuncInto(MacCtx ctx, ArmProg prog, Node func, MacLayout layout) {
+    ArmFn fn = new ArmFn();
+    fn.fname = func.name;
+    fn.e.word(a64StpPre(29, 30, 31, -16));
+    fn.e.word(a64AddImm(29, 31, 0));
+    int frame = layout.frameBytes;
+    if (frame > 0) { fn.e.word(a64SubImm(31, 31, frame)); }
+    Node params = func.child(0);
+    for (int i = 0; i < params.childCount(); i++) {
+        int slot = macLayoutSlot(layout, params.child(i).name);
+        fn.e.word(a64StrImm(i, 31, slot * 8));
+    }
+    int mainEnd = fn.e.lab();
+    bool isVoid = func.typeHint == "" || func.typeHint == "void";
+    string err = armLowerBlock(ctx, layout, fn, func.child(1), isVoid, mainEnd);
+    if (err.length > 0) { return err; }
+    if (func.name == "main") {
+        fn.e.bind(mainEnd);
+        fn.e.word(a64Movz(0, 0, 0));
+        armEmitCallImport(fn, 0);
+        fn.e.word(a64Ret(30));
+    } else {
+        fn.e.epilogue(frame);
+    }
+    err = fn.e.finish();
+    if (err.length > 0) { return err; }
+    prog.fns.add(fn);
+    return "";
+}
+
+// Fill `unit` with the real ARM64 lowering of one in-tier entry file: one
+// FUNC per user function (main under the entry symbol), .rdata with the
+// program's interned strings, UNDEF imports for exit/printf when used, and
+// BRANCH26/PAGE21/PAGEOFF12 relocations. Returns "" or the loud fallback
+// reason (never a stub).
+public string armLowerUnit(string filekey, int64 hash, int srcLen, int stamp, Node[] program, ObjUnit unit) {
+    string reason = macTierReason(program);
+    if (reason.length > 0) { return reason; }
+    MacCtx ctx = new MacCtx();
+    for (int i = 0; i < program.length; i++) {
+        Node item = program[i];
+        if (item.kind == ND_FUNC) {
+            Node params = item.child(0);
+            string kinds = "";
+            for (int pi = 0; pi < params.childCount(); pi++) {
+                kinds = kinds + macScalarOf(params.child(pi).typeHint);
+            }
+            string ret = "v";
+            if (item.typeHint != "" && item.typeHint != "void") {
+                ret = macScalarOf(item.typeHint);
+            }
+            ctx.sigNames.add(item.name);
+            ctx.sigParams.add(kinds);
+            ctx.sigRets.add(ret);
+        } else if (item.kind == ND_CONST) {
+            Node v = item.child(0);
+            if (v.kind == ND_INT_LIT) {
+                ctx.constNames.add(item.name);
+                ctx.constVals.add(v.intVal);
+                ctx.constKinds.add(macScalarOf(item.typeHint));
+            } else if (v.kind == ND_BOOL_LIT) {
+                ctx.constNames.add(item.name);
+                if (v.boolVal) { ctx.constVals.add(1); }
+                else { ctx.constVals.add(0); }
+                ctx.constKinds.add(macScalarOf(item.typeHint));
+            } else if (v.kind == ND_CHAR_LIT) {
+                ctx.constNames.add(item.name);
+                int cv = v.charVal;
+                ctx.constVals.add(int64(cv));
+                ctx.constKinds.add(macScalarOf(item.typeHint));
+            }
+        }
+    }
+    ArmProg prog = new ArmProg();
+    for (int f = 0; f < program.length; f++) {
+        Node item = program[f];
+        if (item.kind == ND_FUNC) {
+            MacLayout layout = new MacLayout();
+            string chk = macCheckFunc(ctx, item, layout);
+            if (chk.length > 0) { return chk; }
+            string err = armLowerFuncInto(ctx, prog, item, layout);
+            if (err.length > 0) { return err; }
+        }
+    }
+    unit.filekey = filekey;
+    unit.datab = databName(filekey);
+    unit.gas = 0;
+    unit.impDlls = [];
+    unit.impNames = [];
+    // Import list: exit is always first, printf second when used (the port's
+    // fixed order — every unit's note is identical for one program).
+    unit.impDlls.add("/usr/lib/libSystem.B.dylib");
+    unit.impNames.add("exit");
+    if (ctx.usesPrintf) {
+        unit.impDlls.add("/usr/lib/libSystem.B.dylib");
+        unit.impNames.add("printf");
+    }
+    unit.undefSingles = [];
+    unit.undefImports = [];
+    unit.undefImports.add(0);
+    if (ctx.usesPrintf) { unit.undefImports.add(1); }
+    unit.data = [];
+    for (int b = 0; b < ctx.idataBytes.length; b++) { unit.data.add(ctx.idataBytes[b]); }
+    unit.code = [];
+    unit.defNames = [];
+    unit.defOffs = [];
+    unit.defSizes = [];
+    unit.undefFuncs = [];
+    unit.relSites = [];
+    unit.relKinds = [];
+    unit.relTargets = [];
+    unit.relIdx = [];
+    unit.relNames = [];
+    for (int g = 0; g < prog.fns.length; g++) {
+        ArmFn wfn = prog.fns[g];
+        string wname = wfn.fname;
+        int base = unit.code.length;
+        if (wname == "main") {
+            unit.defNames.add(objInterpEntrySym(filekey, hash));
+        } else {
+            unit.defNames.add("__slv_fn_" + wname);
+        }
+        unit.defOffs.add(base);
+        unit.defSizes.add(wfn.e.code.length);
+        for (int c = 0; c < wfn.e.code.length; c++) { unit.code.add(wfn.e.code[c]); }
+        for (int r = 0; r < wfn.csites.length; r++) {
+            int site = base + wfn.csites[r];
+            if (wfn.cimported[r] == 1) {
+                unit.relSites.add(site);
+                unit.relKinds.add(2);
+                unit.relTargets.add(4);
+                unit.relIdx.add(wfn.cidx[r]);
+                unit.relNames.add("");
+            } else {
+                unit.relSites.add(site);
+                unit.relKinds.add(2);
+                unit.relTargets.add(0);
+                unit.relIdx.add(wfn.cidx[r]);
+                unit.relNames.add("");
+            }
+        }
+        // Data references: encode the unit-relative offset into the pair
+        // (page + low 12, the port's shape) and record the relocation pair
+        // against the data anchor.
+        for (int d = 0; d < wfn.darefAdrp.length; d++) {
+            int unitOff = wfn.darefOff[d];
+            int page = unitOff / 4096;
+            int lo = unitOff - page * 4096;
+            int rd = wfn.darefRd[d];
+            int adrpSite = base + wfn.darefAdrp[d];
+            int addSite = base + wfn.darefAdd[d];
+            int aw = a64Adrp(rd, page);
+            int dw = a64AddImm(rd, rd, lo);
+            for (int k = 0; k < 4; k++) {
+                unit.code[adrpSite + k] = int((aw >> (k * 8)) & 0xFF);
+                unit.code[addSite + k] = int((dw >> (k * 8)) & 0xFF);
+            }
+            unit.relSites.add(adrpSite);
+            unit.relKinds.add(3);
+            unit.relTargets.add(2);
+            unit.relIdx.add(unitOff);
+            unit.relNames.add("");
+            unit.relSites.add(addSite);
+            unit.relKinds.add(4);
+            unit.relTargets.add(2);
+            unit.relIdx.add(unitOff);
+            unit.relNames.add("");
+        }
+    }
+    // Deterministic order: sort relocations by site (adrp/add pairs stay
+    // adjacent — no other site can land between the two words — so linkers
+    // pairing by adjacency keep working, exactly like the port's sort).
+    for (int si = 1; si < unit.relSites.length; si++) {
+        int kSite = unit.relSites[si];
+        int kKind = unit.relKinds[si];
+        int kTgt = unit.relTargets[si];
+        int kIdx = unit.relIdx[si];
+        string kName = unit.relNames[si];
+        int sj = si - 1;
+        while (sj >= 0 && kSite < unit.relSites[sj]) {
+            unit.relSites[sj + 1] = unit.relSites[sj];
+            unit.relKinds[sj + 1] = unit.relKinds[sj];
+            unit.relTargets[sj + 1] = unit.relTargets[sj];
+            unit.relIdx[sj + 1] = unit.relIdx[sj];
+            unit.relNames[sj + 1] = unit.relNames[sj];
+            sj--;
+        }
+        unit.relSites[sj + 1] = kSite;
+        unit.relKinds[sj + 1] = kKind;
+        unit.relTargets[sj + 1] = kTgt;
+        unit.relIdx[sj + 1] = kIdx;
+        unit.relNames[sj + 1] = kName;
+    }
+    return "";
+}
+
 // Internal symbol order shared by every writer (mirrors the references):
 // section anchors, defined functions, the data anchor, then undefined
 // symbols (functions, singletons, imports). Sizes ride alongside for the
@@ -2699,11 +3768,11 @@ public int[] emitElf(ObjUnit unit, int[] note) {
 // interoperate across compilers. Built only with byte pushes.
 //
 // The symbol table is genuine: two non-extern section anchors (__text,
-// __rdata), one defined FUNC symbol per function owned by the file (the
-// entry stub — the interpreter's emitter owns one function per file), the
-// global data-anchor symbol (offset 0 in __rdata), and UNDEF entries for
-// every cross-unit reference (the runner seam). Relocations cover the bl
-// call (ARM64_RELOC_BRANCH26) and the adrp+add data pair
+// __rdata), one defined FUNC symbol per lowered function owned by the file,
+// the global data-anchor symbol (offset 0 in __rdata), and UNDEF entries
+// for every cross-unit reference (imports, and the retired runner seam on
+// stub-era objects). Relocations cover the bl calls
+// (ARM64_RELOC_BRANCH26) and the adrp+add data pairs
 // (ARM64_RELOC_PAGE21 / ARM64_RELOC_PAGEOFF12).
 public int[] emitMacho(ObjUnit unit, int[] note) {
     // ARM64 reloc types (mach-o/reloc.h): BRANCH26=2, PAGE21=3, PAGEOFF12=4.
@@ -2952,8 +4021,8 @@ public int[] emitObject(ObjUnit unit, string flags, int64 hash, int stamp, strin
 
 // True when the unit exceeds the v1 boundary (COFF section limit): the
 // session skips emission and the driver keeps running from the verified
-// AST/bytecode tiers (loud fallback, never a silent mislink). The
-// interpreter stub carries 2 relocations, so this is defensive only.
+// AST/bytecode tiers (loud fallback, never a silent mislink). Real units
+// carry a relocation per call site, so this is defensive only.
 public bool objTooManyRelocs(ObjUnit unit) {
     return unit.relSites.length >= 65535;
 }
@@ -3675,12 +4744,11 @@ public string objParseObject(ObjReader r, string targetOs, ParsedObj obj) {
 // (ast.sr); the port's raw numbers ride in comments (Pnn) so the mapping
 // stays reviewable. Reason strings are byte-identical to the references.
 //
-// The driver consults this on the mac path after parsing: an out-of-tier
-// entry prints the loud fallback (reference reason + the interpreter's
-// verified-tier continuation) and runs from the verified AST/bytecode
-// tiers. The interpreter's mac objects carry the entry stub only — never
-// lowered program semantics — so the predicate never gates emission, only
-// the loudness of the boundary.
+// The driver consults this on every object-cached path after parsing, and
+// both real lowerings (winLowerUnit, armLowerUnit) re-check it first so the
+// three can never disagree: an out-of-tier entry emits no object at all and
+// prints the loud fallback (reference reason + the interpreter's
+// verified-tier continuation), running from the verified AST/bytecode tiers.
 // ---------------------------------------------------------------------------
 
 // Whole-program tier context: function signatures, const values, and
@@ -3695,6 +4763,14 @@ class MacCtx {
     public prop string[] constKinds;
     public prop int64[] constVals;
     public prop bool usesPrintf;
+    // Lowering-time .rdata image: deduplicated interned byte strings,
+    // flattened into idataBytes with one cumulative end offset per blob in
+    // idataEnds (each blob stored with its NUL terminator). Appended during
+    // lowering and sliced into the unit at finalization. The predicate path
+    // never interns, so these stay empty outside lowering.
+    public prop int[] idataBytes;
+    public prop int[] idataEnds;
+    public prop int idataLen;
 
     construct {
         this.sigNames = [];
@@ -3704,6 +4780,39 @@ class MacCtx {
         this.constKinds = [];
         this.constVals = [];
         this.usesPrintf = false;
+        this.idataBytes = [];
+        this.idataEnds = [];
+        this.idataLen = 0;
+    }
+
+    // Offset of s in .rdata (with NUL terminator), appending on first sight.
+    public int addStr(string s) {
+        int[] blob = [];
+        for (int i = 0; i < s.length; i++) { blob.add(int64(s[i]) & 0xFF); }
+        blob.add(0);
+        return this.addStrBytes(blob);
+    }
+
+    // Offset of raw bytes b in .rdata, appending on first sight (content
+    // equality — identical payloads share one copy).
+    public int addStrBytes(int[] b) {
+        int base = 0;
+        for (int i = 0; i < this.idataEnds.length; i++) {
+            int end = this.idataEnds[i];
+            if (end - base == b.length) {
+                bool same = true;
+                for (int j = 0; j < b.length; j++) {
+                    if (this.idataBytes[base + j] != b[j]) { same = false; break; }
+                }
+                if (same) { return base; }
+            }
+            base = end;
+        }
+        int off = this.idataLen;
+        for (int k = 0; k < b.length; k++) { this.idataBytes.add(b[k]); }
+        this.idataEnds.add(off + b.length);
+        this.idataLen = this.idataLen + b.length;
+        return off;
     }
 }
 
@@ -4882,16 +5991,15 @@ class ObjSession {
         if (!objPeekNote(r, this.targetOs, note)) { return false; }
         if (note.flags != this.flags) { return false; }
         if (note.hash != int64(this.notedH[n])) { return false; }
-        if (this.targetOs != "MAC" && this.stubEra(raw)) { return false; }
+        if (this.stubEra(raw)) { return false; }
         return true;
     }
 
-    // True when an x86-64 .o is stub-era (its symbol table still references
+    // True when a .o is stub-era (its symbol table still references
     // the retired proof-stub seam): structurally valid but carrying no
     // program logic, so the planner treats it as stale and the entry
-    // re-emits with real lowering. MAC objects still emit the entry stub
-    // this increment, so the caller exempts that target; the ARM64
-    // follow-up generalizes this to every target.
+    // re-emits with real lowering. Every target lowers real program logic
+    // now, so no fresh object references the seam on any target.
     private bool stubEra(byte[] raw) {
         ObjReader r = new ObjReader(raw);
         ParsedObj obj = new ParsedObj();
@@ -4911,51 +6019,26 @@ class ObjSession {
         this.sortNoted();
         for (int n = 0; n < this.notedKeys.length; n++) {
             if (!this.isFresh(n)) {
-                if (this.targetOs == "WINDOWS" || this.targetOs == "LINUX") {
-                    // Real program lowering (never a stub): without a parsed
-                    // program the driver surfaces parse diagnostics itself,
-                    // so skip silently; out-of-tier entries record the loud
-                    // reason and emit nothing.
-                    if (!this.lowHasProgram) { continue; }
+                // Real program lowering (never a stub): without a parsed
+                // program the driver surfaces parse diagnostics itself,
+                // so skip silently; out-of-tier entries record the loud
+                // reason and emit nothing.
+                if (!this.lowHasProgram) { continue; }
+                ObjUnit unit = new ObjUnit();
+                string lerr = "";
+                if (this.targetOs == "MAC") {
+                    lerr = armLowerUnit(this.notedKeys[n], int64(this.notedH[n]), this.notedM[n], this.notedStamps[n], this.lowProgram, unit);
+                } else {
                     // Calling convention for the session target: Win64 on
                     // WINDOWS, SysV on LINUX (same ISA, same tier predicate).
                     int abi = 0;
                     if (this.targetOs == "LINUX") { abi = 1; }
-                    ObjUnit unit = new ObjUnit();
-                    string lerr = winLowerUnit(this.notedKeys[n], int64(this.notedH[n]), this.notedM[n], this.notedStamps[n], this.lowProgram, unit, abi);
-                    if (lerr.length > 0) {
-                        this.lowSkip = lerr;
-                        continue;
-                    }
-                    if (objTooManyRelocs(unit)) {
-                        return "object cache: too many relocations in '" + this.notedKeys[n] + "' for one object file (v1 boundary)";
-                    }
-                    string objPath = this.objectPath(this.notedKeys[n]);
-                    if (objPath.length == 0) {
-                        return "object cache: cannot place object for '" + this.notedKeys[n] + "'";
-                    }
-                    icEnsureDirTree(icDirname(objPath));
-                    int[] bytes = emitObject(unit, this.flags, int64(this.notedH[n]), this.notedStamps[n], this.targetOs);
-                    file.writeBytes(objPath, bytes);
-                    if (!file.exists(objPath) || file.getSize(objPath) != bytes.length) {
-                        return "object cache: cannot write " + objPath + ": verification failed";
-                    }
-                    int idx = this.findRecord(this.notedKeys[n]);
-                    if (idx >= 0) {
-                        this.mTimes[idx] = this.notedM[n];
-                        this.hashes[idx] = this.notedH[n];
-                        this.cachedAt[idx] = this.notedStamps[n];
-                    } else {
-                        this.keys.add(this.notedKeys[n]);
-                        this.cTimes.add(this.notedC[n]);
-                        this.mTimes.add(this.notedM[n]);
-                        this.hashes.add(this.notedH[n]);
-                        this.cachedAt.add(this.notedStamps[n]);
-                    }
+                    lerr = winLowerUnit(this.notedKeys[n], int64(this.notedH[n]), this.notedM[n], this.notedStamps[n], this.lowProgram, unit, abi);
+                }
+                if (lerr.length > 0) {
+                    this.lowSkip = lerr;
                     continue;
                 }
-                ObjUnit unit = new ObjUnit();
-                interpBuildUnit(this.notedKeys[n], int64(this.notedH[n]), this.notedM[n], this.notedStamps[n], unit);
                 if (objTooManyRelocs(unit)) {
                     return "object cache: too many relocations in '" + this.notedKeys[n] + "' for one object file (v1 boundary)";
                 }
@@ -5034,7 +6117,7 @@ class ObjSession {
         // Entries skipped above (no program, or out-of-tier with no
         // object emitted) are not unified: there is nothing to validate.
         for (int u = 0; u < this.notedKeys.length; u++) {
-            if (this.targetOs != "MAC" && (!this.lowHasProgram || this.lowSkip.length > 0)) { continue; }
+            if (!this.lowHasProgram || this.lowSkip.length > 0) { continue; }
             string upath = this.objectPath(this.notedKeys[u]);
             if (!file.exists(upath)) {
                 return "object cache: cannot read " + upath + ": file not found";
@@ -5094,20 +6177,21 @@ class ObjSession {
         if (obj.hash != expectHash) {
             return "object cache: stale object (source hash changed) — re-emit required";
         }
-        if (this.targetOs != "MAC") {
-            for (int s = 0; s < obj.symNames.length; s++) {
-                if (obj.symSects[s] == 0 && obj.symNames[s] == objInterpRunSym()) {
-                    return "object cache: stale object (source hash changed) — re-emit required";
-                }
+        // Stub-era objects (seam UNDEF in the symbol table) carry no program
+        // logic on any target: stale, never executed.
+        for (int s = 0; s < obj.symNames.length; s++) {
+            if (obj.symSects[s] == 0 && obj.symNames[s] == objInterpRunSym()) {
+                return "object cache: stale object (source hash changed) — re-emit required";
             }
         }
         return this.checkGas(obj);
     }
 
     // Globals-block agreement check (the same rule the linkers enforce):
-    // the interpreter always records gas 0 (interpBuildUnit sets no globals
-    // block; execution stays on the AST/bytecode tiers), while the self-host
-    // counts bytes and silverc-rs counts slots — so mixed-toolchain objects
+    // the interpreter always records gas 0 (no globals block; execution
+    // stays on the AST/bytecode tiers for LINUX/MAC and runs natively only
+    // for WINDOWS), while the self-host counts bytes and silverc-rs counts
+    // slots — so mixed-toolchain objects disagree by construction.
     // disagree by construction. Any nonzero foreign gas fails LOUDLY here
     // instead of validating silently. Returns "" when the object agrees.
     private string checkGas(ParsedObj obj) {

@@ -1361,8 +1361,8 @@ void main() {
     // program results — printed output flows natively, the trap path exits
     // the process like the compiled binary. LINUX entries carry the same
     // real lowering under the SysV ABI but stay on the verified tiers (the
-    // runner is COFF/x86-64 only); MAC entries still carry the entry stub.
-    // A fully native run ends the
+    // runner is COFF/x86-64 only); MAC entries carry the real ARM64 lowering
+    // and likewise validate-then-continue from the verified tiers. A fully
     // process here (no AST re-run: output already happened). Success stays
     // silent unless --diag; any fallback prints LOUDLY and execution
     // continues from the VERIFIED tokens above — synced .srbc text on a
@@ -1389,7 +1389,7 @@ void main() {
                 printline(objErr);
                 exit(1);
             }
-            bool objSkip = (target == "WINDOWS" || target == "LINUX") && (!objs.lowHasProgram || objs.lowSkip.length > 0);
+            bool objSkip = (target == "WINDOWS" || target == "LINUX" || target == "MAC") && (!objs.lowHasProgram || objs.lowSkip.length > 0);
             if (objs.lowHasProgram && objs.lowSkip.length > 0) { lowFallback = objs.lowSkip; }
             if (!objSkip) {
                 objErr = objs.verifyObject(filename, cache.icFnv1(inputSource));
@@ -1481,33 +1481,19 @@ void main() {
         exit(1);
     }
 
-    // mac-aarch64 object-tier boundary (see objcache.sr macTierReason): the
-    // interpreter's mac objects carry the genuine entry stub only — never
-    // lowered program semantics — so execution always continues from the
-    // verified AST/bytecode tiers on this host. An out-of-tier entry is
-    // reported LOUDLY with the reference reason (the same string the
-    // compilers print inside their monolithic-compile fallback); an
-    // in-tier entry stays silent. Mac-gated: host behavior is unchanged.
-    if (cacheObject && target == "MAC") {
-        string tierWhy = macTierReason(program);
-        if (tierWhy.length > 0) {
-            string verifiedTier = "source";
-            if (bcPayload.length > 0) { verifiedTier = "bytecode"; }
-            printline("cache-object: mac target is outside the v1 ARM64 object tier (" + tierWhy + "); continuing from verified " + verifiedTier + " tier");
-        }
-    }
-
-    // x86-64 object-tier boundary: entries the real lowering cannot
-    // take emit no object at all (lowSkip from finish, carried in
-    // lowFallback) and run from the verified tiers instead — reported
-    // LOUDLY with the tier reason. In-tier entries already ran natively
-    // above (WINDOWS) or validated identically (LINUX) and never reach here.
-    if (cacheObject && (target == "WINDOWS" || target == "LINUX") && lowFallback.length > 0) {
+    // Object-tier boundary: entries the real lowering cannot take emit no
+    // object at all (lowSkip from finish, carried in lowFallback) and run
+    // from the verified tiers instead — reported LOUDLY with the tier
+    // reason. In-tier entries already ran natively above (WINDOWS) or
+    // validated identically (LINUX/MAC) and never reach here.
+    if (cacheObject && (target == "WINDOWS" || target == "LINUX" || target == "MAC") && lowFallback.length > 0) {
         string verifiedTier = "source";
         if (bcPayload.length > 0) { verifiedTier = "bytecode"; }
         string tierOs = "windows";
+        string tierArch = "x86-64";
         if (target == "LINUX") { tierOs = "linux"; }
-        printline("cache-object: " + tierOs + " target is outside the v1 x86-64 object tier (" + lowFallback + "); continuing from verified " + verifiedTier + " tier");
+        if (target == "MAC") { tierOs = "mac"; tierArch = "ARM64"; }
+        printline("cache-object: " + tierOs + " target is outside the v1 " + tierArch + " object tier (" + lowFallback + "); continuing from verified " + verifiedTier + " tier");
     }
 
     MemoryGuard guard = new MemoryGuard();
