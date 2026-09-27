@@ -1329,10 +1329,13 @@ void main() {
         bcPayload = cache.lastPayload;
         cache.flush();
         // Cached-path lex diagnostics print grouped under the entry header
-        // like the direct path; control flow is unchanged (historically the
-        // cached path continued past lex errors).
+        // and abort exactly like the direct path below: continuing past lex
+        // errors would parse a partial token stream and print extra parse
+        // diagnostics no other tier prints (rc+stdout must be identical
+        // across tiers — any divergence is a mapping defect).
         if (cache.lexErrors > 0) {
             printGroupedDiagnostics(cache.lexMessages, filename);
+            exit(1);
         }
         // Compute line lengths from the source for bracket diagnostics.
         int current = 0;
