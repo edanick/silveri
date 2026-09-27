@@ -1359,35 +1359,38 @@ void main() {
     // it and executes the compiled entry in-process (RWX block, own
     // relocations applied, note imports bound to live exports) with real
     // program results — printed output flows natively, the trap path exits
-    // the process like the compiled binary. A fully native run ends the
+    // the process like the compiled binary. LINUX entries carry the same
+    // real lowering under the SysV ABI but stay on the verified tiers (the
+    // runner is COFF/x86-64 only); MAC entries still carry the entry stub.
+    // A fully native run ends the
     // process here (no AST re-run: output already happened). Success stays
     // silent unless --diag; any fallback prints LOUDLY and execution
     // continues from the VERIFIED tokens above — synced .srbc text on a
     // bytecode-tier hit, freshly lexed source otherwise — through the
-    // existing AST/bytecode tiers. Out-of-tier WINDOWS entries emit no
+    // existing AST/bytecode tiers. Out-of-tier x86-64 entries emit no
     // object at all (never a stub): the reason is reported below after
     // parsing. Quiet runs stay byte-identical to the uncached tiers
     // (parity demand: no extra stdout on the normal path).
-    string winFallback = "";
+    string lowFallback = "";
     if (cacheObject) {
         ObjSession objs = new ObjSession(cacheRoot, cacheProject, target);
         if (objs.ok) {
             objs.noteFile(filename, inputSource, bcPayload.length > 0);
-            if (target == "WINDOWS") {
-                Parser winParser = new Parser(tokens);
-                winParser.setLineLengths(lineLens);
-                winParser.setCustomTarget(target);
-                Node[] winProgram = winParser.parseProgram();
-                if (winParser.errorCount() == 0) { objs.setWinProgram(winProgram); }
-                winParser.release();
+            if (target == "WINDOWS" || target == "LINUX" || target == "MAC") {
+                Parser lowParser = new Parser(tokens);
+                lowParser.setLineLengths(lineLens);
+                lowParser.setCustomTarget(target);
+                Node[] lowProgram = lowParser.parseProgram();
+                if (lowParser.errorCount() == 0) { objs.setLowProgram(lowProgram); }
+                lowParser.release();
             }
             string objErr = objs.finish();
             if (objErr.length > 0) {
                 printline(objErr);
                 exit(1);
             }
-            bool objSkip = target == "WINDOWS" && (!objs.winHasProgram || objs.winSkip.length > 0);
-            if (objs.winHasProgram && objs.winSkip.length > 0) { winFallback = objs.winSkip; }
+            bool objSkip = (target == "WINDOWS" || target == "LINUX") && (!objs.lowHasProgram || objs.lowSkip.length > 0);
+            if (objs.lowHasProgram && objs.lowSkip.length > 0) { lowFallback = objs.lowSkip; }
             if (!objSkip) {
                 objErr = objs.verifyObject(filename, cache.icFnv1(inputSource));
                 if (objErr.length > 0) {
@@ -1494,15 +1497,17 @@ void main() {
         }
     }
 
-    // windows-x86-64 object-tier boundary: entries the real lowering cannot
-    // take emit no object at all (winSkip from finish, carried in
-    // winFallback) and run from the verified tiers instead — reported
+    // x86-64 object-tier boundary: entries the real lowering cannot
+    // take emit no object at all (lowSkip from finish, carried in
+    // lowFallback) and run from the verified tiers instead — reported
     // LOUDLY with the tier reason. In-tier entries already ran natively
-    // above and never reach here.
-    if (cacheObject && target == "WINDOWS" && winFallback.length > 0) {
+    // above (WINDOWS) or validated identically (LINUX) and never reach here.
+    if (cacheObject && (target == "WINDOWS" || target == "LINUX") && lowFallback.length > 0) {
         string verifiedTier = "source";
         if (bcPayload.length > 0) { verifiedTier = "bytecode"; }
-        printline("cache-object: windows target is outside the v1 x86-64 object tier (" + winFallback + "); continuing from verified " + verifiedTier + " tier");
+        string tierOs = "windows";
+        if (target == "LINUX") { tierOs = "linux"; }
+        printline("cache-object: " + tierOs + " target is outside the v1 x86-64 object tier (" + lowFallback + "); continuing from verified " + verifiedTier + " tier");
     }
 
     MemoryGuard guard = new MemoryGuard();

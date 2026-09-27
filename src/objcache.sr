@@ -67,17 +67,17 @@ import * from mac.libsystem;
 //   emitter. On WINDOWS it is the real per-file lowering (winLowerUnit
 //   below, following the silverc port's approach: one FUNC per user
 //   function, Win64 ABI shapes, cross-file references left as
-//   relocations). On LINUX it stays the entry stub (frame prologue, hash
-//   materialization, a REL32 call to the runner seam, an ABS64 data
-//   reference, epilogue); on MAC it stays the ARM64 entry stub (an
+//   relocations). On LINUX it is the same lowering under the SysV ABI
+//   (winLowerUnit with abi 1: no shadow space, RDI/RSI/RDX/RCX/R8/R9,
+//   libc.so.6 imports); on MAC it stays the ARM64 entry stub (an
 //   adrp+add pair addressing the data anchor, a BRANCH26 bl to the runner
 //   seam, hash materialization into x0, ret). Never source text, never a
 //   token stream. v4 objects (SLVOBJ2 note, including the relocation-less
 //   ARM64 stub era) fail the v5 note parse and are treated as stale
-//   (re-emitted), never as a hard error. Stub-era WINDOWS objects (v5 note
+//   (re-emitted), never as a hard error. Stub-era x86-64 objects (v5 note
 //   but a seam UNDEF in the symbol table) are likewise stale: the planner
 //   re-emits them with real lowering instead of executing them.
-// - .rdata — the owning file's real data bytes. Lowered WINDOWS units carry
+// - .rdata — the owning file's real data bytes. Lowered units carry
 //   the program's strings (printf formats, literals);
 //   stub units carry source hash, source length, emission stamp, owner key.
 //   May be empty in principle; never text.
@@ -89,10 +89,11 @@ import * from mac.libsystem;
 // functions, the data anchor, then undefined symbols): the section anchors,
 // one FUNC symbol per lowered function (main under the file's entry symbol,
 // spelled by objInterpEntrySym exactly like the references spell entries)
-// or one FUNC symbol for the file's entry stub on the stub paths, one
+// or one FUNC symbol for the file's entry stub on the MAC stub path, one
 // global data-anchor symbol (__slv_data_<file>_<hash>, offset 0 in .rdata,
 // spelled by databName exactly like the references), and UNDEF entries for
 // the referenced imports (msvcrt!printf and kernel32!ExitProcess on the
+// Windows lowered path, libc.so.6!printf and libc.so.6!exit on the Linux
 // lowered path; the __slv_interp_run seam on the stub paths).
 //
 // Relocations cover the position-dependent sites in .text: REL32 (E8 calls
@@ -146,16 +147,21 @@ import * from mac.libsystem;
 // // shows; freshness still passes (the SLVOBJ3 note is untouched), so the
 // // patch demonstrably flows through executed machine code, never the AST.
 // //
-// // EXACT BOUNDARY (loud fallback to the verified AST/bytecode tiers, never
-// // silent wrong behavior — every case below returns a reason string the
-// // driver prints):
+// // WHAT EXECUTES WHERE (exact boundary — loud fallback to the verified
+// // AST/bytecode tiers, never silent wrong behavior; every case below
+// // returns a reason string the driver prints):
 // //
-// // - Only WINDOWS/x86-64 executes (COFF objects). LINUX (ELF) and MAC
-// //   (Mach-O/ARM64) validate identically but stay on the verified tiers:
-// //   same loader math, unprobed host ceilings — the follow-up. Their
-// //   entry stubs keep validating and running exactly as before.
+// // - Only WINDOWS/x86-64 executes (COFF objects): after verifyObject
+// //   passes, runNative loads the validated entry object and EXECUTES its
+// //   .text in-process (see the loader paragraphs above).
+// // - LINUX (ELF) validates identically and its .text is the same real
+// //   program lowering (SysV ABI) — but it stays on the verified tiers:
+// //   the in-process runner is COFF/x86-64 only (same loader math,
+// //   unprobed host ceilings — the follow-up). MAC (Mach-O/ARM64) likewise
+// //   validates but stays on the verified tiers (different ISA entirely),
+// //   and its entry stub keeps validating exactly as before.
 // // - Only note-listed __slv_imp_N imports bind (msvcrt!printf and
-// //   kernel32!ExitProcess for lowered units, resolved live). Any other
+// //   kernel32!ExitProcess for Windows lowered units, resolved live). Any other
 // //   UNDEF import — including the retired __slv_interp_run seam, which
 // //   now marks stub-era objects as stale instead of binding — linker
 // //   singletons, or extern/data targets outside .text/.rdata are
@@ -678,7 +684,7 @@ class ObjReader {
 }
 
 // ---------------------------------------------------------------------------
-// The interpreter's LINUX/MAC Silver emitter (following the silverc port's
+// The interpreter's MAC Silver emitter (following the silverc port's
 // approach: one entry stub per file, machine code + data + symbols +
 // relocations assembled as bytes, no external assembler).
 //
@@ -688,41 +694,16 @@ class ObjReader {
 // (see the NATIVE RUNNER notice at the top of this file). The stub's job
 // is being a real code payload with real symbols/relocs so the object tier
 // validates byte-identically across the toolchain; its call to
-// __slv_interp_run names the retired seam (stub-era WINDOWS objects carrying
+// __slv_interp_run names the retired seam (stub-era objects carrying
 // it are stale, never executed).
-// WINDOWS entries never build here anymore: finish() lowers them with real
-// program logic (winLowerUnit above), and stub-era WINDOWS objects are
-// stale by symbol-table inspection, never executed.
+// WINDOWS and LINUX entries never build here anymore: finish() lowers them
+// with real program logic (winLowerUnit above), and stub-era x86-64 objects
+// are stale by symbol-table inspection, never executed. The ARM64 real
+// lowering is the follow-up increment: then this stub builder goes away too.
 // ---------------------------------------------------------------------------
 
-// 34 bytes of real x86-64 (Windows/Linux target):
-//
-//   push rbp; mov rbp,rsp
-//   movabs rax,<source hash>        (proves content-derivation in bytes)
-//   movabs rcx,<data anchor>        (ABS64 reloc site at 16)
-//   call __slv_interp_run           (REL32 reloc site at 25 — the seam)
-//   mov rsp,rbp; pop rbp; ret
-public int[] interpBuildX86(int64 hash) {
-    int[] code = [];
-    code.add(85);
-    code.add(72);
-    code.add(137);
-    code.add(229);
-    code.add(72);
-    code.add(184);
-    for (int i = 0; i < 8; i++) { code.add((hash >> (i * 8)) & 0xFF); }
-    code.add(72);
-    code.add(185);
-    for (int i = 0; i < 8; i++) { code.add(0); }
-    code.add(232);
-    for (int i = 0; i < 4; i++) { code.add(0); }
-    code.add(72);
-    code.add(137);
-    code.add(236);
-    code.add(93);
-    code.add(195);
-    return code;
-}
+// x86 proof stub deleted: WINDOWS and LINUX entries lower real program
+// logic now (winLowerUnit above), so no stub builder remains on this path.
 
 // Fixed-width 32-bit ARM64 instruction encoders (mirrors silverc-rs
 // src/arm64.rs and silverc/compiler/objcache.sr, which the Mach-O side
@@ -851,12 +832,14 @@ public int[] interpBuildData(string filekey, int64 hash, int srcLen, int stamp) 
     return w.out;
 }
 
-// Fill `unit` for one entry file: machine code + data + the defined entry
-// FUNC + the data anchor + the UNDEF runner seam + the position-dependent
-// relocations (REL32 + ABS64 on x86-64; PAGE21 + PAGEOFF12 + BRANCH26 on
-// ARM64 — the adrp+add pair addresses the data anchor at unit-relative
-// offset 0, the bl calls the seam). Sorted + deterministic.
-public void interpBuildUnit(string filekey, int64 hash, int srcLen, int stamp, string targetOs, ObjUnit unit) {
+// Fill `unit` for one MAC entry file: the ARM64 entry-stub machine code +
+// data + the defined entry FUNC + the data anchor + the UNDEF runner seam +
+// the position-dependent relocations (PAGE21 + PAGEOFF12 for the adrp+add
+// pair addressing the data anchor at unit-relative offset 0, BRANCH26 for
+// the bl calling the seam). Sorted + deterministic. WINDOWS/LINUX entries
+// never build here (real lowering); the ARM64 real lowering is the follow-up
+// increment, when this MAC stub builder goes away too.
+public void interpBuildUnit(string filekey, int64 hash, int srcLen, int stamp, ObjUnit unit) {
     unit.filekey = filekey;
     unit.datab = databName(filekey);
     unit.gas = 0;
@@ -864,11 +847,7 @@ public void interpBuildUnit(string filekey, int64 hash, int srcLen, int stamp, s
     unit.impNames = [];
     unit.undefSingles = [];
     unit.undefImports = [];
-    if (targetOs == "MAC") {
-        unit.code = interpBuildArm(hash);
-    } else {
-        unit.code = interpBuildX86(hash);
-    }
+    unit.code = interpBuildArm(hash);
     unit.data = interpBuildData(filekey, hash, srcLen, stamp);
     string entry = objInterpEntrySym(filekey, hash);
     unit.defNames = [];
@@ -883,47 +862,34 @@ public void interpBuildUnit(string filekey, int64 hash, int srcLen, int stamp, s
     unit.relTargets = [];
     unit.relIdx = [];
     unit.relNames = [];
-    if (targetOs == "MAC") {
-        unit.undefFuncs.add(objInterpRunSym());
-        unit.relSites.add(0);
-        unit.relKinds.add(3);
-        unit.relTargets.add(2);
-        unit.relIdx.add(0);
-        unit.relNames.add("");
-        unit.relSites.add(4);
-        unit.relKinds.add(4);
-        unit.relTargets.add(2);
-        unit.relIdx.add(0);
-        unit.relNames.add("");
-        unit.relSites.add(8);
-        unit.relKinds.add(2);
-        unit.relTargets.add(1);
-        unit.relIdx.add(-1);
-        unit.relNames.add(objInterpRunSym());
-    } else {
-        unit.undefFuncs.add(objInterpRunSym());
-        unit.relSites.add(16);
-        unit.relKinds.add(1);
-        unit.relTargets.add(2);
-        unit.relIdx.add(0);
-        unit.relNames.add("");
-        unit.relSites.add(25);
-        unit.relKinds.add(0);
-        unit.relTargets.add(1);
-        unit.relIdx.add(-1);
-        unit.relNames.add(objInterpRunSym());
-    }
+    unit.undefFuncs.add(objInterpRunSym());
+    unit.relSites.add(0);
+    unit.relKinds.add(3);
+    unit.relTargets.add(2);
+    unit.relIdx.add(0);
+    unit.relNames.add("");
+    unit.relSites.add(4);
+    unit.relKinds.add(4);
+    unit.relTargets.add(2);
+    unit.relIdx.add(0);
+    unit.relNames.add("");
+    unit.relSites.add(8);
+    unit.relKinds.add(2);
+    unit.relTargets.add(1);
+    unit.relIdx.add(-1);
+    unit.relNames.add(objInterpRunSym());
 }
 
 // ---------------------------------------------------------------------------
-// WINDOWS x86-64 REAL LOWERING (v1 object tier).
+// x86-64 REAL LOWERING (v1 object tier): WINDOWS/Win64 and LINUX/SysV.
 //
-// AST-to-machine-code backend for the interpreter's windows-x86-64 objects:
+// AST-to-machine-code backend for the interpreter's x86-64 objects:
 // per-file units whose .text carries the actual compiled program logic (one
-// FUNC per user function, Win64 ABI shapes throughout), .rdata carrying the
+// FUNC per user function, native ABI shapes throughout), .rdata carrying the
 // program's real data (printf formats, string literals),
 // and UNDEF externs for the imports the runner binds in-process
-// (msvcrt!printf, kernel32!ExitProcess) with REL32 call sites and ABS64 data
+// (msvcrt!printf, kernel32!ExitProcess on Windows; libc.so.6!printf,
+// libc.so.6!exit on Linux) with REL32 call sites and ABS64 data
 // sites. No stubs: anything outside the tier falls back LOUDLY (the reason
 // string is the whole result) and no unit is produced for it.
 //
@@ -938,8 +904,10 @@ public void interpBuildUnit(string filekey, int64 hash, int srcLen, int stamp, s
 //
 // Semantics mirror the compiler port (silverc/compiler/mini_cg + silverc-rs
 // codegen.rs): stack-machine evaluation (values in RAX, push/pop for binary
-// operators), Win64 call setup (push r13 anchor, 16-byte align, 32-byte
-// shadow space, RCX/RDX/R8/R9 + caller-pushed stack args), callee-saved rbp
+// operators), per-ABI call setup (Win64: push r13 anchor, 16-byte align,
+// 32-byte shadow space, RCX/RDX/R8/R9 + caller-pushed stack args; SysV: same
+// anchor and alignment, no shadow space, RDI/RSI/RDX/RCX/R8/R9 +
+// caller-pushed stack args), callee-saved rbp
 // frames with params spilled to slots, divide/modulo through the guarded
 // sequence (zero divisor and INT64_MIN / -1 both take the Unhandled
 // exception + exit(1) path — the overflow faults in hardware on real
@@ -949,7 +917,8 @@ public void interpBuildUnit(string filekey, int64 hash, int srcLen, int stamp, s
 // tiers and the compiled binaries).
 //
 // The emitter itself is portable byte math (no regions); only the runner's
-// import resolution below is OS-gated. ELF/Mach-O paths never call this.
+// import resolution below is OS-gated. The Mach-O path never calls this
+// (ARM64 lowering lives in its own section below).
 // ---------------------------------------------------------------------------
 
 // x86-64 code buffer with intra-function labels. Relocations are NOT patched
@@ -958,17 +927,27 @@ public void interpBuildUnit(string filekey, int64 hash, int srcLen, int stamp, s
 // while jumps between labels are patched by finish() once the function is
 // complete (function starts are unknown until concatenation, so only
 // label-relative flow patches here).
+//
+// The emitter serves BOTH x86-64 ABIs (one home for one ISA — the instruction
+// set is identical, only the calling convention differs): abi 0 is Win64
+// (32-byte shadow space, RCX/RDX/R8/R9), abi 1 is SysV (no shadow space,
+// RDI/RSI/RDX/RCX/R8/R9, 8 stack slots' slack folded into the reserve like
+// the silverc port's emitAbiCallSetup so spills never land on the pushed-R13
+// save slot). construct leaves abi 0; the unit builder sets it from the
+// session target before lowering.
 class WinEmit {
     public prop int[] code;
     public prop int[] labPos;
     public prop int[] fixPos;
     public prop int[] fixLab;
+    public prop int abi;
 
     construct {
         this.code = [];
         this.labPos = [];
         this.fixPos = [];
         this.fixLab = [];
+        this.abi = 0;
     }
 
     public void b(int v) {
@@ -1043,10 +1022,14 @@ class WinEmit {
         this.b(195);
     }
 
-    // Win64 call setup/teardown (mirrors the reference aligned-call shape):
-    // anchor rsp in r13, align to 16, reserve shadow + outgoing args.
+    // Call setup/teardown: anchor rsp in r13, align to 16, reserve the
+    // outgoing area. Win64 reserves the 32-byte shadow space plus the
+    // outgoing args (mirrors the reference aligned-call shape); SysV
+    // reserves only the outgoing args with the port's +8 slack (no shadow
+    // space — the SysV shape), so rsp is 16-aligned at the call either way.
     public void callSetup(int nargs) {
         int total = (32 + 8 * nargs + 15) / 16 * 16;
+        if (this.abi == 1) { total = (8 * nargs + 8 + 15) / 16 * 16; }
         this.b(65);
         this.b(85);
         this.b(73);
@@ -1078,11 +1061,15 @@ class WinEmit {
         return pos;
     }
 
-    // movabs r64, 0 hole; reg 0 = rax, 1 = rcx, 2 = rdx. Returns the hole.
+    // movabs r64, 0 hole; reg 0 = rax, 1 = rcx, 2 = rdx, 6 = rsi,
+    // 7 = rdi (the SysV print/trap paths address their argument registers
+    // directly). Returns the hole.
     public int absHole(int reg) {
         this.b(72);
         if (reg == 0) { this.b(184); }
         else if (reg == 1) { this.b(185); }
+        else if (reg == 6) { this.b(190); }
+        else if (reg == 7) { this.b(191); }
         else { this.b(186); }
         int pos = this.code.length;
         this.i64(0);
@@ -1106,12 +1093,84 @@ class WinEmit {
         else { this.b(186); }
         this.i64(v);
     }
+
+    // The i-th argument register for the emitter's ABI: Win64 passes the
+    // first four in RCX/RDX/R8/R9, SysV the first six in
+    // RDI/RSI/RDX/RCX/R8/R9 (asm reg numbers 7/6/2/1/8/9, mirroring the
+    // silverc port's sysvRegAt). Only called with in-range i.
+    public int argReg(int i) {
+        if (this.abi == 1) {
+            if (i == 0) { return 7; }
+            if (i == 1) { return 6; }
+            if (i == 2) { return 2; }
+            if (i == 3) { return 1; }
+            if (i == 4) { return 8; }
+            return 9;
+        }
+        if (i == 0) { return 1; }
+        if (i == 1) { return 2; }
+        if (i == 2) { return 8; }
+        return 9;
+    }
+
+    // REX prefix for a reg-reg / reg-mem op on register regc (W always set;
+    // R when the register needs it; rm is rbp/rsp so B never fires here).
+    private int rexFor(int regc) {
+        if (regc >= 8) { return 76; }
+        return 72;
+    }
+
+    // mov [rbp+disp],regc.
+    public void spillReg(int regc, int disp) {
+        this.b(this.rexFor(regc));
+        this.b(137);
+        this.b(128 + ((regc & 7) << 3) + 5);
+        this.i32(int64(disp));
+    }
+
+    // mov regc,[rbp+disp].
+    public void fillReg(int regc, int disp) {
+        this.b(this.rexFor(regc));
+        this.b(139);
+        this.b(128 + ((regc & 7) << 3) + 5);
+        this.i32(int64(disp));
+    }
+
+    // mov [rsp+disp],rax (caller spill into the outgoing area).
+    public void spillRsp(int disp) {
+        this.b(72);
+        this.b(137);
+        this.b(132);
+        this.b(36);
+        this.i32(int64(disp));
+    }
+
+    // mov regc,[rsp+disp] (caller load out of the outgoing area).
+    public void fillRspReg(int regc, int disp) {
+        this.b(this.rexFor(regc));
+        this.b(139);
+        this.b(132 + ((regc & 7) << 3));
+        this.b(36);
+        this.i32(int64(disp));
+    }
+
+    // mov regc,rax (caller register fill; also serves the print value
+    // transfer on both ABIs with byte-identical output).
+    public void movFromAx(int regc) {
+        this.b(this.rexFor(regc));
+        this.b(137);
+        this.b(192 + (regc & 7));
+    }
 }
 
 // Whole-program lowering context: deduplicated .rdata strings, function
 // signatures with parameter/return kinds, and const values. Parameter kinds
 // ride one letter per parameter (i/b/c) exactly like the tier predicate's
-// context so the two agree on every signature.
+// context so the two agree on every signature. abi mirrors the emitter's
+// (0 = Win64, 1 = SysV) and selects the import pairs the runner binds:
+// msvcrt!printf + kernel32!ExitProcess on Windows, libc.so.6!printf +
+// libc.so.6!exit on Linux (mirroring the silverc port's linuxImportLib /
+// linuxImportName remap).
 class WinCtx {
     public prop string[] strs;
     public prop int[] strOffs;
@@ -1124,6 +1183,7 @@ class WinCtx {
     public prop string[] constKinds;
     public prop bool usesPrintf;
     public prop bool usesExit;
+    public prop int abi;
 
     construct {
         this.strs = [];
@@ -1137,6 +1197,26 @@ class WinCtx {
         this.constKinds = [];
         this.usesPrintf = false;
         this.usesExit = false;
+        this.abi = 0;
+    }
+
+    public string printfDll() {
+        if (this.abi == 1) { return "libc.so.6"; }
+        return "msvcrt.dll";
+    }
+
+    public string printfName() {
+        return "printf";
+    }
+
+    public string exitDll() {
+        if (this.abi == 1) { return "libc.so.6"; }
+        return "kernel32.dll";
+    }
+
+    public string exitName() {
+        if (this.abi == 1) { return "exit"; }
+        return "ExitProcess";
     }
 
     // Offset of s in .rdata, appending (with NUL) on first sight.
@@ -1310,6 +1390,14 @@ private bool winStrNative(string s) {
 private string winLowerPrint(WinCtx ctx, WinFn fn, Node call, bool newline) {
     Node arg = call.child(0);
     Node t = arg;
+    // First two argument registers for the context ABI (RCX/RDX on Win64,
+    // RDI/RSI on SysV); the call sequence below is otherwise identical.
+    int r0 = 1;
+    int r1 = 2;
+    if (ctx.abi == 1) {
+        r0 = 7;
+        r1 = 6;
+    }
     while (t.kind == ND_PAREN && t.childCount() > 0) { t = t.child(0); }
     if (t.kind == ND_STRING_LIT) {
         string lit = t.strVal;
@@ -1320,9 +1408,9 @@ private string winLowerPrint(WinCtx ctx, WinFn fn, Node call, bool newline) {
         int strOff = ctx.addStr(lit);
         ctx.usesPrintf = true;
         fn.e.callSetup(2);
-        int hole = fn.e.absData(1, fmtOff);
+        int hole = fn.e.absData(r0, fmtOff);
         fn.rel(hole, 1, 2, fmtOff, "");
-        hole = fn.e.absData(2, strOff);
+        hole = fn.e.absData(r1, strOff);
         fn.rel(hole, 1, 2, strOff, "");
         fn.e.b(176);
         fn.e.b(0);
@@ -1340,11 +1428,9 @@ private string winLowerPrint(WinCtx ctx, WinFn fn, Node call, bool newline) {
         if (newline) { fmt = "%c\n"; }
         int fmtOff = ctx.addStr(fmt);
         fn.e.callSetup(2);
-        int hole = fn.e.absData(1, fmtOff);
+        int hole = fn.e.absData(r0, fmtOff);
         fn.rel(hole, 1, 2, fmtOff, "");
-        fn.e.b(72);
-        fn.e.b(137);
-        fn.e.b(194);
+        fn.e.movFromAx(r1);
         fn.e.b(176);
         fn.e.b(0);
         hole = fn.e.callHole();
@@ -1356,11 +1442,9 @@ private string winLowerPrint(WinCtx ctx, WinFn fn, Node call, bool newline) {
     if (newline) { fmtI = "%lld\n"; }
     int fmtIOff = ctx.addStr(fmtI);
     fn.e.callSetup(2);
-    int holeI = fn.e.absData(1, fmtIOff);
+    int holeI = fn.e.absData(r0, fmtIOff);
     fn.rel(holeI, 1, 2, fmtIOff, "");
-    fn.e.b(72);
-    fn.e.b(137);
-    fn.e.b(194);
+    fn.e.movFromAx(r1);
     fn.e.b(176);
     fn.e.b(0);
     holeI = fn.e.callHole();
@@ -1377,14 +1461,17 @@ private void winEmitTrap(WinCtx ctx, WinFn fn) {
     ctx.usesPrintf = true;
     ctx.usesExit = true;
     fn.e.callSetup(1);
-    int hole = fn.e.absData(1, ueOff);
+    int hole = fn.e.absData(fn.e.argReg(0), ueOff);
     fn.rel(hole, 1, 2, ueOff, "");
     fn.e.b(176);
     fn.e.b(0);
     hole = fn.e.callHole();
     fn.rel(hole, 0, 4, 0, "");
     fn.e.callTeardown();
-    fn.e.b(185);
+    // exit(1): the value rides the first argument register (ECX on Win64,
+    // EDI on SysV).
+    if (ctx.abi == 1) { fn.e.b(191); }
+    else { fn.e.b(185); }
     fn.e.i32(1);
     fn.e.callSetup(1);
     hole = fn.e.callHole();
@@ -1729,6 +1816,29 @@ private string winLowerCall(WinCtx ctx, WinFn fn, Node e) {
     string pks = ctx.fnPKinds[si];
     if (e.childCount() != pks.length) { return "arity mismatch calling '" + e.name + "' in '" + cur + "'"; }
     int nargs = e.childCount();
+    // SysV outgoing area: stack arguments first at [rsp+8k], then the
+    // register-argument homes above them (no shadow space). The reserve
+    // carries the +8 slack, so the homes never reach the pushed-R13 slot.
+    if (ctx.abi == 1) {
+        int nstack = 0;
+        if (nargs > 6) { nstack = nargs - 6; }
+        fn.e.callSetup(nargs);
+        for (int i = 0; i < nargs; i++) {
+            string argErr = winLowerExpr(ctx, fn, e.child(i));
+            if (argErr.length > 0) { return argErr; }
+            if (i < 6) { fn.e.spillRsp(8 * nstack + 8 * i); }
+            else { fn.e.spillRsp(8 * (i - 6)); }
+        }
+        int nreg = nargs;
+        if (nreg > 6) { nreg = 6; }
+        for (int r = 0; r < nreg; r++) {
+            fn.e.fillRspReg(fn.e.argReg(r), 8 * nstack + 8 * r);
+        }
+        int sysHole = fn.e.callHole();
+        fn.rel(sysHole, 0, 0, si, "");
+        fn.e.callTeardown();
+        return "";
+    }
     int nstack = 0;
     if (nargs > 4) { nstack = nargs - 4; }
     fn.e.callSetup(nargs);
@@ -2008,6 +2118,7 @@ private string winLowerForC(WinCtx ctx, WinFn fn, Node s) {
 private string winLowerFuncInto(WinCtx ctx, WinProg prog, Node func, int fnIdx) {
     WinFn fn = new WinFn();
     fn.fname = func.name;
+    fn.e.abi = ctx.abi;
     Node params = func.child(0);
     Node body = func.child(1);
     string pks = ctx.fnPKinds[fnIdx];
@@ -2018,6 +2129,20 @@ private string winLowerFuncInto(WinCtx ctx, WinProg prog, Node func, int fnIdx) 
     int nvars = params.childCount() + winCountLocals(body);
     int frame = (nvars * 8 + 8 + 15) / 16 * 16 - 8;
     fn.e.prologue(frame);
+    // Parameter homes: Win64 spills RCX/RDX/R8/R9 with stack arguments
+    // above the shadow space at [rbp+48+8k]; SysV spills
+    // RDI/RSI/RDX/RCX/R8/R9 with stack arguments at [rbp+16+8k] (no shadow
+    // space — the SysV shape).
+    if (ctx.abi == 1) {
+        for (int p = 0; p < params.childCount(); p++) {
+            if (p < 6) {
+                fn.e.spillReg(fn.e.argReg(p), -8 * (p + 1));
+            } else {
+                fn.e.fillReg(0, 16 + 8 * (p - 6));
+                fn.e.spillReg(0, -8 * (p + 1));
+            }
+        }
+    } else {
     if (params.childCount() > 0) {
         fn.e.b(72);
         fn.e.b(137);
@@ -2051,6 +2176,7 @@ private string winLowerFuncInto(WinCtx ctx, WinProg prog, Node func, int fnIdx) 
         fn.e.b(137);
         fn.e.b(133);
         fn.e.i32(int64(-8 * (p + 1)));
+    }
     }
     fn.epi = fn.e.lab();
     string err = winLowerBlock(ctx, fn, body);
@@ -2098,11 +2224,14 @@ private int winCountLocals(Node block) {
 // Fill `unit` with the real lowering of one in-tier entry file: one FUNC per
 // user function (main under the entry symbol), .rdata with the program's
 // strings, UNDEF imports for printf/ExitProcess when used, and REL32/ABS64
-// relocations. Returns "" or the loud fallback reason (never a stub).
-public string winLowerUnit(string filekey, int64 hash, int srcLen, int stamp, Node[] program, ObjUnit unit) {
+// relocations. abi selects the calling convention (0 = Win64 for COFF,
+// 1 = SysV for ELF — same ISA, same tier predicate, same loud boundary).
+// Returns "" or the loud fallback reason (never a stub).
+public string winLowerUnit(string filekey, int64 hash, int srcLen, int stamp, Node[] program, ObjUnit unit, int abi) {
     string reason = macTierReason(program);
     if (reason.length > 0) { return reason; }
     WinCtx ctx = new WinCtx();
+    ctx.abi = abi;
     for (int i = 0; i < program.length; i++) {
         Node item = program[i];
         if (item.kind == ND_FUNC) {
@@ -2154,14 +2283,14 @@ public string winLowerUnit(string filekey, int64 hash, int srcLen, int stamp, No
     unit.undefSingles = [];
     unit.undefImports = [];
     if (ctx.usesPrintf) {
-        unit.impDlls.add("msvcrt.dll");
-        unit.impNames.add("printf");
+        unit.impDlls.add(ctx.printfDll());
+        unit.impNames.add(ctx.printfName());
         unit.undefImports.add(0);
     }
     if (ctx.usesExit) {
         unit.undefImports.add(unit.impDlls.length);
-        unit.impDlls.add("kernel32.dll");
-        unit.impNames.add("ExitProcess");
+        unit.impDlls.add(ctx.exitDll());
+        unit.impNames.add(ctx.exitName());
     }
     ObjWriter dw = new ObjWriter();
     for (int s = 0; s < ctx.strs.length; s++) {
@@ -4595,13 +4724,13 @@ class ObjSession {
     public prop int[] notedH;
     public prop int[] notedStamps;
     public prop int[] notedTiers;
-    // WINDOWS real lowering: the driver's parsed entry program (set via
-    // setWinProgram before finish), and the loud skip reason ("": emit and
+    // Real lowering input: the driver's parsed entry program (set via
+    // setLowProgram before finish), and the loud skip reason ("": emit and
     // run normally). Out-of-tier entries emit nothing — never a stub — and
     // the driver continues from the verified tiers with this reason.
-    public prop Node[] winProgram;
-    public prop bool winHasProgram;
-    public prop string winSkip;
+    public prop Node[] lowProgram;
+    public prop bool lowHasProgram;
+    public prop string lowSkip;
 
     // Open (or prepare) the object cache for `projName` rooted at `rootDir`,
     // targeting the auto-detected host (`hostOsName`, interpHostOs). When
@@ -4638,9 +4767,9 @@ class ObjSession {
         this.notedH = [];
         this.notedStamps = [];
         this.notedTiers = [];
-        this.winProgram = [];
-        this.winHasProgram = false;
-        this.winSkip = "";
+        this.lowProgram = [];
+        this.lowHasProgram = false;
+        this.lowSkip = "";
         this.lastNativeUs = -1;
         string guarded = icSanitize(projName);
         string sub = objTargetDirName(hostOsName);
@@ -4703,12 +4832,12 @@ class ObjSession {
         this.notedTiers.add(tier);
     }
 
-    // Hand the driver's parsed entry program to the WINDOWS lowering path
-    // (called before finish; without it the windows path skips silently and
+    // Hand the driver's parsed entry program to the real-lowering path
+    // (called before finish; without it the x86-64 path skips silently and
     // the driver surfaces the parse diagnostics itself).
-    public void setWinProgram(Node[] program) {
-        this.winProgram = program;
-        this.winHasProgram = true;
+    public void setLowProgram(Node[] program) {
+        this.lowProgram = program;
+        this.lowHasProgram = true;
     }
 
     // Absolute path of the .o for a record key (mirrors the project tree,
@@ -4753,16 +4882,17 @@ class ObjSession {
         if (!objPeekNote(r, this.targetOs, note)) { return false; }
         if (note.flags != this.flags) { return false; }
         if (note.hash != int64(this.notedH[n])) { return false; }
-        if (this.targetOs == "WINDOWS" && this.winStubEra(raw)) { return false; }
+        if (this.targetOs != "MAC" && this.stubEra(raw)) { return false; }
         return true;
     }
 
-    // True when a WINDOWS .o is stub-era (its symbol table still references
+    // True when an x86-64 .o is stub-era (its symbol table still references
     // the retired proof-stub seam): structurally valid but carrying no
     // program logic, so the planner treats it as stale and the entry
-    // re-emits with real lowering. LINUX/MAC objects keep their current
-    // freshness rules untouched.
-    private bool winStubEra(byte[] raw) {
+    // re-emits with real lowering. MAC objects still emit the entry stub
+    // this increment, so the caller exempts that target; the ARM64
+    // follow-up generalizes this to every target.
+    private bool stubEra(byte[] raw) {
         ObjReader r = new ObjReader(raw);
         ParsedObj obj = new ParsedObj();
         if (objParseObject(r, this.targetOs, obj).length > 0) { return true; }
@@ -4781,20 +4911,24 @@ class ObjSession {
         this.sortNoted();
         for (int n = 0; n < this.notedKeys.length; n++) {
             if (!this.isFresh(n)) {
-                if (this.targetOs == "WINDOWS") {
+                if (this.targetOs == "WINDOWS" || this.targetOs == "LINUX") {
                     // Real program lowering (never a stub): without a parsed
                     // program the driver surfaces parse diagnostics itself,
                     // so skip silently; out-of-tier entries record the loud
                     // reason and emit nothing.
-                    if (!this.winHasProgram) { continue; }
+                    if (!this.lowHasProgram) { continue; }
+                    // Calling convention for the session target: Win64 on
+                    // WINDOWS, SysV on LINUX (same ISA, same tier predicate).
+                    int abi = 0;
+                    if (this.targetOs == "LINUX") { abi = 1; }
                     ObjUnit unit = new ObjUnit();
-                    string lerr = winLowerUnit(this.notedKeys[n], int64(this.notedH[n]), this.notedM[n], this.notedStamps[n], this.winProgram, unit);
+                    string lerr = winLowerUnit(this.notedKeys[n], int64(this.notedH[n]), this.notedM[n], this.notedStamps[n], this.lowProgram, unit, abi);
                     if (lerr.length > 0) {
-                        this.winSkip = lerr;
+                        this.lowSkip = lerr;
                         continue;
                     }
                     if (objTooManyRelocs(unit)) {
-                        return "object cache: too many relocations in '" + this.notedKeys[n] + "' for one COFF section (v1 boundary)";
+                        return "object cache: too many relocations in '" + this.notedKeys[n] + "' for one object file (v1 boundary)";
                     }
                     string objPath = this.objectPath(this.notedKeys[n]);
                     if (objPath.length == 0) {
@@ -4821,9 +4955,9 @@ class ObjSession {
                     continue;
                 }
                 ObjUnit unit = new ObjUnit();
-                interpBuildUnit(this.notedKeys[n], int64(this.notedH[n]), this.notedM[n], this.notedStamps[n], this.targetOs, unit);
+                interpBuildUnit(this.notedKeys[n], int64(this.notedH[n]), this.notedM[n], this.notedStamps[n], unit);
                 if (objTooManyRelocs(unit)) {
-                    return "object cache: too many relocations in '" + this.notedKeys[n] + "' for one COFF section (v1 boundary)";
+                    return "object cache: too many relocations in '" + this.notedKeys[n] + "' for one object file (v1 boundary)";
                 }
                 string objPath = this.objectPath(this.notedKeys[n]);
                 if (objPath.length == 0) {
@@ -4897,10 +5031,10 @@ class ObjSession {
         // and fully valid (container magic, target machine, sections,
         // symbols, relocations, flag set, source hash, globals-block
         // agreement) before the driver executes from the verified tokens.
-        // WINDOWS entries skipped above (no program, or out-of-tier with no
-        // stub emitted) are not unified: there is nothing to validate.
+        // Entries skipped above (no program, or out-of-tier with no
+        // object emitted) are not unified: there is nothing to validate.
         for (int u = 0; u < this.notedKeys.length; u++) {
-            if (this.targetOs == "WINDOWS" && (!this.winHasProgram || this.winSkip.length > 0)) { continue; }
+            if (this.targetOs != "MAC" && (!this.lowHasProgram || this.lowSkip.length > 0)) { continue; }
             string upath = this.objectPath(this.notedKeys[u]);
             if (!file.exists(upath)) {
                 return "object cache: cannot read " + upath + ": file not found";
@@ -4960,7 +5094,7 @@ class ObjSession {
         if (obj.hash != expectHash) {
             return "object cache: stale object (source hash changed) — re-emit required";
         }
-        if (this.targetOs == "WINDOWS") {
+        if (this.targetOs != "MAC") {
             for (int s = 0; s < obj.symNames.length; s++) {
                 if (obj.symSects[s] == 0 && obj.symNames[s] == objInterpRunSym()) {
                     return "object cache: stale object (source hash changed) — re-emit required";
