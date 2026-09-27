@@ -1,6 +1,7 @@
 mod export cache;
 
 import resource;
+import pipeline;
 import * from string;
 
 // Raw OS enablers for the cache writers and stamps (kernel32 handles/writes,
@@ -525,10 +526,15 @@ class CacheSession {
     }
 
     private Token[] icLexSet(string source) {
-        Lexer lx = new Lexer(source);
-        Token[] toks = lx.tokenize();
-        this.lexErrors = lx.errorCount();
-        this.lexMessages = lx.messages();
+        // The unified line's single lex entry (pipeline.sr): the tier
+        // computes fresh lexes through it instead of owning a second Lexer
+        // site. Counts match errorCount by construction (one buffered body
+        // per recorded error).
+        string[] errs = [];
+        int[] lens = [];
+        Token[] toks = pipeLexUnit(source, errs, lens);
+        this.lexErrors = errs.length;
+        this.lexMessages = errs;
         return toks;
     }
 

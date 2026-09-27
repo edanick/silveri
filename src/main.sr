@@ -13,6 +13,7 @@ import project;
 import guard;
 import cache;
 import objcache;
+import pipeline;
 
 // Nested module resolution (flat-first), mirroring silverc-rs
 // push_module_candidates (c7744ac) and the self-host drvDottedPath port:
@@ -682,6 +683,16 @@ void printGroupedDiagnostics(string[] msgs, string entryName) {
     }
 }
 
+// A `[pipe]`-style per-unit kind log line (pipeline.sr shape, mirrors the
+// compilers' `[pipe] <origin> <kind>` strings exactly). Gated on --diag so
+// quiet runs stay byte-identical to the uncached tiers; each unit logs
+// exactly once.
+void pipeLogUnit(string origin, int64 hash, int kind, bool diag) {
+    if (!diag) { return; }
+    PipeUnit u = new PipeUnit(origin, hash, kind);
+    printline(pipeDescribeUnit(u));
+}
+
 // A file-attributable native/import diagnostic: single `[input-as-given]`
 // header with the unchanged body, then abort (these sites always exited
 // right after printing).
@@ -1123,10 +1134,13 @@ string resolveImports(string source, string inputFile, int[] prependLen, string 
     }
     string prepend = prependPieces.join("");
     string plainPrepend = plainPieces.join("");
-    string combined = prepend;
-    if (plainPrepend.length > 0) {
-        combined += plainPrepend + "\n";
-    }
+    // Ordered join of the unified line: each unit mapped into its OWN
+    // separate buffer above, joined back in canonical order here (deps
+    // first, entry last — byte-identical to the direct concatenation).
+    string[] pipeBuffers = [];
+    if (prepend.length > 0) { pipeBuffers.add(prepend); }
+    if (plainPrepend.length > 0) { pipeBuffers.add(plainPrepend + "\n"); }
+    string combined = pipeJoinBuffers(pipeBuffers);
     if (combined.length > 0) {
         prependLen[0] = combined.length;
         return combined + source;
@@ -1333,17 +1347,14 @@ void main() {
         }
         lineLens.add(current);
     } else {
-        Lexer lexer = new Lexer(inputSource);
-        tokens = lexer.tokenize();
-        if (lexer.errorCount() > 0) {
-            printGroupedDiagnostics(lexer.messages(), filename);
+        // No-cache builds use the SAME line: a plain fresh lex through the
+        // single lex entry (never a separate path per file count).
+        string[] lexErrs = [];
+        tokens = pipeLexUnit(inputSource, lexErrs, lineLens);
+        if (lexErrs.length > 0) {
+            printGroupedDiagnostics(lexErrs, filename);
             exit(1);
         }
-        lineLens = lexer.lineLengths();
-        // Driver lexer is never read again; drop its source/line-table refs
-        // (tokenize/lineLengths/messages hand out refs the driver keeps, and
-        // release only reassigns the lexer's own fields, so those stay live).
-        lexer.release();
     }
 
     // OVERHAUL.md --cache-object: the object-cached path for the
@@ -1377,12 +1388,11 @@ void main() {
         if (objs.ok) {
             objs.noteFile(filename, inputSource, bcPayload.length > 0);
             if (target == "WINDOWS" || target == "LINUX" || target == "MAC") {
-                Parser lowParser = new Parser(tokens);
-                lowParser.setLineLengths(lineLens);
-                lowParser.setCustomTarget(target);
-                Node[] lowProgram = lowParser.parseProgram();
-                if (lowParser.errorCount() == 0) { objs.setLowProgram(lowProgram); }
-                lowParser.release();
+                // Lowering probe parses through the single parse entry (no
+                // call walk: probe input only, exactly as before).
+                PipeParseOut lowOut = new PipeParseOut();
+                pipeParseUnit(tokens, lineLens, true, target, false, lowOut);
+                if (lowOut.errors.length == 0) { objs.setLowProgram(lowOut.program); }
             }
             string objErr = objs.finish();
             if (objErr.length > 0) {
@@ -1403,6 +1413,9 @@ void main() {
                 if (runNote.length > 0) {
                     printline(runNote + " — continuing from verified " + objTier + " tier");
                 } else {
+                    // Runner path: the unit entered as a cached `.o` — its
+                    // single kind logs exactly once before the process exits.
+                    pipeLogUnit(filename, cache.icFnv1(inputSource), pipeKindCachedObject, diagCrumbs);
                     if (diagCrumbs) {
                         printline("[objcache] native object execution: genuine " + objTargetDirName(target) + " entry ran in-process (real program results, imports bound via thunks, " + (string)objs.lastNativeUs + " us)");
                     }
@@ -1412,12 +1425,27 @@ void main() {
         }
     }
 
-    Parser p = new Parser(tokens);
-    p.setLineLengths(lineLens);
-    p.setCustomTarget(target);
-    Node[] program = p.parseProgram();
-    if (p.errorCount() > 0) {
-        printGroupedDiagnostics(p.messages(), filename);
+    // Unified line unit record: the aggregate enters evaluation as exactly
+    // ONE kind — the runner path above exited, so this is the frontend tier
+    // (synced `.srbc` on a bytecode-tier hit, `.sr` source otherwise), never
+    // two kinds. Canonical order is entry-first and tier-independent (one
+    // mapping order for every tier mix); the evaluation text keeps
+    // dependency order (deps first, entry last) byte-identical. Each unit
+    // logs exactly once, under --diag only.
+    int pipeKind = pipeClassifyUnit(false, bcPayload.length > 0);
+    string[] pipeUnits = pipeCanonicalOrder(filename, []);
+    for (int pi = 0; pi < pipeUnits.length; pi++) {
+        pipeLogUnit(pipeUnits[pi], cache.icFnv1(inputSource), pipeKind, diagCrumbs);
+    }
+
+    // Every token stream parses through the single parse entry (the
+    // post-parse call walk runs inside it on a clean parse, preserving the
+    // historical two-step exit shape).
+    PipeParseOut pout = new PipeParseOut();
+    pipeParseUnit(tokens, lineLens, true, target, true, pout);
+    Node[] program = pout.program;
+    if (pout.errors.length > 0) {
+        printGroupedDiagnostics(pout.errors, filename);
         exit(1);
     }
 
@@ -1440,46 +1468,43 @@ void main() {
     }
     evaluator.setSourceArgs(userCargs);
     string preludeSrc = source();
-    Lexer preludeLexer = new Lexer(preludeSrc);
-    Token[] preludeTokens = preludeLexer.tokenize();
+    string[] preludeLexErrs = [];
+    int[] preludeLens = [];
+    Token[] preludeTokens = pipeLexUnit(preludeSrc, preludeLexErrs, preludeLens);
     // Prelude lex diagnostics print grouped under the entry header;
     // control flow is unchanged (historically non-fatal here).
-    if (preludeLexer.errorCount() > 0) {
-        printGroupedDiagnostics(preludeLexer.messages(), filename);
+    if (preludeLexErrs.length > 0) {
+        printGroupedDiagnostics(preludeLexErrs, filename);
     }
-    Parser preludeParser = new Parser(preludeTokens);
-    preludeParser.setLineLengths(preludeLexer.lineLengths());
-    Node[] llmaiPrelude = preludeParser.parseProgram();
-    if (preludeParser.errorCount() > 0) {
-        printGroupedDiagnostics(preludeParser.messages(), filename);
+    PipeParseOut preludeOut = new PipeParseOut();
+    pipeParseUnit(preludeTokens, preludeLens, true, target, false, preludeOut);
+    if (preludeOut.errors.length > 0) {
+        printGroupedDiagnostics(preludeOut.errors, filename);
         exit(1);
     }
+    Node[] llmaiPrelude = preludeOut.program;
     evaluator.register(llmaiPrelude);
 
     string excSrc = exceptionSource();
-    Lexer excLexer = new Lexer(excSrc);
-    Token[] excTokens = excLexer.tokenize();
+    string[] excLexErrs = [];
+    int[] excLens = [];
+    Token[] excTokens = pipeLexUnit(excSrc, excLexErrs, excLens);
     // Exception-prelude lex diagnostics: same grouped, non-fatal treatment.
-    if (excLexer.errorCount() > 0) {
-        printGroupedDiagnostics(excLexer.messages(), filename);
+    if (excLexErrs.length > 0) {
+        printGroupedDiagnostics(excLexErrs, filename);
     }
-    Parser excParser = new Parser(excTokens);
-    excParser.setLineLengths(excLexer.lineLengths());
-    Node[] excPrelude = excParser.parseProgram();
-    if (excParser.errorCount() > 0) {
-        printGroupedDiagnostics(excParser.messages(), filename);
+    PipeParseOut excOut = new PipeParseOut();
+    pipeParseUnit(excTokens, excLens, true, target, false, excOut);
+    if (excOut.errors.length > 0) {
+        printGroupedDiagnostics(excOut.errors, filename);
         exit(1);
     }
+    Node[] excPrelude = excOut.program;
     evaluator.register(excPrelude);
 
     // Post-parse call diagnostics (SYNTAX_EXCEPTIONS.md unknown method,
-    // VALUE_EXCEPTION.md filesystem path literals) run on the user program
-    // once the whole symbol table is visible.
-    p.checkCallDiagnostics(program);
-    if (p.errorCount() > 0) {
-        printGroupedDiagnostics(p.messages(), filename);
-        exit(1);
-    }
+    // VALUE_EXCEPTION.md filesystem path literals) already ran inside the
+    // single parse entry above, over the same parser state.
 
     // Object-tier boundary: entries the real lowering cannot take emit no
     // object at all (lowSkip from finish, carried in lowFallback) and run
@@ -1499,16 +1524,13 @@ void main() {
     MemoryGuard guard = new MemoryGuard();
     guard.checkProgram(program);
 
-    // Startup retention: release every parse artifact before execution.
-    // All diagnostics above already consumed messages(); register() copied
-    // what the evaluator needs and AST nodes carry their own line/col, so
-    // nothing below reads these again. (The llmai prelude is still parsed
-    // unconditionally -- skipping it is deferred; only its artifacts drop.)
-    p.release();
-    preludeLexer.release();
-    preludeParser.release();
-    excLexer.release();
-    excParser.release();
+    // Startup retention: drop every parse artifact before execution. All
+    // diagnostics above already consumed messages(); register() copied what
+    // the evaluator needs and AST nodes carry their own line/col, so nothing
+    // below reads these again. (The entries release their lexers/parsers
+    // internally; only the driver's locals drop here. The llmai prelude is
+    // still parsed unconditionally -- skipping it is deferred; only its
+    // artifacts drop.)
     preludeSrc = "";
     preludeTokens = [];
     llmaiPrelude = [];
@@ -1516,5 +1538,8 @@ void main() {
     excTokens = [];
     excPrelude = [];
 
-    evaluator.run(program);
+    // ONE evaluation line: the verified program evaluates through the
+    // single evaluation entry (the object-tier runner above is the backend
+    // variant of this same stage, never a second line).
+    pipeRunProgram(evaluator, program);
 }
