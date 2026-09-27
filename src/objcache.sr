@@ -741,6 +741,33 @@ private int a64Movk(int rd, int imm16, int hw) {
     return int(0xF2800000 | ((hw & 3) << 21) | ((imm16 & 0xFFFF) << 5) | (rd & 31));
 }
 
+// sdiv Xd, Xn, Xm: signed 64-bit divide (truncating, like x64 idiv).
+// Division by zero yields zero (no trap) and INT64_MIN / -1 yields
+// INT64_MIN (no overflow signal): callers guard both cases explicitly so
+// cached programs observe x64-identical behavior. Mirrors silverc-rs
+// src/arm64.rs enc_sdiv and silverc/compiler/objcache.sr a64Sdiv
+// bit-for-bit; the interpreter's ARM64 stub above needs no divide, but the
+// encoder set stays complete so cross-toolchain .text words decode to
+// identical shapes.
+private int a64Sdiv(int rd, int rn, int rm) {
+    return int(0x9AC00C00 | ((rm & 31) << 16) | ((rn & 31) << 5) | (rd & 31));
+}
+
+// msub Xd, Xn, Xm, Xa: Xd = Xa - Xn*Xm (64-bit, for % as a - (a/b)*b).
+// Mirrors silverc-rs src/arm64.rs enc_msub and
+// silverc/compiler/objcache.sr a64Msub bit-for-bit.
+private int a64Msub(int rd, int rn, int rm, int ra) {
+    return int(0x9B008000 | ((rm & 31) << 16) | ((ra & 31) << 10) | ((rn & 31) << 5) | (rd & 31));
+}
+
+// brk #imm16: breakpoint trap (for the INT64_MIN / -1 overflow case,
+// mirroring the x64 backend's loud hardware fault instead of sdiv's wrap).
+// Mirrors silverc-rs src/arm64.rs enc_brk and
+// silverc/compiler/objcache.sr a64Brk bit-for-bit.
+private int a64Brk(int imm16) {
+    return int(0xD4200000 | ((imm16 & 0xFFFF) << 5));
+}
+
 // ret Xn: return (default X30).
 private int a64Ret(int rn) {
     return int(0xD65F0000 | ((rn & 31) << 5));
@@ -2198,16 +2225,20 @@ public string objParseObject(ObjReader r, string targetOs, ParsedObj obj) {
 // - No user function is named print, printline, printf, or exit (those
 //   names are the tier's builtins/imports).
 // - Statements: local int/bool/char declarations with an initializer,
-//   plain/compound (+=, -=, *=, and the << move form) assignment to locals,
-//   if/else, while, break/continue inside while, return, calls, and
-//   print/printline with exactly one argument. No for/foreach,
-//   match/switch, exceptions, or destructuring. (This AST desugars ++/--
-//   into +=/-= 1, so they ride the assignment arm with identical strings.)
+//   plain/compound (+=, -=, *=, /=, %=) assignment to locals, if/else,
+//   while, C-like for (range-for desugared onto it below, so both spellings
+//   take the same verdicts), break/continue inside loops, return, calls, and
+//   print/printline with exactly one argument. No foreach, match/switch,
+//   exceptions, or destructuring. (This AST desugars ++/-- into +=/-= 1, so
+//   they ride the assignment arm with identical strings; the << move form
+//   rides it too.)
 // - Expressions: integer/bool/char literals, const reads, local and
-//   parameter reads, +/-/* (no division or modulo), unary -, !,
-//   comparisons, short-circuit &&/||, parentheses, calls to program-defined
-//   functions with exact arity, and string literals ONLY as the direct
-//   argument of print/printline.
+//   parameter reads, +, -, *, /, % (division and modulo lower exactly like
+//   the x64 backend: a zero divisor takes the same uncaught-exception path
+//   and INT64_MIN / -1 traps with brk, mirroring idiv's loud hardware
+//   fault), unary -, !, comparisons, short-circuit &&/||, parentheses, calls to
+//   program-defined functions with exact arity, and string literals ONLY as
+//   the direct argument of print/printline.
 // - Total frame (parameters + locals + operand slots) fits in 500 8-byte
 //   slots.
 //
@@ -2290,6 +2321,11 @@ class MacWalk {
     public prop int nextSlot;
     public prop int maxDepth;
     public prop int loopDepth;
+    // Live names a for-loop body must not redeclare: a body declaration
+    // shadowing an outer (or loop-init) name would resolve uses to the
+    // wrong slot, while the x64 backend scopes them apart — so collisions
+    // fall back rather than diverge (mirrors the reference body_guard).
+    public prop string[] guardNames;
 
     construct (MacCtx c) {
         this.ctx = c;
@@ -2300,6 +2336,7 @@ class MacWalk {
         this.nextSlot = 0;
         this.maxDepth = 0;
         this.loopDepth = 0;
+        this.guardNames = [];
     }
 }
 
@@ -2506,6 +2543,47 @@ private string macWalkBlock(MacWalk w, Node block, int base) {
     return macWalkStmt(w, block, base);
 }
 
+// Check one local declaration and allocate its slot. Shared by the plain
+// statement path and the C-like for initializer, so they can never disagree
+// about the boundary. A declaration inside a for body that shadows a live
+// name (or collides with a const) falls back rather than diverging, exactly
+// like the reference body_guard.
+private string macWalkLocalDecl(MacWalk w, Node s, int base) {
+    if (s.childCount() == 0) {
+        return "uninitialized local '" + s.name + "' in '" + w.fname + "'";
+    }
+    MacVal v = new MacVal();
+    string err = macWalkExpr(w, s.child(0), false, base, v);
+    if (err.length > 0) { return err; }
+    if (v.kind == 3) {
+        return "string values in '" + w.fname + "'";
+    }
+    string vk = "";
+    if (v.kind == 0) { vk = "i"; }
+    else if (v.kind == 1) { vk = "b"; }
+    else { vk = "c"; }
+    if (s.typeHint != "" && s.typeHint != "var") {
+        vk = macScalarOf(s.typeHint);
+        if (vk.length == 0) {
+            return "local '" + s.name + "' has non-tier type in '" + w.fname + "'";
+        }
+    }
+    if (w.guardNames.contains(s.name)) {
+        return "shadowed variable '" + s.name + "' in '" + w.fname + "'";
+    }
+    if (w.guardNames.length > 0 && macFindConst(w.ctx, s.name) >= 0) {
+        return "loop variable '" + s.name + "' collides with a const in '" + w.fname + "'";
+    }
+    if (w.nextSlot >= 500) {
+        return "frame too large in '" + w.fname + "'";
+    }
+    w.varNames.add(s.name);
+    w.varKinds.add(vk);
+    w.nextSlot++;
+    w.maxDepth = macMax(w.maxDepth, base + v.depth);
+    return "";
+}
+
 private string macWalkStmt(MacWalk w, Node s, int base) {
     if (s.kind == ND_EXPR_STMT) {
         if (s.childCount() == 0) { return ""; }
@@ -2516,33 +2594,7 @@ private string macWalkStmt(MacWalk w, Node s, int base) {
         return "";
     }
     if (s.kind == ND_VAR_DECL) {
-        if (s.childCount() == 0) {
-            return "uninitialized local '" + s.name + "' in '" + w.fname + "'";
-        }
-        MacVal v = new MacVal();
-        string err = macWalkExpr(w, s.child(0), false, base, v);
-        if (err.length > 0) { return err; }
-        if (v.kind == 3) {
-            return "string values in '" + w.fname + "'";
-        }
-        string vk = "";
-        if (v.kind == 0) { vk = "i"; }
-        else if (v.kind == 1) { vk = "b"; }
-        else { vk = "c"; }
-        if (s.typeHint != "" && s.typeHint != "var") {
-            vk = macScalarOf(s.typeHint);
-            if (vk.length == 0) {
-                return "local '" + s.name + "' has non-tier type in '" + w.fname + "'";
-            }
-        }
-        if (w.nextSlot >= 500) {
-            return "frame too large in '" + w.fname + "'";
-        }
-        w.varNames.add(s.name);
-        w.varKinds.add(vk);
-        w.nextSlot++;
-        w.maxDepth = macMax(w.maxDepth, base + v.depth);
-        return "";
+        return macWalkLocalDecl(w, s, base);
     }
     if (s.kind == ND_RETURN) {
         if (s.childCount() == 0) {
@@ -2607,10 +2659,103 @@ private string macWalkStmt(MacWalk w, Node s, int base) {
         }
         return "";
     }
-    // Port kind 55 is the C for loop; this AST splits range-for (56) out —
-    // same string for both.
-    if (s.kind == ND_FOR_C || s.kind == ND_FOR_RANGE) {
-        return "for loops in '" + w.fname + "'";
+    // Range-for (this AST keeps it as its own node 56; the reference
+    // parser desugars it onto the C-for node): desugar onto the same C-for
+    // shape here — init `type var = start`, cond `var < end` (exclusive),
+    // update `var = var + 1` — and fall into the C-for check below, so both
+    // spellings take program-for-program identical verdicts. continue runs
+    // the update, break leaves.
+    if (s.kind == ND_FOR_RANGE) {
+        if (s.childCount() < 3) {
+            return "unsupported statement in '" + w.fname + "'";
+        }
+        Node initN = new Node(ND_VAR_DECL, s.line, s.col);
+        initN.name = s.name;
+        initN.typeHint = s.typeHint;
+        initN.addChild(s.child(0));
+        Node lhsN = new Node(ND_IDENT, s.line, s.col);
+        lhsN.name = s.name;
+        Node condN = new Node(ND_BINARY, s.line, s.col);
+        condN.op = OP_LT;
+        condN.addChild(lhsN);
+        condN.addChild(s.child(1));
+        Node uLhsN = new Node(ND_IDENT, s.line, s.col);
+        uLhsN.name = s.name;
+        Node aLhsN = new Node(ND_IDENT, s.line, s.col);
+        aLhsN.name = s.name;
+        Node oneN = new Node(ND_INT_LIT, s.line, s.col);
+        oneN.intVal = 1;
+        Node addN = new Node(ND_BINARY, s.line, s.col);
+        addN.op = OP_ADD;
+        addN.addChild(aLhsN);
+        addN.addChild(oneN);
+        Node updN = new Node(ND_BINARY, s.line, s.col);
+        updN.op = OP_ASSIGN;
+        updN.addChild(uLhsN);
+        updN.addChild(addN);
+        Node forN = new Node(ND_FOR_C, s.line, s.col);
+        forN.addChild(initN);
+        forN.addChild(condN);
+        forN.addChild(updN);
+        forN.addChild(s.child(2));
+        s = forN;
+    }
+    // Port kind 55 is the C for loop (range-for arrives desugared above).
+    if (s.kind == ND_FOR_C) {
+        // C-like for (child(0)=init, child(1)=cond, child(2)=update,
+        // child(3)=body): exact desugar onto while — init once, then
+        // cond-check / body / update; continue runs the update, break
+        // leaves.
+        if (s.childCount() < 4) {
+            return "unsupported statement in '" + w.fname + "'";
+        }
+        Node init = s.child(0);
+        if (init.kind == ND_VAR_DECL) {
+            if (init.childCount() == 0) {
+                return "uninitialized local '" + init.name + "' in '" + w.fname + "'";
+            }
+            if (macFindConst(w.ctx, init.name) >= 0) {
+                return "loop variable '" + init.name + "' collides with a const in '" + w.fname + "'";
+            }
+            if (macFindVar(w, init.name) >= 0) {
+                return "shadowed variable '" + init.name + "' in '" + w.fname + "'";
+            }
+            string derr = macWalkLocalDecl(w, init, base);
+            if (derr.length > 0) { return derr; }
+        } else if (init.kind == ND_EXPR_STMT) {
+            if (init.childCount() > 0) {
+                MacVal iv = new MacVal();
+                string ierr = macWalkExpr(w, init.child(0), true, base, iv);
+                if (ierr.length > 0) { return ierr; }
+                w.maxDepth = macMax(w.maxDepth, base + iv.depth);
+            }
+        } else if (init.kind == ND_BINARY) {
+            MacVal iv = new MacVal();
+            string ierr = macWalkExpr(w, init, true, base, iv);
+            if (ierr.length > 0) { return ierr; }
+            w.maxDepth = macMax(w.maxDepth, base + iv.depth);
+        } else {
+            return "unsupported for initializer in '" + w.fname + "'";
+        }
+        MacVal cv = new MacVal();
+        string cerr = macWalkExpr(w, s.child(1), false, base, cv);
+        if (cerr.length > 0) { return cerr; }
+        if (cv.kind == 3) {
+            return "string values in '" + w.fname + "'";
+        }
+        w.maxDepth = macMax(w.maxDepth, base + cv.depth);
+        MacVal uv = new MacVal();
+        string uerr = macWalkExpr(w, s.child(2), true, base, uv);
+        if (uerr.length > 0) { return uerr; }
+        w.maxDepth = macMax(w.maxDepth, base + uv.depth);
+        int guardBase = w.guardNames.length;
+        for (int gi = 0; gi < w.varNames.length; gi++) { w.guardNames.add(w.varNames[gi]); }
+        w.loopDepth++;
+        string berr = macWalkBlock(w, s.child(3), base);
+        w.loopDepth--;
+        while (w.guardNames.length > guardBase) { w.guardNames.pop(); }
+        if (berr.length > 0) { return berr; }
+        return "";
     }
     // Port kind 64 is foreach; here it is 57 — same string.
     if (s.kind == ND_FOREACH) {
@@ -2794,13 +2939,28 @@ private string macWalkBinary(MacWalk w, Node e, bool inStmt, int base, MacVal ou
         out.depth = macMax(l.depth, 1 + r.depth);
         return "";
     }
-    // Port op 4 is division; here it is 3 — same string.
-    if (op == OP_DIV) {
-        return "division in '" + w.fname + "'";
-    }
-    // Port op 13 is modulo; here it is 4 — same string.
-    if (op == OP_MOD) {
-        return "modulo in '" + w.fname + "'";
+    // Port ops 4/13 are division/modulo; here they are 3/4 — same
+    // boundary: both lower through the guarded sequence, which prints
+    // through printf on a zero divisor — so the import must exist even in
+    // programs that never call print (mirrors the reference depth math
+    // exactly).
+    if (op == OP_DIV || op == OP_MOD) {
+        if (e.childCount() < 2) {
+            return "unsupported expression in '" + w.fname + "'";
+        }
+        MacVal l = new MacVal();
+        MacVal r = new MacVal();
+        string err = macWalkExpr(w, e.child(0), false, base, l);
+        if (err.length > 0) { return err; }
+        err = macWalkExpr(w, e.child(1), false, base + 1, r);
+        if (err.length > 0) { return err; }
+        if (l.kind == 3 || r.kind == 3) {
+            return "string values in '" + w.fname + "'";
+        }
+        w.ctx.usesPrintf = true;
+        out.kind = 0;
+        out.depth = macMax(l.depth, 1 + r.depth);
+        return "";
     }
     if (op == OP_EQ || op == OP_NEQ || op == OP_LT || op == OP_LEQ || op == OP_GT || op == OP_GEQ) {
         if (e.childCount() < 2) {
@@ -2836,9 +2996,11 @@ private string macWalkBinary(MacWalk w, Node e, bool inStmt, int base, MacVal ou
         out.depth = macMax(l.depth, r.depth);
         return "";
     }
-    // Port ops 20/14/15/16/28 are the assign family (plain, +=, -=, *=,
-    // and the << move form); here they are 13/14/15/16/21 — same strings.
-    if (op == OP_ASSIGN || op == OP_ADD_ASSIGN || op == OP_SUB_ASSIGN || op == OP_MUL_ASSIGN || op == OP_MOVE) {
+    // Port ops 20/14/15/16/28/17/29 are the assign family (plain, +=, -=,
+    // *=, the << move form, /=, %=); here they are 13/14/15/16/21/17/27 —
+    // same strings. Compound division lowers through the guarded sequence,
+    // which prints on a zero divisor.
+    if (op == OP_ASSIGN || op == OP_ADD_ASSIGN || op == OP_SUB_ASSIGN || op == OP_MUL_ASSIGN || op == OP_MOVE || op == OP_DIV_ASSIGN || op == OP_MOD_ASSIGN) {
         if (e.childCount() < 2) {
             return "unsupported expression in '" + w.fname + "'";
         }
@@ -2855,17 +3017,12 @@ private string macWalkBinary(MacWalk w, Node e, bool inStmt, int base, MacVal ou
         if (v.kind == 3) {
             return "string values in '" + w.fname + "'";
         }
+        if (op == OP_DIV_ASSIGN || op == OP_MOD_ASSIGN) {
+            w.ctx.usesPrintf = true;
+        }
         out.kind = 0;
         out.depth = v.depth;
         return "";
-    }
-    // Port op 17 is /=
-    if (op == OP_DIV_ASSIGN) {
-        return "division in '" + w.fname + "'";
-    }
-    // Port op 29 is %=
-    if (op == OP_MOD_ASSIGN) {
-        return "modulo in '" + w.fname + "'";
     }
     // No inc/dec operator survives parsing in this AST (++ / -- desugar
     // to += / -= 1, which ride the assign arm above with identical
