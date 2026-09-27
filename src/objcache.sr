@@ -64,45 +64,54 @@ import * from mac.libsystem;
 // relocation tables:
 //
 // - .text — GENUINE MACHINE CODE assembled by the interpreter's own Silver
-//   emitter (interpBuildUnit below, following the silverc port's approach:
-//   one entry stub per file, cross-tier references left as relocations).
-//   Never source text, never a token stream. On x86-64 targets the stub is
-//   real x86-64 (frame prologue, hash materialization, a REL32 call to the
-//   runner seam, an ABS64 data reference, epilogue); on mac it is real
-//   ARM64 (an adrp+add pair addressing the data anchor, a BRANCH26 bl to
-//   the runner seam, hash materialization into x0, ret). v4 objects
-//   (SLVOBJ2 note, including the relocation-less ARM64 stub era) fail the
-//   v5 note parse and are treated as stale (re-emitted), never as a hard
-//   error.
-// - .rdata — the owning file's real data bytes (source hash, source length,
-//   emission stamp, owner key). May be empty in principle; never text.
+//   emitter. On WINDOWS it is the real per-file lowering (winLowerUnit
+//   below, following the silverc port's approach: one FUNC per user
+//   function, Win64 ABI shapes, cross-file references left as
+//   relocations). On LINUX it stays the entry stub (frame prologue, hash
+//   materialization, a REL32 call to the runner seam, an ABS64 data
+//   reference, epilogue); on MAC it stays the ARM64 entry stub (an
+//   adrp+add pair addressing the data anchor, a BRANCH26 bl to the runner
+//   seam, hash materialization into x0, ret). Never source text, never a
+//   token stream. v4 objects (SLVOBJ2 note, including the relocation-less
+//   ARM64 stub era) fail the v5 note parse and are treated as stale
+//   (re-emitted), never as a hard error. Stub-era WINDOWS objects (v5 note
+//   but a seam UNDEF in the symbol table) are likewise stale: the planner
+//   re-emits them with real lowering instead of executing them.
+// - .rdata — the owning file's real data bytes. Lowered WINDOWS units carry
+//   the program's strings (printf formats, literals);
+//   stub units carry source hash, source length, emission stamp, owner key.
+//   May be empty in principle; never text.
 // - .slvnote — the Silver note (magic SLVOBJ3, emitting flag set, source
 //   FNV-1 hash, emission stamp, globals-block size, the full import list,
 //   and the owning file key). The planner reads this for freshness.
 //
 // Symbol tables hold, in the reference order (section anchors, defined
 // functions, the data anchor, then undefined symbols): the section anchors,
-// one FUNC symbol for the file's entry stub, one global data-anchor symbol
-// (__slv_data_<file>_<hash>, offset 0 in .rdata, spelled by databName exactly
-// like the references), and UNDEF entries for the referenced seam symbol
-// (__slv_interp_run — the future native runner, see below).
+// one FUNC symbol per lowered function (main under the file's entry symbol,
+// spelled by objInterpEntrySym exactly like the references spell entries)
+// or one FUNC symbol for the file's entry stub on the stub paths, one
+// global data-anchor symbol (__slv_data_<file>_<hash>, offset 0 in .rdata,
+// spelled by databName exactly like the references), and UNDEF entries for
+// the referenced imports (msvcrt!printf and kernel32!ExitProcess on the
+// lowered path; the __slv_interp_run seam on the stub paths).
 //
-// Relocations cover the position-dependent sites in .text: REL32 (the E8
-// call to the runner seam) and ABS64 (the 8-byte absolute data address) on
-// x86-64; BRANCH26 (the bl to the runner seam) and PAGE21/PAGEOFF12 (the
-// adrp+add pair addressing the data anchor) on ARM64. Intra-stub relative
-// flow is already final and carries no relocation, exactly like a
-// conventional compiler's output. On Linux they ride .rela.text
-// (R_X86_64_PC32 / R_X86_64_64) with .rela.data present but size-0 (.rdata
-// carries no pointers by construction, so a data relocation has no meaning
-// the linker could apply); a non-empty .rela.data is corruption (loud,
-// never silently ignored), a missing one an older object that still
-// validates. On mac they ride the __text section (extern, pc-relative,
-// 4-byte length) against the datab anchor and the seam UNDEF.
+// Relocations cover the position-dependent sites in .text: REL32 (E8 calls
+// to defined functions and to import thunks) and ABS64 (8-byte absolute
+// data addresses) on x86-64; BRANCH26 (the bl to the runner seam) and
+// PAGE21/PAGEOFF12 (the adrp+add pair addressing the data anchor) on
+// ARM64. Intra-function relative flow is already final and carries no
+// relocation, exactly like a conventional compiler's output. On Linux they
+// ride .rela.text (R_X86_64_PC32 / R_X86_64_64) with .rela.data present but
+// size-0 (.rdata carries no pointers by construction, so a data relocation
+// has no meaning the linker could apply); a non-empty .rela.data is
+// corruption (loud, never silently ignored), a missing one an older object
+// that still validates. On mac they ride the __text section (extern,
+// pc-relative, 4-byte length) against the datab anchor and the seam UNDEF.
 //
 // ///////////////////////////////////////////////////////////////////////////
-// // NATIVE RUNNER — LANDED (in-process .o execution, OVERHAUL.md fastest  //
-// // tier). Read this all: what runs natively, what still falls back, why. //
+// // NATIVE RUNNER — WINDOWS executes real program logic in-process        //
+// // (OVERHAUL.md fastest tier). Read this all: what runs natively, what   //
+// // still falls back, why.                                                //
 // ///////////////////////////////////////////////////////////////////////////
 // //
 // // After verifyObject passes, ObjSession.runNative loads the validated
@@ -110,17 +119,16 @@ import * from mac.libsystem;
 // // VirtualAlloc (MEM_COMMIT zero-fill, PAGE_EXECUTE_READWRITE — the same
 // // established file-top DLL-import pattern cache.sr/resource.sr use, no
 // // new FFI shape), the object's own ABS64/REL32 relocations applied
-// // against the loaded base, the UNDEF __slv_interp_run import bound
-// // through an in-block import thunk (15 bytes after the .rdata coat —
-// // silveri.exe's image address and VirtualAlloc's low arena routinely sit
-// // more than ±2 GB apart, beyond REL32 reach, so the seam binds the way
-// // linkers bind far imports: a near REL32 to the thunk, which calls the
-// // compiled seam callback absolutely). The thunk preserves RAX across
-// // the seam call (push rax ... pop rax): the stub materializes the
-// // source hash into RAX BEFORE the call and returns it AFTER, so without
-// // the save the seam's own return would clobber the proof value. Then a
-// // call into the loaded entry marshals that RAX back into the
-// // interpreter's int domain.
+// // against the loaded base, and every UNDEF __slv_imp_N import bound
+// // through a 12-byte in-block import thunk after the .rdata coat
+// // (movabs rax,addr; jmp rax — silveri.exe's image address and the
+// // VirtualAlloc arena routinely sit more than ±2 GB apart, beyond REL32
+// // reach, so imports bind the way linkers bind far imports: a near REL32
+// // to the thunk, which jumps to the export absolutely). The export
+// // addresses come from the already-loaded modules (GetModuleHandleA +
+// // GetProcAddress — the same bare-call shape builtins.sr uses, no new FFI
+// // shape), so nothing is loaded as a side effect. Then a call into the
+// // loaded entry runs the compiled program.
 // //
 // // Copying is NUL-safe by construction: Silver strings are C strings, so
 // // .length stops at the first NUL and one memcpy cannot carry NUL bytes.
@@ -132,12 +140,11 @@ import * from mac.libsystem;
 // // (DOCS/259 G3): the entry address sits in an int[] slot and slots[0]()
 // // evaluates to the callee's RAX, so no new call primitive was needed.
 // //
-// // PROOF the bytes ran (not the AST): the stub materializes the source
-// // FNV-1 hash into RAX, so a native run must return RAX == note hash AND
-// // reach the seam. Patching one hash byte in the cached .o (source
-// // untouched) changes the returned RAX, which the runner reports loudly;
-// // freshness still passes (the SLVOBJ3 note is untouched), so the patch
-// // demonstrably flows through executed machine code, never the AST.
+// // PROOF the bytes ran (not the AST): the .text carries the compiled
+// // program, so patching one program byte in the cached .o (source
+// // untouched) changes the native program output, which the next run
+// // shows; freshness still passes (the SLVOBJ3 note is untouched), so the
+// // patch demonstrably flows through executed machine code, never the AST.
 // //
 // // EXACT BOUNDARY (loud fallback to the verified AST/bytecode tiers, never
 // // silent wrong behavior — every case below returns a reason string the
@@ -145,21 +152,24 @@ import * from mac.libsystem;
 // //
 // // - Only WINDOWS/x86-64 executes (COFF objects). LINUX (ELF) and MAC
 // //   (Mach-O/ARM64) validate identically but stay on the verified tiers:
-// //   same loader math, unprobed host ceilings — the follow-up.
-// // - Only the __slv_interp_run seam binds (to the compiled void()
-// //   callback below). Any other UNDEF import, linker singleton, or
-// //   extern/data target outside .text/.rdata is unresolvable in-process.
-// // - The seam is void(): it observes no RCX anchor and returns no program
-// //   value (Silver cannot spell richer native signatures), so it raises
-// //   the hit flag and nothing more. The stub carries no program semantics
-// //   by emitter design (hash + seam call, never compiled program logic),
-// //   so program evaluation continues from the verified tokens; the runner
-// //   proves the .o tier is genuine runnable machine code, not where
-// //   program results come from. A real AST-to-machine-code backend is the
-// //   follow-up beyond the runner.
-// // - Oversize objects (>64 MiB), mapping failure, an unreachable seam, a
-// //   RAX/note-hash mismatch (hand-patched or otherwise stale bytes the
-// //   note cannot see), and out-of-range REL32 all fall back loudly.
+// //   same loader math, unprobed host ceilings — the follow-up. Their
+// //   entry stubs keep validating and running exactly as before.
+// // - Only note-listed __slv_imp_N imports bind (msvcrt!printf and
+// //   kernel32!ExitProcess for lowered units, resolved live). Any other
+// //   UNDEF import — including the retired __slv_interp_run seam, which
+// //   now marks stub-era objects as stale instead of binding — linker
+// //   singletons, or extern/data targets outside .text/.rdata are
+// //   unresolvable in-process.
+// // - Only in-tier entries execute (the macTierReason subset, re-checked by
+// //   the lowering itself so the two can never disagree). Anything else
+// //   emits no object at all — never a stub — and the driver reports the
+// //   reference reason loudly, continuing from the verified tiers.
+// // - The trap path prints through the bound printf and exits the process
+// //   through the bound ExitProcess — the reference divide-by-zero and
+// //   overflow behavior — so a faulting native run never returns to the
+// //   driver at all, exactly like the compiled binary.
+// // - Oversize objects (>64 MiB), mapping failure, unresolvable imports,
+// //   and out-of-range REL32 all fall back loudly.
 // //
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -668,7 +678,7 @@ class ObjReader {
 }
 
 // ---------------------------------------------------------------------------
-// The interpreter's own Silver emitter (following the silverc port's
+// The interpreter's LINUX/MAC Silver emitter (following the silverc port's
 // approach: one entry stub per file, machine code + data + symbols +
 // relocations assembled as bytes, no external assembler).
 //
@@ -677,9 +687,12 @@ class ObjReader {
 // compiled: program evaluation stays on the verified AST/bytecode tiers
 // (see the NATIVE RUNNER notice at the top of this file). The stub's job
 // is being a real code payload with real symbols/relocs so the object tier
-// validates byte-identically across the toolchain AND executes natively
-// under runNative (RAX == source hash, seam reached); its call to
-// __slv_interp_run names the seam the runner binds at load time.
+// validates byte-identically across the toolchain; its call to
+// __slv_interp_run names the retired seam (stub-era WINDOWS objects carrying
+// it are stale, never executed).
+// WINDOWS entries never build here anymore: finish() lowers them with real
+// program logic (winLowerUnit above), and stub-era WINDOWS objects are
+// stale by symbol-table inspection, never executed.
 // ---------------------------------------------------------------------------
 
 // 34 bytes of real x86-64 (Windows/Linux target):
@@ -908,7 +921,7 @@ public void interpBuildUnit(string filekey, int64 hash, int srcLen, int stamp, s
 // AST-to-machine-code backend for the interpreter's windows-x86-64 objects:
 // per-file units whose .text carries the actual compiled program logic (one
 // FUNC per user function, Win64 ABI shapes throughout), .rdata carrying the
-// program's real data (printf formats, string literals, boolean spellings),
+// program's real data (printf formats, string literals),
 // and UNDEF externs for the imports the runner binds in-process
 // (msvcrt!printf, kernel32!ExitProcess) with REL32 call sites and ABS64 data
 // sites. No stubs: anything outside the tier falls back LOUDLY (the reason
@@ -932,7 +945,8 @@ public void interpBuildUnit(string filekey, int64 hash, int srcLen, int stamp, s
 // exception + exit(1) path — the overflow faults in hardware on real
 // binaries, so the lowering checks it explicitly instead of crashing the
 // interpreter process), and print through msvcrt!printf with literal-safe
-// formats (bools spell true/false, chars use %c).
+// formats (bools print as 1/0 and chars use %c, exactly like the verified
+// tiers and the compiled binaries).
 //
 // The emitter itself is portable byte math (no regions); only the runner's
 // import resolution below is OS-gated. ELF/Mach-O paths never call this.
@@ -1072,6 +1086,16 @@ class WinEmit {
         else { this.b(186); }
         int pos = this.code.length;
         this.i64(0);
+        return pos;
+    }
+
+    // movabs r64, datab+off hole: the offset rides the site bytes (the COFF
+    // addend convention the reader recovers), the loader adds the loaded
+    // data base. Returns the hole for the ABS64 reloc.
+    public int absData(int reg, int off) {
+        int pos = this.absHole(reg);
+        int64 v = int64(off);
+        for (int k = 0; k < 8; k++) { this.code[pos + k] = int((v >> (k * 8)) & 0xFF); }
         return pos;
     }
 
@@ -1296,9 +1320,9 @@ private string winLowerPrint(WinCtx ctx, WinFn fn, Node call, bool newline) {
         int strOff = ctx.addStr(lit);
         ctx.usesPrintf = true;
         fn.e.callSetup(2);
-        int hole = fn.e.absHole(1);
+        int hole = fn.e.absData(1, fmtOff);
         fn.rel(hole, 1, 2, fmtOff, "");
-        hole = fn.e.absHole(2);
+        hole = fn.e.absData(2, strOff);
         fn.rel(hole, 1, 2, strOff, "");
         fn.e.b(176);
         fn.e.b(0);
@@ -1311,42 +1335,12 @@ private string winLowerPrint(WinCtx ctx, WinFn fn, Node call, bool newline) {
     string err = winLowerExpr(ctx, fn, arg);
     if (err.length > 0) { return err; }
     ctx.usesPrintf = true;
-    if (kind == 1) {
-        string fmt = "%s";
-        if (newline) { fmt = "%s\n"; }
-        int fmtOff = ctx.addStr(fmt);
-        int trueOff = ctx.addStr("true");
-        int falseOff = ctx.addStr("false");
-        fn.e.callSetup(2);
-        int hole = fn.e.absHole(1);
-        fn.rel(hole, 1, 2, fmtOff, "");
-        fn.e.b(72);
-        fn.e.b(131);
-        fn.e.b(248);
-        fn.e.b(0);
-        int falseLab = fn.e.lab();
-        int endLab = fn.e.lab();
-        fn.e.jcc(132, falseLab);
-        hole = fn.e.absHole(2);
-        fn.rel(hole, 1, 2, trueOff, "");
-        fn.e.jmp(endLab);
-        fn.e.bind(falseLab);
-        hole = fn.e.absHole(2);
-        fn.rel(hole, 1, 2, falseOff, "");
-        fn.e.bind(endLab);
-        fn.e.b(176);
-        fn.e.b(0);
-        hole = fn.e.callHole();
-        fn.rel(hole, 0, 4, 0, "");
-        fn.e.callTeardown();
-        return "";
-    }
     if (kind == 2) {
         string fmt = "%c";
         if (newline) { fmt = "%c\n"; }
         int fmtOff = ctx.addStr(fmt);
         fn.e.callSetup(2);
-        int hole = fn.e.absHole(1);
+        int hole = fn.e.absData(1, fmtOff);
         fn.rel(hole, 1, 2, fmtOff, "");
         fn.e.b(72);
         fn.e.b(137);
@@ -1362,7 +1356,7 @@ private string winLowerPrint(WinCtx ctx, WinFn fn, Node call, bool newline) {
     if (newline) { fmtI = "%lld\n"; }
     int fmtIOff = ctx.addStr(fmtI);
     fn.e.callSetup(2);
-    int holeI = fn.e.absHole(1);
+    int holeI = fn.e.absData(1, fmtIOff);
     fn.rel(holeI, 1, 2, fmtIOff, "");
     fn.e.b(72);
     fn.e.b(137);
@@ -1383,7 +1377,7 @@ private void winEmitTrap(WinCtx ctx, WinFn fn) {
     ctx.usesPrintf = true;
     ctx.usesExit = true;
     fn.e.callSetup(1);
-    int hole = fn.e.absHole(1);
+    int hole = fn.e.absData(1, ueOff);
     fn.rel(hole, 1, 2, ueOff, "");
     fn.e.b(176);
     fn.e.b(0);
@@ -1531,10 +1525,11 @@ private string winLowerBinary(WinCtx ctx, WinFn fn, Node e) {
         fn.e.jcc(133, okDiv);
         winEmitTrap(ctx, fn);
         fn.e.bind(okDiv);
-        int64 intMin = -9223372036854775807 - 1;
-        fn.e.b(72);
-        fn.e.b(184);
-        fn.e.i64(intMin);
+        // INT64_MIN without a negated-literal subtraction: the bootstrap
+        // folds -9223372036854775807 - 1 to MIN + 2 (probed), while the
+        // 0-based spelling folds exactly.
+        int64 intMin = 0 - 9223372036854775807 - 1;
+        fn.e.movAbs(2, intMin);
         fn.e.b(72);
         fn.e.b(57);
         fn.e.b(194);
@@ -1686,10 +1681,8 @@ private string winLowerBinary(WinCtx ctx, WinFn fn, Node e) {
         fn.e.jcc(133, okDiv);
         winEmitTrap(ctx, fn);
         fn.e.bind(okDiv);
-        int64 intMinA = -9223372036854775807 - 1;
-        fn.e.b(72);
-        fn.e.b(184);
-        fn.e.i64(intMinA);
+        int64 intMinA = 0 - 9223372036854775807 - 1;
+        fn.e.movAbs(2, intMinA);
         fn.e.b(72);
         fn.e.b(57);
         fn.e.b(194);
@@ -4410,29 +4403,6 @@ private string macWalkCall(MacWalk w, Node e, bool inStmt, int base, MacVal out)
 // callers fall back loudly without ever transferring control.
 // ---------------------------------------------------------------------------
 
-// Hit flag the compiled seam callback raises. A one-slot module-global
-// array: bare globals are not valid assignment targets (the type checker
-// rejects them), but array-element stores are, and the seam is a
-// standalone void() function that captures no runner locals.
-int[] objRunSeam = [0];
-
-// Address of the seam callback implementing the __slv_interp_run import: a
-// compiled void() lambda reified to int (fn-typed values ARE code
-// addresses, so the round trip compiles on every backend). The lambda
-// raises the hit flag through the setter below and nothing more — void()
-// observes no RCX anchor and returns no program value (see the boundary
-// notice). The body calls instead of assigning: assignment targets inside
-// a lambda body are restricted to the lambda's own scope.
-private void objNoteSeam() {
-    objRunSeam[0] = 1;
-}
-
-private int objSeamAddr() {
-    void () seamFn = (void () { objNoteSeam(); });
-    int addr = seamFn;
-    return addr;
-}
-
 // One RWX block of `size` bytes (MEM_COMMIT zero-fill,
 // PAGE_EXECUTE_READWRITE): 12288 = MEM_COMMIT|MEM_RESERVE, 64 = PAGE_XRW.
 // 0 when the mapping fails (caller falls back loudly).
@@ -4518,15 +4488,52 @@ private void objNatBlit(int base, int[] bytes) {
     }
 }
 
+// Import index of an __slv_imp_N symbol name (-1 when it is not one).
+// The N selects the note's import list entry (dll + name), which the
+// runner resolves to a real export address for its import thunk.
+private int objImportIndex(string sym) {
+    string prefix = objImportPrefix();
+    if (sym.length <= prefix.length) { return -1; }
+    if (icSliceRange(sym, 0, prefix.length) != prefix) { return -1; }
+    string digits = icSliceRange(sym, prefix.length, sym.length);
+    if (!digits.isDigits()) { return -1; }
+    return (int)digits;
+}
+
+// Resolve dll!name to a live export address (0 when unavailable — the
+// caller falls back loudly). The handle comes from the already-loaded
+// module, so no library is loaded as a side effect.
+private int winResolveImport(string dll, string name) {
+    int h = winModHandle(dll);
+    if (h == 0) { return 0; }
+    return winProcAddr(h, name);
+}
+
+private int winModHandle(string name) {
+    #on WINDOWS
+    return GetModuleHandleA(name);
+    #else
+    return 0;
+    #off
+}
+
+private int winProcAddr(int h, string name) {
+    #on WINDOWS
+    return GetProcAddress(h, name);
+    #else
+    return 0;
+    #off
+}
+
 // Apply the parsed relocations onto the mutable `code` image for a block
-// laid out as code@[base, base+len) with the .rdata coat at `rdataBase`:
-// ABS64 sites take the datab (or other defined) address, REL32 sites take
-// target-(site+4), and the __slv_interp_run import binds `seamTarget` (the
-// caller's in-block import thunk — always near by construction, so the
-// range check below guards genuinely foreign shapes only). Any other
+// laid out as code@[base, base+len) with the .rdata coat at `rdataBase` and
+// one 12-byte absolute-jump import thunk per note import at `thunkBase`:
+// ABS64 sites take the datab (or other defined) address plus the site-byte
+// addend, REL32 sites take target-(site+4). UNDEF __slv_imp_N imports bind
+// their thunk (resolved by the caller to the real export). Any other
 // undefined target is unresolvable in-process. Returns "" or the loud
 // fallback reason (never a silent mislink).
-private string objApplyRelocs(ParsedObj obj, int[] code, int base, int rdataBase, int seamTarget) {
+private string objApplyRelocs(ParsedObj obj, int[] code, int base, int rdataBase, int thunkBase, int[] importAddrs) {
     for (int i = 0; i < obj.relSites.length; i++) {
         int site = obj.relSites[i];
         int sni = obj.relSyms[i];
@@ -4547,8 +4554,9 @@ private string objApplyRelocs(ParsedObj obj, int[] code, int base, int rdataBase
             if (site < 0 || site + 4 > code.length) { return "object runner: REL32 site out of range"; }
             int64 target = 0;
             if (sect == 0) {
-                if (sym == objInterpRunSym()) { target = int64(seamTarget); }
-                else { return "object runner: unresolvable import '" + sym + "'"; }
+                int impIdx = objImportIndex(sym);
+                if (impIdx < 0 || impIdx >= importAddrs.length) { return "object runner: unresolvable import '" + sym + "'"; }
+                target = int64(thunkBase + impIdx * 12);
             } else if (sect == 1) { target = int64(base + val); }
             else if (sect == 2) { target = int64(rdataBase + val); }
             else { return "object runner: unresolvable relocation target '" + sym + "'"; }
@@ -4587,6 +4595,13 @@ class ObjSession {
     public prop int[] notedH;
     public prop int[] notedStamps;
     public prop int[] notedTiers;
+    // WINDOWS real lowering: the driver's parsed entry program (set via
+    // setWinProgram before finish), and the loud skip reason ("": emit and
+    // run normally). Out-of-tier entries emit nothing — never a stub — and
+    // the driver continues from the verified tiers with this reason.
+    public prop Node[] winProgram;
+    public prop bool winHasProgram;
+    public prop string winSkip;
 
     // Open (or prepare) the object cache for `projName` rooted at `rootDir`,
     // targeting the auto-detected host (`hostOsName`, interpHostOs). When
@@ -4623,6 +4638,9 @@ class ObjSession {
         this.notedH = [];
         this.notedStamps = [];
         this.notedTiers = [];
+        this.winProgram = [];
+        this.winHasProgram = false;
+        this.winSkip = "";
         this.lastNativeUs = -1;
         string guarded = icSanitize(projName);
         string sub = objTargetDirName(hostOsName);
@@ -4659,8 +4677,7 @@ class ObjSession {
     // the same hash the driver lexed, whether its tokens came from synced
     // .srbc text or fresh source). Out-of-root entries are skipped: they
     // still run normally, they just are not object-cached.
-    public void noteFile(string absPath, string source, bool fromBytecode) {
-        if (!this.ok) { return; }
+    public void noteFile(string absPath, string source, bool fromBytecode) {        if (!this.ok) { return; }
         string key = icRelPath(this.root, absPath);
         if (key.length == 0) { return; }
         if (objIsLocalKey(key) == 0) { return; }
@@ -4684,6 +4701,14 @@ class ObjSession {
         this.notedH.add(srcHash);
         this.notedStamps.add(stamp);
         this.notedTiers.add(tier);
+    }
+
+    // Hand the driver's parsed entry program to the WINDOWS lowering path
+    // (called before finish; without it the windows path skips silently and
+    // the driver surfaces the parse diagnostics itself).
+    public void setWinProgram(Node[] program) {
+        this.winProgram = program;
+        this.winHasProgram = true;
     }
 
     // Absolute path of the .o for a record key (mirrors the project tree,
@@ -4728,7 +4753,23 @@ class ObjSession {
         if (!objPeekNote(r, this.targetOs, note)) { return false; }
         if (note.flags != this.flags) { return false; }
         if (note.hash != int64(this.notedH[n])) { return false; }
+        if (this.targetOs == "WINDOWS" && this.winStubEra(raw)) { return false; }
         return true;
+    }
+
+    // True when a WINDOWS .o is stub-era (its symbol table still references
+    // the retired proof-stub seam): structurally valid but carrying no
+    // program logic, so the planner treats it as stale and the entry
+    // re-emits with real lowering. LINUX/MAC objects keep their current
+    // freshness rules untouched.
+    private bool winStubEra(byte[] raw) {
+        ObjReader r = new ObjReader(raw);
+        ParsedObj obj = new ParsedObj();
+        if (objParseObject(r, this.targetOs, obj).length > 0) { return true; }
+        for (int s = 0; s < obj.symNames.length; s++) {
+            if (obj.symSects[s] == 0 && obj.symNames[s] == objInterpRunSym()) { return true; }
+        }
+        return false;
     }
 
     // Re-emit changed objects, merge the per-target record (+ .sbcri text
@@ -4740,6 +4781,45 @@ class ObjSession {
         this.sortNoted();
         for (int n = 0; n < this.notedKeys.length; n++) {
             if (!this.isFresh(n)) {
+                if (this.targetOs == "WINDOWS") {
+                    // Real program lowering (never a stub): without a parsed
+                    // program the driver surfaces parse diagnostics itself,
+                    // so skip silently; out-of-tier entries record the loud
+                    // reason and emit nothing.
+                    if (!this.winHasProgram) { continue; }
+                    ObjUnit unit = new ObjUnit();
+                    string lerr = winLowerUnit(this.notedKeys[n], int64(this.notedH[n]), this.notedM[n], this.notedStamps[n], this.winProgram, unit);
+                    if (lerr.length > 0) {
+                        this.winSkip = lerr;
+                        continue;
+                    }
+                    if (objTooManyRelocs(unit)) {
+                        return "object cache: too many relocations in '" + this.notedKeys[n] + "' for one COFF section (v1 boundary)";
+                    }
+                    string objPath = this.objectPath(this.notedKeys[n]);
+                    if (objPath.length == 0) {
+                        return "object cache: cannot place object for '" + this.notedKeys[n] + "'";
+                    }
+                    icEnsureDirTree(icDirname(objPath));
+                    int[] bytes = emitObject(unit, this.flags, int64(this.notedH[n]), this.notedStamps[n], this.targetOs);
+                    file.writeBytes(objPath, bytes);
+                    if (!file.exists(objPath) || file.getSize(objPath) != bytes.length) {
+                        return "object cache: cannot write " + objPath + ": verification failed";
+                    }
+                    int idx = this.findRecord(this.notedKeys[n]);
+                    if (idx >= 0) {
+                        this.mTimes[idx] = this.notedM[n];
+                        this.hashes[idx] = this.notedH[n];
+                        this.cachedAt[idx] = this.notedStamps[n];
+                    } else {
+                        this.keys.add(this.notedKeys[n]);
+                        this.cTimes.add(this.notedC[n]);
+                        this.mTimes.add(this.notedM[n]);
+                        this.hashes.add(this.notedH[n]);
+                        this.cachedAt.add(this.notedStamps[n]);
+                    }
+                    continue;
+                }
                 ObjUnit unit = new ObjUnit();
                 interpBuildUnit(this.notedKeys[n], int64(this.notedH[n]), this.notedM[n], this.notedStamps[n], this.targetOs, unit);
                 if (objTooManyRelocs(unit)) {
@@ -4817,7 +4897,10 @@ class ObjSession {
         // and fully valid (container magic, target machine, sections,
         // symbols, relocations, flag set, source hash, globals-block
         // agreement) before the driver executes from the verified tokens.
+        // WINDOWS entries skipped above (no program, or out-of-tier with no
+        // stub emitted) are not unified: there is nothing to validate.
         for (int u = 0; u < this.notedKeys.length; u++) {
+            if (this.targetOs == "WINDOWS" && (!this.winHasProgram || this.winSkip.length > 0)) { continue; }
             string upath = this.objectPath(this.notedKeys[u]);
             if (!file.exists(upath)) {
                 return "object cache: cannot read " + upath + ": file not found";
@@ -4877,6 +4960,13 @@ class ObjSession {
         if (obj.hash != expectHash) {
             return "object cache: stale object (source hash changed) — re-emit required";
         }
+        if (this.targetOs == "WINDOWS") {
+            for (int s = 0; s < obj.symNames.length; s++) {
+                if (obj.symSects[s] == 0 && obj.symNames[s] == objInterpRunSym()) {
+                    return "object cache: stale object (source hash changed) — re-emit required";
+                }
+            }
+        }
         return this.checkGas(obj);
     }
 
@@ -4899,11 +4989,14 @@ class ObjSession {
     // and calling (it re-checks flags + hash on the bytes it executes, so a
     // file swapped between the two calls still cannot run stale).
     //
-    // Returns "" when the validated .text ran natively (RAX == note hash,
-    // seam reached; lastNativeUs carries the call cost), else the loud
-    // fallback reason — the driver prints it and continues from the
-    // verified AST/bytecode tiers, never silently wrong. See the NATIVE
-    // RUNNER notice at the top for the exact execution boundary.
+    // The entry runs its REAL program logic: user functions execute as
+    // compiled, print output flows through the bound printf import, and the
+    // divide trap prints through printf then exits the process — the same
+    // observable behavior as the compiled binary. Returns "" when the
+    // validated entry ran natively (lastNativeUs carries the call cost),
+    // else the loud fallback reason — the driver prints it and continues
+    // from the verified AST/bytecode tiers, never silently wrong. See the
+    // NATIVE RUNNER notice at the top for the exact execution boundary.
     public string runNative(string absPath, int64 expectHash) {
         if (this.targetOs != "WINDOWS") {
             return "object runner: " + this.targetOs + " execution stays on the verified tiers (in-process runner is COFF/x86-64 only)";
@@ -4931,14 +5024,24 @@ class ObjSession {
         string gasErr = this.checkGas(obj);
         if (gasErr.length > 0) { return gasErr; }
         if (obj.code.length == 0) { return "object runner: empty .text"; }
-        // Layout: code, then the .rdata coat, then the 15-byte import thunk
-        // (push rax; movabs rax,seam; call rax; pop rax; ret) the seam
-        // REL32 binds to — near by construction, whatever the seam's
-        // absolute address is. The push/pop preserves the stub's RAX hash
-        // across the seam call (see the NATIVE RUNNER notice).
-        int total = obj.code.length + obj.data.length + 15;
+        // Resolve every note import to a live export address (msvcrt!printf,
+        // kernel32!ExitProcess for lowered units). Anything else is
+        // unresolvable in-process and falls back loudly below.
+        int[] importAddrs = [];
+        for (int k = 0; k < obj.impDlls.length; k++) {
+            int addr = winResolveImport(obj.impDlls[k], obj.impNames[k]);
+            if (addr == 0) {
+                return "object runner: unresolvable import '" + obj.impDlls[k] + "!" + obj.impNames[k] + "'";
+            }
+            importAddrs.add(addr);
+        }
+        // Layout: code, then the .rdata coat, then one 12-byte absolute-jump
+        // import thunk per note import (movabs rax,addr; jmp rax) the import
+        // REL32 sites bind to — near by construction, whatever the export's
+        // absolute address is.
+        int total = obj.code.length + obj.data.length + importAddrs.length * 12;
         if (total > 67108864) { return "object runner: object too large (" + (string)total + " bytes)"; }
-        // Entry offset: the file's own entry stub by name, else the first
+        // Entry offset: the file's own entry symbol by name, else the first
         // defined .text function. Anything else has no callable entry.
         int entryOff = -1;
         string wantEntry = objInterpEntrySym(obj.filekey, obj.hash);
@@ -4949,33 +5052,28 @@ class ObjSession {
             }
         }
         if (entryOff < 0 || entryOff >= obj.code.length) { return "object runner: no executable entry"; }
-        int seam = objSeamAddr();
-        if (seam == 0) { return "object runner: seam address unavailable"; }
         int base = objNatAlloc(total);
         if (base == 0) { return "object runner: executable mapping failed"; }
         int rdataBase = base + obj.code.length;
         int thunkBase = rdataBase + obj.data.length;
         int[] image = [];
         for (int c = 0; c < obj.code.length; c++) { image.add(obj.code[c]); }
-        string rerr = objApplyRelocs(obj, image, base, rdataBase, thunkBase);
+        string rerr = objApplyRelocs(obj, image, base, rdataBase, thunkBase, importAddrs);
         if (rerr.length > 0) {
             objNatFree(base);
             return rerr;
         }
-        objRunSeam[0] = 0;
         objNatBlit(base, image);
         objNatBlit(rdataBase, obj.data);
-        int[] thunk = [80, 72, 184, 0, 0, 0, 0, 0, 0, 0, 0, 255, 208, 88, 195];
-        for (int t = 0; t < 8; t++) { thunk[3 + t] = int((int64(seam) >> (t * 8)) & 0xFF); }
-        objNatBlit(thunkBase, thunk);
+        for (int t = 0; t < importAddrs.length; t++) {
+            int[] thunk = [72, 184, 0, 0, 0, 0, 0, 0, 0, 0, 255, 224];
+            for (int q = 0; q < 8; q++) { thunk[2 + q] = int((int64(importAddrs[t]) >> (q * 8)) & 0xFF); }
+            objNatBlit(thunkBase + t * 12, thunk);
+        }
         int64 t0 = objNatTicks();
-        int rax = objNatCall(base + entryOff);
+        objNatCall(base + entryOff);
         int64 t1 = objNatTicks();
         objNatFree(base);
-        if (objRunSeam[0] == 0) { return "object runner: entry did not reach the __slv_interp_run seam"; }
-        if (int64(rax) != obj.hash) {
-            return "object runner: native result mismatch (RAX " + (string)rax + ", note hash " + (string)obj.hash + ")";
-        }
         this.lastNativeUs = -1;
         int64 freq = objNatFreq();
         if (freq > 0 && t1 > t0) {

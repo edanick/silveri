@@ -1354,37 +1354,57 @@ void main() {
     // A corrupt, foreign, or stale object fails loudly (never silently);
     // an undeterminable cache root degrades to the tiers above.
     //
-    // NATIVE RUNNER (landed — see objcache.sr): after verifyObject passes,
-    // runNative() loads the validated entry object and executes its .text
-    // in-process (RWX block, own relocations applied, __slv_interp_run
-    // bound, RAX marshaled back). Success stays silent unless --diag;
-    // any fallback prints LOUDLY and execution continues from the VERIFIED
-    // tokens above — synced .srbc text on a bytecode-tier hit, freshly
-    // lexed source otherwise — through the existing AST/bytecode tiers
-    // (the stub carries no program semantics by design). Quiet runs stay
-    // byte-identical to the uncached tiers (parity demand: no extra stdout
-    // on the normal path).
+    // NATIVE RUNNER (see objcache.sr): on WINDOWS the entry object carries
+    // real program lowering, so after verifyObject passes runNative() loads
+    // it and executes the compiled entry in-process (RWX block, own
+    // relocations applied, note imports bound to live exports) with real
+    // program results — printed output flows natively, the trap path exits
+    // the process like the compiled binary. A fully native run ends the
+    // process here (no AST re-run: output already happened). Success stays
+    // silent unless --diag; any fallback prints LOUDLY and execution
+    // continues from the VERIFIED tokens above — synced .srbc text on a
+    // bytecode-tier hit, freshly lexed source otherwise — through the
+    // existing AST/bytecode tiers. Out-of-tier WINDOWS entries emit no
+    // object at all (never a stub): the reason is reported below after
+    // parsing. Quiet runs stay byte-identical to the uncached tiers
+    // (parity demand: no extra stdout on the normal path).
+    string winFallback = "";
     if (cacheObject) {
         ObjSession objs = new ObjSession(cacheRoot, cacheProject, target);
         if (objs.ok) {
             objs.noteFile(filename, inputSource, bcPayload.length > 0);
+            if (target == "WINDOWS") {
+                Parser winParser = new Parser(tokens);
+                winParser.setLineLengths(lineLens);
+                winParser.setCustomTarget(target);
+                Node[] winProgram = winParser.parseProgram();
+                if (winParser.errorCount() == 0) { objs.setWinProgram(winProgram); }
+                winParser.release();
+            }
             string objErr = objs.finish();
             if (objErr.length > 0) {
                 printline(objErr);
                 exit(1);
             }
-            objErr = objs.verifyObject(filename, cache.icFnv1(inputSource));
-            if (objErr.length > 0) {
-                printline(objErr);
-                exit(1);
-            }
-            string objTier = "source";
-            if (bcPayload.length > 0) { objTier = "bytecode"; }
-            string runNote = objs.runNative(filename, cache.icFnv1(inputSource));
-            if (runNote.length > 0) {
-                printline(runNote + " — continuing from verified " + objTier + " tier");
-            } else if (diagCrumbs) {
-                printline("[objcache] native object execution: genuine " + objTargetDirName(target) + " entry ran in-process (RAX == note hash, __slv_interp_run seam reached via import thunk, " + (string)objs.lastNativeUs + " us) — running from verified " + objTier + " tier");
+            bool objSkip = target == "WINDOWS" && (!objs.winHasProgram || objs.winSkip.length > 0);
+            if (objs.winHasProgram && objs.winSkip.length > 0) { winFallback = objs.winSkip; }
+            if (!objSkip) {
+                objErr = objs.verifyObject(filename, cache.icFnv1(inputSource));
+                if (objErr.length > 0) {
+                    printline(objErr);
+                    exit(1);
+                }
+                string objTier = "source";
+                if (bcPayload.length > 0) { objTier = "bytecode"; }
+                string runNote = objs.runNative(filename, cache.icFnv1(inputSource));
+                if (runNote.length > 0) {
+                    printline(runNote + " — continuing from verified " + objTier + " tier");
+                } else {
+                    if (diagCrumbs) {
+                        printline("[objcache] native object execution: genuine " + objTargetDirName(target) + " entry ran in-process (real program results, imports bound via thunks, " + (string)objs.lastNativeUs + " us)");
+                    }
+                    exit(0);
+                }
             }
         }
     }
@@ -1472,6 +1492,17 @@ void main() {
             if (bcPayload.length > 0) { verifiedTier = "bytecode"; }
             printline("cache-object: mac target is outside the v1 ARM64 object tier (" + tierWhy + "); continuing from verified " + verifiedTier + " tier");
         }
+    }
+
+    // windows-x86-64 object-tier boundary: entries the real lowering cannot
+    // take emit no object at all (winSkip from finish, carried in
+    // winFallback) and run from the verified tiers instead — reported
+    // LOUDLY with the tier reason. In-tier entries already ran natively
+    // above and never reach here.
+    if (cacheObject && target == "WINDOWS" && winFallback.length > 0) {
+        string verifiedTier = "source";
+        if (bcPayload.length > 0) { verifiedTier = "bytecode"; }
+        printline("cache-object: windows target is outside the v1 x86-64 object tier (" + winFallback + "); continuing from verified " + verifiedTier + " tier");
     }
 
     MemoryGuard guard = new MemoryGuard();
