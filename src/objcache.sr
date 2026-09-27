@@ -902,6 +902,1313 @@ public void interpBuildUnit(string filekey, int64 hash, int srcLen, int stamp, s
     }
 }
 
+// ---------------------------------------------------------------------------
+// WINDOWS x86-64 REAL LOWERING (v1 object tier).
+//
+// AST-to-machine-code backend for the interpreter's windows-x86-64 objects:
+// per-file units whose .text carries the actual compiled program logic (one
+// FUNC per user function, Win64 ABI shapes throughout), .rdata carrying the
+// program's real data (printf formats, string literals, boolean spellings),
+// and UNDEF externs for the imports the runner binds in-process
+// (msvcrt!printf, kernel32!ExitProcess) with REL32 call sites and ABS64 data
+// sites. No stubs: anything outside the tier falls back LOUDLY (the reason
+// string is the whole result) and no unit is produced for it.
+//
+// Boundary: intentionally the SAME subset the mac tier predicate accepts
+// (macTierReason owns it — winLowerUnit re-checks it first so the two can
+// never disagree). Integer/bool/char programs only: free functions (8 params
+// max, no defaults), const scalars, void main() with no parameters, locals,
+// assignment (plain + compound, with the << form evaluating its RHS like the
+// interpreter does), if/else, while, C-like for (range-for desugared onto it
+// exactly like the predicate), break/continue, return, calls with exact
+// arity, and print/printline of scalars and string literals.
+//
+// Semantics mirror the compiler port (silverc/compiler/mini_cg + silverc-rs
+// codegen.rs): stack-machine evaluation (values in RAX, push/pop for binary
+// operators), Win64 call setup (push r13 anchor, 16-byte align, 32-byte
+// shadow space, RCX/RDX/R8/R9 + caller-pushed stack args), callee-saved rbp
+// frames with params spilled to slots, divide/modulo through the guarded
+// sequence (zero divisor and INT64_MIN / -1 both take the Unhandled
+// exception + exit(1) path — the overflow faults in hardware on real
+// binaries, so the lowering checks it explicitly instead of crashing the
+// interpreter process), and print through msvcrt!printf with literal-safe
+// formats (bools spell true/false, chars use %c).
+//
+// The emitter itself is portable byte math (no regions); only the runner's
+// import resolution below is OS-gated. ELF/Mach-O paths never call this.
+// ---------------------------------------------------------------------------
+
+// x86-64 code buffer with intra-function labels. Relocations are NOT patched
+// here: calls and data references are emitted as zero holes whose positions
+// the lowering records into the unit (the loader resolves them by symbol),
+// while jumps between labels are patched by finish() once the function is
+// complete (function starts are unknown until concatenation, so only
+// label-relative flow patches here).
+class WinEmit {
+    public prop int[] code;
+    public prop int[] labPos;
+    public prop int[] fixPos;
+    public prop int[] fixLab;
+
+    construct {
+        this.code = [];
+        this.labPos = [];
+        this.fixPos = [];
+        this.fixLab = [];
+    }
+
+    public void b(int v) {
+        this.code.add(v & 0xFF);
+    }
+
+    public void i32(int64 v) {
+        for (int i = 0; i < 4; i++) { this.code.add((v >> (i * 8)) & 0xFF); }
+    }
+
+    public void i64(int64 v) {
+        for (int i = 0; i < 8; i++) { this.code.add((v >> (i * 8)) & 0xFF); }
+    }
+
+    public int lab() {
+        this.labPos.add(-1);
+        return this.labPos.length - 1;
+    }
+
+    public void bind(int id) {
+        this.labPos[id] = this.code.length;
+    }
+
+    public void jmp(int id) {
+        this.b(233);
+        this.fixPos.add(this.code.length);
+        this.fixLab.add(id);
+        this.i32(0);
+    }
+
+    // Second byte of 0F 8x: 132 JE, 133 JNE, 140 JL, 142 JLE, 143 JG, 141 JGE.
+    public void jcc(int cc, int id) {
+        this.b(15);
+        this.b(cc);
+        this.fixPos.add(this.code.length);
+        this.fixLab.add(id);
+        this.i32(0);
+    }
+
+    public string finish() {
+        for (int i = 0; i < this.fixPos.length; i++) {
+            int id = this.fixLab[i];
+            if (id < 0 || id >= this.labPos.length || this.labPos[id] < 0) { return "unbound label"; }
+            int pos = this.fixPos[i];
+            int64 rel = int64(this.labPos[id]) - int64(pos + 4);
+            if (rel < -2147483648 || rel > 2147483647) { return "branch out of range"; }
+            for (int k = 0; k < 4; k++) { this.code[pos + k] = int((rel >> (k * 8)) & 0xFF); }
+        }
+        return "";
+    }
+
+    // Frame prologue/epilogue (leave shape). frame is 8 mod 16 (never 0) so
+    // the body runs with rsp 16-aligned, ready for call setup below.
+    public void prologue(int frame) {
+        this.b(85);
+        this.b(72);
+        this.b(137);
+        this.b(229);
+        if (frame > 0) {
+            this.b(72);
+            this.b(129);
+            this.b(236);
+            this.i32(int64(frame));
+        }
+    }
+
+    public void epilogue() {
+        this.b(72);
+        this.b(137);
+        this.b(236);
+        this.b(93);
+        this.b(195);
+    }
+
+    // Win64 call setup/teardown (mirrors the reference aligned-call shape):
+    // anchor rsp in r13, align to 16, reserve shadow + outgoing args.
+    public void callSetup(int nargs) {
+        int total = (32 + 8 * nargs + 15) / 16 * 16;
+        this.b(65);
+        this.b(85);
+        this.b(73);
+        this.b(137);
+        this.b(229);
+        this.b(72);
+        this.b(131);
+        this.b(228);
+        this.b(240);
+        this.b(72);
+        this.b(131);
+        this.b(236);
+        this.b(total);
+    }
+
+    public void callTeardown() {
+        this.b(76);
+        this.b(137);
+        this.b(236);
+        this.b(65);
+        this.b(93);
+    }
+
+    // E8 call with a zero hole; returns the hole position for the reloc.
+    public int callHole() {
+        this.b(232);
+        int pos = this.code.length;
+        this.i32(0);
+        return pos;
+    }
+
+    // movabs r64, 0 hole; reg 0 = rax, 1 = rcx, 2 = rdx. Returns the hole.
+    public int absHole(int reg) {
+        this.b(72);
+        if (reg == 0) { this.b(184); }
+        else if (reg == 1) { this.b(185); }
+        else { this.b(186); }
+        int pos = this.code.length;
+        this.i64(0);
+        return pos;
+    }
+
+    public void movAbs(int reg, int64 v) {
+        this.b(72);
+        if (reg == 0) { this.b(184); }
+        else if (reg == 1) { this.b(185); }
+        else { this.b(186); }
+        this.i64(v);
+    }
+}
+
+// Whole-program lowering context: deduplicated .rdata strings, function
+// signatures with parameter/return kinds, and const values. Parameter kinds
+// ride one letter per parameter (i/b/c) exactly like the tier predicate's
+// context so the two agree on every signature.
+class WinCtx {
+    public prop string[] strs;
+    public prop int[] strOffs;
+    public prop int strLen;
+    public prop string[] fnNames;
+    public prop string[] fnPKinds;
+    public prop string[] fnRets;
+    public prop string[] constNames;
+    public prop int64[] constVals;
+    public prop string[] constKinds;
+    public prop bool usesPrintf;
+    public prop bool usesExit;
+
+    construct {
+        this.strs = [];
+        this.strOffs = [];
+        this.strLen = 0;
+        this.fnNames = [];
+        this.fnPKinds = [];
+        this.fnRets = [];
+        this.constNames = [];
+        this.constVals = [];
+        this.constKinds = [];
+        this.usesPrintf = false;
+        this.usesExit = false;
+    }
+
+    // Offset of s in .rdata, appending (with NUL) on first sight.
+    public int addStr(string s) {
+        for (int i = 0; i < this.strs.length; i++) {
+            if (this.strs[i] == s) { return this.strOffs[i]; }
+        }
+        int off = this.strLen;
+        this.strs.add(s);
+        this.strOffs.add(off);
+        this.strLen = this.strLen + s.length + 1;
+        return off;
+    }
+
+    public int findFn(string name) {
+        for (int i = 0; i < this.fnNames.length; i++) {
+            if (this.fnNames[i] == name) { return i; }
+        }
+        return -1;
+    }
+
+    public int findConst(string name) {
+        for (int i = 0; i < this.constNames.length; i++) {
+            if (this.constNames[i] == name) { return i; }
+        }
+        return -1;
+    }
+}
+
+// Per-function lowering state: the emitter, the slot map (params first in
+// order, then locals in encounter order — slot i lives at [rbp - 8*(i+1)]),
+// loop label stacks for break/continue, and the pending relocations (sites
+// are function-relative until concatenation rebases them).
+class WinFn {
+    public prop WinEmit e;
+    public prop string fname;
+    public prop string[] varNames;
+    public prop string[] varKinds;
+    public prop int epi;
+    public prop int[] brkLabs;
+    public prop int[] contLabs;
+    public prop int[] rsites;
+    public prop int[] rkinds;
+    public prop int[] rtgts;
+    public prop int[] ridx;
+    public prop string[] rnames;
+
+    construct {
+        this.e = new WinEmit();
+        this.fname = "";
+        this.varNames = [];
+        this.varKinds = [];
+        this.epi = -1;
+        this.brkLabs = [];
+        this.contLabs = [];
+        this.rsites = [];
+        this.rkinds = [];
+        this.rtgts = [];
+        this.ridx = [];
+        this.rnames = [];
+    }
+
+    public void rel(int site, int kind, int tgt, int idx, string name) {
+        this.rsites.add(site);
+        this.rkinds.add(kind);
+        this.rtgts.add(tgt);
+        this.ridx.add(idx);
+        this.rnames.add(name);
+    }
+
+    public int findVar(string name) {
+        for (int i = 0; i < this.varNames.length; i++) {
+            if (this.varNames[i] == name) { return i; }
+        }
+        return -1;
+    }
+}
+
+// Lowered-function holder: lowering appends one WinFn per program function
+// here (prop arrays on a passed object keep growing, unlike raw array
+// parameters), and the unit builder concatenates them with rebased sites.
+class WinProg {
+    public prop WinFn[] fns;
+
+    construct {
+        this.fns = [];
+    }
+}
+
+// Tier scalar letter for a declared type spelling, or "" outside the tier.
+private string winScalarOf(string t) {
+    if (t == "int") { return "i"; }
+    if (t == "bool") { return "b"; }
+    if (t == "char") { return "c"; }
+    return "";
+}
+
+// Scalar kind of an expression: 0 int, 1 bool, 2 char. Mirrors the tier
+// walker's type rules (literals, const/var/param reads, operators, calls)
+// so print lowering picks the format the value actually has. Assignment
+// carries its RHS kind (the value eval produces); the << form evaluates its
+// RHS with no store, exactly like the interpreter.
+private int winKindOf(WinCtx ctx, WinFn fn, Node e) {
+    if (e.kind == ND_INT_LIT) { return 0; }
+    if (e.kind == ND_BOOL_LIT) { return 1; }
+    if (e.kind == ND_CHAR_LIT) { return 2; }
+    if (e.kind == ND_IDENT) {
+        int ci = ctx.findConst(e.name);
+        if (ci >= 0) {
+            string ck = ctx.constKinds[ci];
+            if (ck == "b") { return 1; }
+            if (ck == "c") { return 2; }
+            return 0;
+        }
+        int vi = fn.findVar(e.name);
+        if (vi >= 0) {
+            string vk = fn.varKinds[vi];
+            if (vk == "b") { return 1; }
+            if (vk == "c") { return 2; }
+            return 0;
+        }
+        return 0;
+    }
+    if (e.kind == ND_PAREN) {
+        if (e.childCount() == 0) { return 0; }
+        return winKindOf(ctx, fn, e.child(0));
+    }
+    if (e.kind == ND_UNARY) {
+        if (e.childCount() == 0) { return 0; }
+        if (e.op == UOP_NOT) { return 1; }
+        return 0;
+    }
+    if (e.kind == ND_BINARY) {
+        int op = e.op;
+        if (op == OP_EQ || op == OP_NEQ || op == OP_LT || op == OP_LEQ || op == OP_GT || op == OP_GEQ || op == OP_AND || op == OP_OR) { return 1; }
+        if (op == OP_MOVE) {
+            if (e.childCount() < 2) { return 0; }
+            return winKindOf(ctx, fn, e.child(1));
+        }
+        if ((op == OP_ASSIGN || op == OP_ADD_ASSIGN || op == OP_SUB_ASSIGN || op == OP_MUL_ASSIGN || op == OP_DIV_ASSIGN || op == OP_MOD_ASSIGN) && e.childCount() >= 2) {
+            return winKindOf(ctx, fn, e.child(1));
+        }
+        return 0;
+    }
+    if (e.kind == ND_CALL) {
+        int si = ctx.findFn(e.name);
+        if (si >= 0) {
+            string ret = ctx.fnRets[si];
+            if (ret == "b") { return 1; }
+            if (ret == "c") { return 2; }
+        }
+        return 0;
+    }
+    return 0;
+}
+
+// True when every character of s survives a printf %s round trip unchanged:
+// printable ASCII only (NUL would truncate, high bytes depend on encoding).
+private bool winStrNative(string s) {
+    if (s.length == 0) { return true; }
+    for (int i = 0; i < s.length; i++) {
+        int64 c = int64(s[i]);
+        if (c < 1 || c > 127) { return false; }
+    }
+    return true;
+}
+
+// Lower one print/printline call (already validated by the tier predicate:
+// exactly one argument, statement position). Literal-safe formats only, so
+// native output matches the verified tiers byte for byte.
+private string winLowerPrint(WinCtx ctx, WinFn fn, Node call, bool newline) {
+    Node arg = call.child(0);
+    Node t = arg;
+    while (t.kind == ND_PAREN && t.childCount() > 0) { t = t.child(0); }
+    if (t.kind == ND_STRING_LIT) {
+        string lit = t.strVal;
+        if (!winStrNative(lit)) { return "unicode string literal in '" + fn.fname + "'"; }
+        string fmt = "%s";
+        if (newline) { fmt = "%s\n"; }
+        int fmtOff = ctx.addStr(fmt);
+        int strOff = ctx.addStr(lit);
+        ctx.usesPrintf = true;
+        fn.e.callSetup(2);
+        int hole = fn.e.absHole(1);
+        fn.rel(hole, 1, 2, fmtOff, "");
+        hole = fn.e.absHole(2);
+        fn.rel(hole, 1, 2, strOff, "");
+        fn.e.b(176);
+        fn.e.b(0);
+        hole = fn.e.callHole();
+        fn.rel(hole, 0, 4, 0, "");
+        fn.e.callTeardown();
+        return "";
+    }
+    int kind = winKindOf(ctx, fn, arg);
+    string err = winLowerExpr(ctx, fn, arg);
+    if (err.length > 0) { return err; }
+    ctx.usesPrintf = true;
+    if (kind == 1) {
+        string fmt = "%s";
+        if (newline) { fmt = "%s\n"; }
+        int fmtOff = ctx.addStr(fmt);
+        int trueOff = ctx.addStr("true");
+        int falseOff = ctx.addStr("false");
+        fn.e.callSetup(2);
+        int hole = fn.e.absHole(1);
+        fn.rel(hole, 1, 2, fmtOff, "");
+        fn.e.b(72);
+        fn.e.b(131);
+        fn.e.b(248);
+        fn.e.b(0);
+        int falseLab = fn.e.lab();
+        int endLab = fn.e.lab();
+        fn.e.jcc(132, falseLab);
+        hole = fn.e.absHole(2);
+        fn.rel(hole, 1, 2, trueOff, "");
+        fn.e.jmp(endLab);
+        fn.e.bind(falseLab);
+        hole = fn.e.absHole(2);
+        fn.rel(hole, 1, 2, falseOff, "");
+        fn.e.bind(endLab);
+        fn.e.b(176);
+        fn.e.b(0);
+        hole = fn.e.callHole();
+        fn.rel(hole, 0, 4, 0, "");
+        fn.e.callTeardown();
+        return "";
+    }
+    if (kind == 2) {
+        string fmt = "%c";
+        if (newline) { fmt = "%c\n"; }
+        int fmtOff = ctx.addStr(fmt);
+        fn.e.callSetup(2);
+        int hole = fn.e.absHole(1);
+        fn.rel(hole, 1, 2, fmtOff, "");
+        fn.e.b(72);
+        fn.e.b(137);
+        fn.e.b(194);
+        fn.e.b(176);
+        fn.e.b(0);
+        hole = fn.e.callHole();
+        fn.rel(hole, 0, 4, 0, "");
+        fn.e.callTeardown();
+        return "";
+    }
+    string fmtI = "%lld";
+    if (newline) { fmtI = "%lld\n"; }
+    int fmtIOff = ctx.addStr(fmtI);
+    fn.e.callSetup(2);
+    int holeI = fn.e.absHole(1);
+    fn.rel(holeI, 1, 2, fmtIOff, "");
+    fn.e.b(72);
+    fn.e.b(137);
+    fn.e.b(194);
+    fn.e.b(176);
+    fn.e.b(0);
+    holeI = fn.e.callHole();
+    fn.rel(holeI, 0, 4, 0, "");
+    fn.e.callTeardown();
+    return "";
+}
+
+// The guarded divide/modulo trap: printf the reference text, then exit(1)
+// through the real import (noreturn, so no teardown — the process is gone,
+// exactly like the compiled binary on a fault).
+private void winEmitTrap(WinCtx ctx, WinFn fn) {
+    int ueOff = ctx.addStr("Unhandled exception\n");
+    ctx.usesPrintf = true;
+    ctx.usesExit = true;
+    fn.e.callSetup(1);
+    int hole = fn.e.absHole(1);
+    fn.rel(hole, 1, 2, ueOff, "");
+    fn.e.b(176);
+    fn.e.b(0);
+    hole = fn.e.callHole();
+    fn.rel(hole, 0, 4, 0, "");
+    fn.e.callTeardown();
+    fn.e.b(185);
+    fn.e.i32(1);
+    fn.e.callSetup(1);
+    hole = fn.e.callHole();
+    fn.rel(hole, 0, 4, 1, "");
+}
+
+// Lower an expression, leaving its 64-bit value in RAX. Stack-neutral:
+// every push is popped before returning (call sequences restore rsp
+// absolutely, so nested calls compose).
+private string winLowerExpr(WinCtx ctx, WinFn fn, Node e) {
+    if (e.kind == ND_INT_LIT) {
+        fn.e.movAbs(0, e.intVal);
+        return "";
+    }
+    if (e.kind == ND_BOOL_LIT) {
+        if (e.boolVal) { fn.e.movAbs(0, 1); }
+        else {
+            fn.e.b(49);
+            fn.e.b(192);
+        }
+        return "";
+    }
+    if (e.kind == ND_CHAR_LIT) {
+        int cv = e.charVal;
+        fn.e.movAbs(0, int64(cv));
+        return "";
+    }
+    if (e.kind == ND_STRING_LIT) {
+        return "string values in '" + fn.fname + "'";
+    }
+    if (e.kind == ND_IDENT) {
+        int ci = ctx.findConst(e.name);
+        if (ci >= 0) {
+            fn.e.movAbs(0, ctx.constVals[ci]);
+            return "";
+        }
+        int vi = fn.findVar(e.name);
+        if (vi < 0) { return "unknown variable '" + e.name + "'"; }
+        fn.e.b(72);
+        fn.e.b(139);
+        fn.e.b(133);
+        fn.e.i32(int64(-8 * (vi + 1)));
+        return "";
+    }
+    if (e.kind == ND_PAREN) {
+        if (e.childCount() == 0) { return "unsupported expression"; }
+        return winLowerExpr(ctx, fn, e.child(0));
+    }
+    if (e.kind == ND_UNARY) {
+        if (e.childCount() == 0) { return "unsupported expression"; }
+        string err = winLowerExpr(ctx, fn, e.child(0));
+        if (err.length > 0) { return err; }
+        if (e.op == UOP_NEG) {
+            fn.e.b(72);
+            fn.e.b(247);
+            fn.e.b(216);
+            return "";
+        }
+        if (e.op == UOP_NOT) {
+            fn.e.b(72);
+            fn.e.b(133);
+            fn.e.b(192);
+            fn.e.b(15);
+            fn.e.b(148);
+            fn.e.b(192);
+            fn.e.b(72);
+            fn.e.b(15);
+            fn.e.b(182);
+            fn.e.b(192);
+            return "";
+        }
+        return "unsupported unary operator";
+    }
+    if (e.kind == ND_BINARY) {
+        return winLowerBinary(ctx, fn, e);
+    }
+    if (e.kind == ND_CALL) {
+        if (e.name == "print" || e.name == "printline") {
+            return "print used as a value in '" + fn.fname + "'";
+        }
+        if (e.name == "exit" || e.name == "printf") {
+            return "explicit '" + e.name + "' calls in '" + fn.fname + "'";
+        }
+        return winLowerCall(ctx, fn, e);
+    }
+    return "unsupported expression in '" + fn.fname + "'";
+}
+
+// Binary operators. Arithmetic and comparisons evaluate lhs, push, evaluate
+// rhs, pop — the reference stack-machine shape. Division and modulo go
+// through the guarded sequence (zero divisor and INT64_MIN / -1 trap).
+private string winLowerBinary(WinCtx ctx, WinFn fn, Node e) {
+    int op = e.op;
+    string cur = fn.fname;
+    if (op == OP_ADD || op == OP_SUB || op == OP_MUL) {
+        if (e.childCount() < 2) { return "unsupported expression in '" + cur + "'"; }
+        string err = winLowerExpr(ctx, fn, e.child(0));
+        if (err.length > 0) { return err; }
+        fn.e.b(80);
+        err = winLowerExpr(ctx, fn, e.child(1));
+        if (err.length > 0) { return err; }
+        fn.e.b(72);
+        fn.e.b(137);
+        fn.e.b(193);
+        fn.e.b(88);
+        if (op == OP_ADD) {
+            fn.e.b(72);
+            fn.e.b(1);
+            fn.e.b(200);
+        } else if (op == OP_SUB) {
+            fn.e.b(72);
+            fn.e.b(41);
+            fn.e.b(200);
+        } else {
+            fn.e.b(72);
+            fn.e.b(15);
+            fn.e.b(175);
+            fn.e.b(193);
+        }
+        return "";
+    }
+    if (op == OP_DIV || op == OP_MOD) {
+        if (e.childCount() < 2) { return "unsupported expression in '" + cur + "'"; }
+        string err = winLowerExpr(ctx, fn, e.child(0));
+        if (err.length > 0) { return err; }
+        fn.e.b(80);
+        err = winLowerExpr(ctx, fn, e.child(1));
+        if (err.length > 0) { return err; }
+        fn.e.b(72);
+        fn.e.b(137);
+        fn.e.b(193);
+        fn.e.b(88);
+        fn.e.b(72);
+        fn.e.b(129);
+        fn.e.b(249);
+        fn.e.i32(0);
+        int okDiv = fn.e.lab();
+        fn.e.jcc(133, okDiv);
+        winEmitTrap(ctx, fn);
+        fn.e.bind(okDiv);
+        int64 intMin = -9223372036854775807 - 1;
+        fn.e.b(72);
+        fn.e.b(184);
+        fn.e.i64(intMin);
+        fn.e.b(72);
+        fn.e.b(57);
+        fn.e.b(194);
+        int okOv = fn.e.lab();
+        fn.e.jcc(133, okOv);
+        fn.e.b(72);
+        fn.e.b(129);
+        fn.e.b(249);
+        fn.e.i32(-1);
+        fn.e.jcc(133, okOv);
+        winEmitTrap(ctx, fn);
+        fn.e.bind(okOv);
+        fn.e.b(72);
+        fn.e.b(153);
+        fn.e.b(72);
+        fn.e.b(247);
+        fn.e.b(249);
+        if (op == OP_MOD) {
+            fn.e.b(72);
+            fn.e.b(137);
+            fn.e.b(208);
+        }
+        return "";
+    }
+    if (op == OP_EQ || op == OP_NEQ || op == OP_LT || op == OP_LEQ || op == OP_GT || op == OP_GEQ) {
+        if (e.childCount() < 2) { return "unsupported expression in '" + cur + "'"; }
+        string err = winLowerExpr(ctx, fn, e.child(0));
+        if (err.length > 0) { return err; }
+        fn.e.b(80);
+        err = winLowerExpr(ctx, fn, e.child(1));
+        if (err.length > 0) { return err; }
+        fn.e.b(72);
+        fn.e.b(137);
+        fn.e.b(193);
+        fn.e.b(88);
+        fn.e.b(72);
+        fn.e.b(57);
+        fn.e.b(200);
+        int trueLab = fn.e.lab();
+        int endLab = fn.e.lab();
+        if (op == OP_EQ) { fn.e.jcc(132, trueLab); }
+        else if (op == OP_NEQ) { fn.e.jcc(133, trueLab); }
+        else if (op == OP_LT) { fn.e.jcc(140, trueLab); }
+        else if (op == OP_LEQ) { fn.e.jcc(142, trueLab); }
+        else if (op == OP_GT) { fn.e.jcc(143, trueLab); }
+        else { fn.e.jcc(141, trueLab); }
+        fn.e.b(49);
+        fn.e.b(192);
+        fn.e.jmp(endLab);
+        fn.e.bind(trueLab);
+        fn.e.movAbs(0, 1);
+        fn.e.bind(endLab);
+        return "";
+    }
+    if (op == OP_AND || op == OP_OR) {
+        if (e.childCount() < 2) { return "unsupported expression in '" + cur + "'"; }
+        string err = winLowerExpr(ctx, fn, e.child(0));
+        if (err.length > 0) { return err; }
+        fn.e.b(72);
+        fn.e.b(133);
+        fn.e.b(192);
+        int falseLab = fn.e.lab();
+        int endLab = fn.e.lab();
+        if (op == OP_AND) { fn.e.jcc(132, falseLab); }
+        else { fn.e.jcc(133, endLab); }
+        err = winLowerExpr(ctx, fn, e.child(1));
+        if (err.length > 0) { return err; }
+        fn.e.b(72);
+        fn.e.b(133);
+        fn.e.b(192);
+        fn.e.jcc(132, falseLab);
+        fn.e.jmp(endLab);
+        fn.e.bind(falseLab);
+        fn.e.b(49);
+        fn.e.b(192);
+        fn.e.bind(endLab);
+        return "";
+    }
+    if (op == OP_ASSIGN || op == OP_ADD_ASSIGN || op == OP_SUB_ASSIGN || op == OP_MUL_ASSIGN) {
+        if (e.childCount() < 2) { return "unsupported expression in '" + cur + "'"; }
+        Node t = e.child(0);
+        if (t.kind != ND_IDENT) { return "complex assignment targets in '" + cur + "'"; }
+        int vi = fn.findVar(t.name);
+        if (vi < 0) { return "unknown variable '" + t.name + "' in '" + cur + "'"; }
+        if (op == OP_ASSIGN) {
+            string err = winLowerExpr(ctx, fn, e.child(1));
+            if (err.length > 0) { return err; }
+            fn.e.b(72);
+            fn.e.b(137);
+            fn.e.b(133);
+            fn.e.i32(int64(-8 * (vi + 1)));
+            return "";
+        }
+        fn.e.b(72);
+        fn.e.b(139);
+        fn.e.b(133);
+        fn.e.i32(int64(-8 * (vi + 1)));
+        fn.e.b(80);
+        string err2 = winLowerExpr(ctx, fn, e.child(1));
+        if (err2.length > 0) { return err2; }
+        fn.e.b(72);
+        fn.e.b(137);
+        fn.e.b(193);
+        fn.e.b(88);
+        if (op == OP_ADD_ASSIGN) {
+            fn.e.b(72);
+            fn.e.b(1);
+            fn.e.b(200);
+        } else if (op == OP_SUB_ASSIGN) {
+            fn.e.b(72);
+            fn.e.b(41);
+            fn.e.b(200);
+        } else if (op == OP_MUL_ASSIGN) {
+            fn.e.b(72);
+            fn.e.b(15);
+            fn.e.b(175);
+            fn.e.b(193);
+        } else {
+            return "unsupported binary operator in '" + cur + "'";
+        }
+        fn.e.b(72);
+        fn.e.b(137);
+        fn.e.b(133);
+        fn.e.i32(int64(-8 * (vi + 1)));
+        return "";
+    }
+    if (op == OP_DIV_ASSIGN || op == OP_MOD_ASSIGN) {
+        if (e.childCount() < 2) { return "unsupported expression in '" + cur + "'"; }
+        Node t = e.child(0);
+        if (t.kind != ND_IDENT) { return "complex assignment targets in '" + cur + "'"; }
+        int vi = fn.findVar(t.name);
+        if (vi < 0) { return "unknown variable '" + t.name + "' in '" + cur + "'"; }
+        fn.e.b(72);
+        fn.e.b(139);
+        fn.e.b(133);
+        fn.e.i32(int64(-8 * (vi + 1)));
+        fn.e.b(80);
+        string err = winLowerExpr(ctx, fn, e.child(1));
+        if (err.length > 0) { return err; }
+        fn.e.b(72);
+        fn.e.b(137);
+        fn.e.b(193);
+        fn.e.b(88);
+        fn.e.b(72);
+        fn.e.b(129);
+        fn.e.b(249);
+        fn.e.i32(0);
+        int okDiv = fn.e.lab();
+        fn.e.jcc(133, okDiv);
+        winEmitTrap(ctx, fn);
+        fn.e.bind(okDiv);
+        int64 intMinA = -9223372036854775807 - 1;
+        fn.e.b(72);
+        fn.e.b(184);
+        fn.e.i64(intMinA);
+        fn.e.b(72);
+        fn.e.b(57);
+        fn.e.b(194);
+        int okOv = fn.e.lab();
+        fn.e.jcc(133, okOv);
+        fn.e.b(72);
+        fn.e.b(129);
+        fn.e.b(249);
+        fn.e.i32(-1);
+        fn.e.jcc(133, okOv);
+        winEmitTrap(ctx, fn);
+        fn.e.bind(okOv);
+        fn.e.b(72);
+        fn.e.b(153);
+        fn.e.b(72);
+        fn.e.b(247);
+        fn.e.b(249);
+        if (op == OP_MOD_ASSIGN) {
+            fn.e.b(72);
+            fn.e.b(137);
+            fn.e.b(208);
+        }
+        fn.e.b(72);
+        fn.e.b(137);
+        fn.e.b(133);
+        fn.e.i32(int64(-8 * (vi + 1)));
+        return "";
+    }
+    if (op == OP_MOVE) {
+        if (e.childCount() < 2) { return "unsupported expression in '" + cur + "'"; }
+        return winLowerExpr(ctx, fn, e.child(1));
+    }
+    return "unsupported binary operator in '" + cur + "'";
+}
+
+// Lower a call to a program-defined function (exact arity checked by the
+// tier predicate). Arguments evaluate left to right into the outgoing area,
+// then load into RCX/RDX/R8/R9 (+ stack slots), call, teardown. RAX carries
+// the result; statement-position callers discard it.
+private string winLowerCall(WinCtx ctx, WinFn fn, Node e) {
+    string cur = fn.fname;
+    int si = ctx.findFn(e.name);
+    if (si < 0) { return "call to unknown function '" + e.name + "' in '" + cur + "'"; }
+    string pks = ctx.fnPKinds[si];
+    if (e.childCount() != pks.length) { return "arity mismatch calling '" + e.name + "' in '" + cur + "'"; }
+    int nargs = e.childCount();
+    int nstack = 0;
+    if (nargs > 4) { nstack = nargs - 4; }
+    fn.e.callSetup(nargs);
+    for (int i = 0; i < nargs; i++) {
+        string err = winLowerExpr(ctx, fn, e.child(i));
+        if (err.length > 0) { return err; }
+        if (i < 4) {
+            fn.e.b(72);
+            fn.e.b(137);
+            fn.e.b(132);
+            fn.e.b(36);
+            fn.e.i32(int64(32 + 8 * nstack + 8 * i));
+        } else {
+            fn.e.b(72);
+            fn.e.b(137);
+            fn.e.b(132);
+            fn.e.b(36);
+            fn.e.i32(int64(32 + 8 * (i - 4)));
+        }
+    }
+    if (nargs > 0) {
+        fn.e.b(72);
+        fn.e.b(139);
+        fn.e.b(140);
+        fn.e.b(36);
+        fn.e.i32(int64(32 + 8 * nstack));
+    }
+    if (nargs > 1) {
+        fn.e.b(72);
+        fn.e.b(139);
+        fn.e.b(148);
+        fn.e.b(36);
+        fn.e.i32(int64(32 + 8 * nstack + 8));
+    }
+    if (nargs > 2) {
+        fn.e.b(76);
+        fn.e.b(139);
+        fn.e.b(132);
+        fn.e.b(36);
+        fn.e.i32(int64(32 + 8 * nstack + 16));
+    }
+    if (nargs > 3) {
+        fn.e.b(76);
+        fn.e.b(139);
+        fn.e.b(140);
+        fn.e.b(36);
+        fn.e.i32(int64(32 + 8 * nstack + 24));
+    }
+    int hole = fn.e.callHole();
+    fn.rel(hole, 0, 0, si, "");
+    fn.e.callTeardown();
+    return "";
+}
+
+// Lower one statement. Value-producing positions (return) leave RAX set;
+// statement calls and prints are stack-neutral.
+private string winLowerStmt(WinCtx ctx, WinFn fn, Node s) {
+    string cur = fn.fname;
+    if (s.kind == ND_EXPR_STMT) {
+        if (s.childCount() > 0) {
+            Node inner = s.child(0);
+            if (inner.kind == ND_CALL && (inner.name == "print" || inner.name == "printline")) {
+                bool nl = inner.name == "printline";
+                if (inner.childCount() != 1) { return "multi-argument print in '" + cur + "'"; }
+                return winLowerPrint(ctx, fn, inner, nl);
+            }
+            return winLowerExprAsStmt(ctx, fn, inner);
+        }
+        return "";
+    }
+    if (s.kind == ND_VAR_DECL) {
+        return winLowerLocalDecl(ctx, fn, s);
+    }
+    if (s.kind == ND_RETURN) {
+        if (s.childCount() == 0) {
+            fn.e.jmp(fn.epi);
+            return "";
+        }
+        string err = winLowerExpr(ctx, fn, s.child(0));
+        if (err.length > 0) { return err; }
+        fn.e.jmp(fn.epi);
+        return "";
+    }
+    if (s.kind == ND_IF_STMT) {
+        if (s.childCount() < 2) { return "unsupported statement in '" + cur + "'"; }
+        string err = winLowerExpr(ctx, fn, s.child(0));
+        if (err.length > 0) { return err; }
+        fn.e.b(72);
+        fn.e.b(133);
+        fn.e.b(192);
+        int elseLab = fn.e.lab();
+        int endLab = fn.e.lab();
+        fn.e.jcc(132, elseLab);
+        err = winLowerBlock(ctx, fn, s.child(1));
+        if (err.length > 0) { return err; }
+        fn.e.jmp(endLab);
+        fn.e.bind(elseLab);
+        if (s.childCount() > 2) {
+            err = winLowerBlock(ctx, fn, s.child(2));
+            if (err.length > 0) { return err; }
+        }
+        fn.e.bind(endLab);
+        return "";
+    }
+    if (s.kind == ND_WHILE) {
+        if (s.childCount() < 2) { return "unsupported statement in '" + cur + "'"; }
+        int condLab = fn.e.lab();
+        int endLab = fn.e.lab();
+        fn.e.bind(condLab);
+        string err = winLowerExpr(ctx, fn, s.child(0));
+        if (err.length > 0) { return err; }
+        fn.e.b(72);
+        fn.e.b(133);
+        fn.e.b(192);
+        fn.e.jcc(132, endLab);
+        fn.brkLabs.add(endLab);
+        fn.contLabs.add(condLab);
+        err = winLowerBlock(ctx, fn, s.child(1));
+        if (err.length > 0) { return err; }
+        fn.brkLabs.pop();
+        fn.contLabs.pop();
+        fn.e.jmp(condLab);
+        fn.e.bind(endLab);
+        return "";
+    }
+    if (s.kind == ND_BREAK) {
+        if (fn.brkLabs.length == 0) { return "break/continue outside a loop in '" + cur + "'"; }
+        fn.e.jmp(fn.brkLabs[fn.brkLabs.length - 1]);
+        return "";
+    }
+    if (s.kind == ND_CONTINUE) {
+        if (fn.contLabs.length == 0) { return "break/continue outside a loop in '" + cur + "'"; }
+        fn.e.jmp(fn.contLabs[fn.contLabs.length - 1]);
+        return "";
+    }
+    if (s.kind == ND_FOR_RANGE) {
+        Node desugared = winDesugarRange(s);
+        return winLowerStmt(ctx, fn, desugared);
+    }
+    if (s.kind == ND_FOR_C) {
+        return winLowerForC(ctx, fn, s);
+    }
+    return "unsupported statement in '" + cur + "'";
+}
+
+// An expression in statement position: calls to program functions run for
+// effect, assignments store, everything else evaluates and discards.
+private string winLowerExprAsStmt(WinCtx ctx, WinFn fn, Node inner) {
+    string cur = fn.fname;
+    if (inner.kind == ND_CALL) {
+        if (inner.name == "print" || inner.name == "printline") {
+            return "print used as a value in '" + cur + "'";
+        }
+        if (inner.name == "exit" || inner.name == "printf") {
+            return "explicit '" + inner.name + "' calls in '" + cur + "'";
+        }
+        return winLowerCall(ctx, fn, inner);
+    }
+    return winLowerExpr(ctx, fn, inner);
+}
+
+private string winLowerLocalDecl(WinCtx ctx, WinFn fn, Node s) {
+    string cur = fn.fname;
+    if (s.childCount() == 0) { return "uninitialized local '" + s.name + "' in '" + cur + "'"; }
+    int kind = winKindOf(ctx, fn, s.child(0));
+    string vk = "i";
+    if (kind == 1) { vk = "b"; }
+    else if (kind == 2) { vk = "c"; }
+    if (s.typeHint != "" && s.typeHint != "var") {
+        vk = winScalarOf(s.typeHint);
+        if (vk.length == 0) { return "local '" + s.name + "' has non-tier type in '" + cur + "'"; }
+    }
+    string err = winLowerExpr(ctx, fn, s.child(0));
+    if (err.length > 0) { return err; }
+    fn.varNames.add(s.name);
+    fn.varKinds.add(vk);
+    int vi = fn.varNames.length - 1;
+    fn.e.b(72);
+    fn.e.b(137);
+    fn.e.b(133);
+    fn.e.i32(int64(-8 * (vi + 1)));
+    return "";
+}
+
+private string winLowerBlock(WinCtx ctx, WinFn fn, Node block) {
+    if (block.kind == ND_BLOCK) {
+        for (int i = 0; i < block.childCount(); i++) {
+            string err = winLowerStmt(ctx, fn, block.child(i));
+            if (err.length > 0) { return err; }
+        }
+        return "";
+    }
+    return winLowerStmt(ctx, fn, block);
+}
+
+// Range-for desugared onto the C-for shape exactly like the tier predicate:
+// init `var = start`, cond `var < end`, update `var = var + 1`.
+private Node winDesugarRange(Node s) {
+    Node forN = new Node(ND_FOR_C, s.line, s.col);
+    Node initN = new Node(ND_VAR_DECL, s.line, s.col);
+    initN.name = s.name;
+    initN.typeHint = s.typeHint;
+    initN.addChild(s.child(0));
+    Node lhsN = new Node(ND_IDENT, s.line, s.col);
+    lhsN.name = s.name;
+    Node condN = new Node(ND_BINARY, s.line, s.col);
+    condN.op = OP_LT;
+    condN.addChild(lhsN);
+    condN.addChild(s.child(1));
+    Node uLhsN = new Node(ND_IDENT, s.line, s.col);
+    uLhsN.name = s.name;
+    Node aLhsN = new Node(ND_IDENT, s.line, s.col);
+    aLhsN.name = s.name;
+    Node oneN = new Node(ND_INT_LIT, s.line, s.col);
+    oneN.intVal = 1;
+    Node addN = new Node(ND_BINARY, s.line, s.col);
+    addN.op = OP_ADD;
+    addN.addChild(aLhsN);
+    addN.addChild(oneN);
+    Node updN = new Node(ND_BINARY, s.line, s.col);
+    updN.op = OP_ASSIGN;
+    updN.addChild(uLhsN);
+    updN.addChild(addN);
+    forN.addChild(initN);
+    forN.addChild(condN);
+    forN.addChild(updN);
+    forN.addChild(s.child(2));
+    return forN;
+}
+
+// C-like for: init once, then cond-check / body / update; continue runs the
+// update, break leaves. Mirrors the predicate's desugar onto while.
+private string winLowerForC(WinCtx ctx, WinFn fn, Node s) {
+    string cur = fn.fname;
+    if (s.childCount() < 4) { return "unsupported statement in '" + cur + "'"; }
+    Node init = s.child(0);
+    if (init.kind == ND_VAR_DECL) {
+        string err = winLowerLocalDecl(ctx, fn, init);
+        if (err.length > 0) { return err; }
+    } else if (init.kind == ND_EXPR_STMT) {
+        if (init.childCount() > 0) {
+            string err = winLowerExprAsStmt(ctx, fn, init.child(0));
+            if (err.length > 0) { return err; }
+        }
+    } else if (init.kind == ND_BINARY) {
+        string err = winLowerExpr(ctx, fn, init);
+        if (err.length > 0) { return err; }
+    } else {
+        return "unsupported for initializer in '" + cur + "'";
+    }
+    int condLab = fn.e.lab();
+    int updLab = fn.e.lab();
+    int endLab = fn.e.lab();
+    fn.e.bind(condLab);
+    string cerr = winLowerExpr(ctx, fn, s.child(1));
+    if (cerr.length > 0) { return cerr; }
+    fn.e.b(72);
+    fn.e.b(133);
+    fn.e.b(192);
+    fn.e.jcc(132, endLab);
+    fn.brkLabs.add(endLab);
+    fn.contLabs.add(updLab);
+    string berr = winLowerBlock(ctx, fn, s.child(3));
+    if (berr.length > 0) { return berr; }
+    fn.brkLabs.pop();
+    fn.contLabs.pop();
+    fn.e.bind(updLab);
+    string uerr = winLowerExprAsStmt(ctx, fn, s.child(2));
+    if (uerr.length > 0) { return uerr; }
+    fn.e.jmp(condLab);
+    fn.e.bind(endLab);
+    return "";
+}
+
+// Lower one function into prog: params spilled to slots, body, then the
+// shared epilogue. Frame reserves params + all body locals up front.
+private string winLowerFuncInto(WinCtx ctx, WinProg prog, Node func, int fnIdx) {
+    WinFn fn = new WinFn();
+    fn.fname = func.name;
+    Node params = func.child(0);
+    Node body = func.child(1);
+    string pks = ctx.fnPKinds[fnIdx];
+    for (int i = 0; i < params.childCount(); i++) {
+        fn.varNames.add(params.child(i).name);
+        fn.varKinds.add(pks[i..i + 1]);
+    }
+    int nvars = params.childCount() + winCountLocals(body);
+    int frame = (nvars * 8 + 8 + 15) / 16 * 16 - 8;
+    fn.e.prologue(frame);
+    if (params.childCount() > 0) {
+        fn.e.b(72);
+        fn.e.b(137);
+        fn.e.b(141);
+        fn.e.i32(-8);
+    }
+    if (params.childCount() > 1) {
+        fn.e.b(72);
+        fn.e.b(137);
+        fn.e.b(149);
+        fn.e.i32(-16);
+    }
+    if (params.childCount() > 2) {
+        fn.e.b(76);
+        fn.e.b(137);
+        fn.e.b(133);
+        fn.e.i32(-24);
+    }
+    if (params.childCount() > 3) {
+        fn.e.b(76);
+        fn.e.b(137);
+        fn.e.b(141);
+        fn.e.i32(-32);
+    }
+    for (int p = 4; p < params.childCount(); p++) {
+        fn.e.b(72);
+        fn.e.b(139);
+        fn.e.b(133);
+        fn.e.i32(int64(48 + 8 * (p - 4)));
+        fn.e.b(72);
+        fn.e.b(137);
+        fn.e.b(133);
+        fn.e.i32(int64(-8 * (p + 1)));
+    }
+    fn.epi = fn.e.lab();
+    string err = winLowerBlock(ctx, fn, body);
+    if (err.length > 0) { return err; }
+    fn.e.bind(fn.epi);
+    fn.e.epilogue();
+    err = fn.e.finish();
+    if (err.length > 0) { return err; }
+    prog.fns.add(fn);
+    return "";
+}
+
+// Count the local declarations a body introduces (var decls plus C-for init
+// decls, range-for desugared the same way) so the frame reserves them all up
+// front. Slots are still assigned in encounter order during lowering.
+private int winCountLocals(Node block) {
+    if (block.kind == ND_VAR_DECL) { return 1; }
+    if (block.kind == ND_FOR_RANGE) { return 1 + winCountLocals(block.child(2)); }
+    if (block.kind == ND_FOR_C) {
+        int n = 0;
+        if (block.childCount() >= 4) {
+            if (block.child(0).kind == ND_VAR_DECL) { n = 1; }
+            n = n + winCountLocals(block.child(3));
+        }
+        return n;
+    }
+    if (block.kind == ND_IF_STMT) {
+        int n = 0;
+        if (block.childCount() > 1) { n = winCountLocals(block.child(1)); }
+        if (block.childCount() > 2) { n = n + winCountLocals(block.child(2)); }
+        return n;
+    }
+    if (block.kind == ND_WHILE) {
+        if (block.childCount() < 2) { return 0; }
+        return winCountLocals(block.child(1));
+    }
+    if (block.kind == ND_BLOCK) {
+        int n = 0;
+        for (int i = 0; i < block.childCount(); i++) { n = n + winCountLocals(block.child(i)); }
+        return n;
+    }
+    return 0;
+}
+
+// Fill `unit` with the real lowering of one in-tier entry file: one FUNC per
+// user function (main under the entry symbol), .rdata with the program's
+// strings, UNDEF imports for printf/ExitProcess when used, and REL32/ABS64
+// relocations. Returns "" or the loud fallback reason (never a stub).
+public string winLowerUnit(string filekey, int64 hash, int srcLen, int stamp, Node[] program, ObjUnit unit) {
+    string reason = macTierReason(program);
+    if (reason.length > 0) { return reason; }
+    WinCtx ctx = new WinCtx();
+    for (int i = 0; i < program.length; i++) {
+        Node item = program[i];
+        if (item.kind == ND_FUNC) {
+            Node params = item.child(0);
+            string kinds = "";
+            for (int pi = 0; pi < params.childCount(); pi++) {
+                kinds = kinds + winScalarOf(params.child(pi).typeHint);
+            }
+            string ret = "v";
+            if (item.typeHint != "" && item.typeHint != "void") {
+                ret = winScalarOf(item.typeHint);
+            }
+            ctx.fnNames.add(item.name);
+            ctx.fnPKinds.add(kinds);
+            ctx.fnRets.add(ret);
+        } else if (item.kind == ND_CONST) {
+            Node v = item.child(0);
+            if (v.kind == ND_INT_LIT) {
+                ctx.constNames.add(item.name);
+                ctx.constVals.add(v.intVal);
+                ctx.constKinds.add(winScalarOf(item.typeHint));
+            } else if (v.kind == ND_BOOL_LIT) {
+                ctx.constNames.add(item.name);
+                if (v.boolVal) { ctx.constVals.add(1); }
+                else { ctx.constVals.add(0); }
+                ctx.constKinds.add(winScalarOf(item.typeHint));
+            } else if (v.kind == ND_CHAR_LIT) {
+                ctx.constNames.add(item.name);
+                int cv = v.charVal;
+                ctx.constVals.add(int64(cv));
+                ctx.constKinds.add(winScalarOf(item.typeHint));
+            }
+        }
+    }
+    WinProg prog = new WinProg();
+    for (int f = 0; f < program.length; f++) {
+        Node item = program[f];
+        if (item.kind == ND_FUNC) {
+            int fi = ctx.findFn(item.name);
+            string err = winLowerFuncInto(ctx, prog, item, fi);
+            if (err.length > 0) { return err; }
+        }
+    }
+    unit.filekey = filekey;
+    unit.datab = databName(filekey);
+    unit.gas = 0;
+    unit.impDlls = [];
+    unit.impNames = [];
+    unit.undefSingles = [];
+    unit.undefImports = [];
+    if (ctx.usesPrintf) {
+        unit.impDlls.add("msvcrt.dll");
+        unit.impNames.add("printf");
+        unit.undefImports.add(0);
+    }
+    if (ctx.usesExit) {
+        unit.undefImports.add(unit.impDlls.length);
+        unit.impDlls.add("kernel32.dll");
+        unit.impNames.add("ExitProcess");
+    }
+    ObjWriter dw = new ObjWriter();
+    for (int s = 0; s < ctx.strs.length; s++) {
+        dw.rawStr(ctx.strs[s]);
+        dw.u8(0);
+    }
+    unit.data = dw.out;
+    unit.code = [];
+    unit.defNames = [];
+    unit.defOffs = [];
+    unit.defSizes = [];
+    unit.undefFuncs = [];
+    unit.relSites = [];
+    unit.relKinds = [];
+    unit.relTargets = [];
+    unit.relIdx = [];
+    unit.relNames = [];
+    for (int g = 0; g < prog.fns.length; g++) {
+        WinFn wfn = prog.fns[g];
+        string wname = wfn.fname;
+        int base = unit.code.length;
+        if (wname == "main") {
+            unit.defNames.add(objInterpEntrySym(filekey, hash));
+        } else {
+            unit.defNames.add("__slv_fn_" + wname);
+        }
+        unit.defOffs.add(base);
+        unit.defSizes.add(wfn.e.code.length);
+        for (int c = 0; c < wfn.e.code.length; c++) { unit.code.add(wfn.e.code[c]); }
+        for (int r = 0; r < wfn.rsites.length; r++) {
+            unit.relSites.add(base + wfn.rsites[r]);
+            unit.relKinds.add(wfn.rkinds[r]);
+            unit.relTargets.add(wfn.rtgts[r]);
+            unit.relIdx.add(wfn.ridx[r]);
+            unit.relNames.add(wfn.rnames[r]);
+        }
+    }
+    return "";
+}
+
 // Internal symbol order shared by every writer (mirrors the references):
 // section anchors, defined functions, the data anchor, then undefined
 // symbols (functions, singletons, imports). Sizes ride alongside for the
