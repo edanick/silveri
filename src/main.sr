@@ -1304,8 +1304,13 @@ void main() {
             cacheProject = "silveri_default";
         }
     }
-    if (cacheBytecode) {
-        CacheSession cache = new CacheSession(cacheRoot, cacheProject);
+    // OVERHAUL.md --cache-object alone (no --cache-bytecode) still routes
+    // through the bytecode tier with a READ ONLY session: the synced .srbc
+    // decodes on a hit (lastPayload set, packed as the object payload below)
+    // and misses lex fresh with .sr fallback — bytecode\ is never written.
+    // With --cache-bytecode the same call syncs the tier first (case 3).
+    if (cacheBytecode || cacheObject) {
+        CacheSession cache = new CacheSession(cacheRoot, cacheProject, !cacheBytecode);
         tokens = cache.tokensFor(filename, inputSource);
         bcPayload = cache.lastPayload;
         cache.flush();
