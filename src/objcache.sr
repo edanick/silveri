@@ -185,12 +185,12 @@ import * from mac.libsystem;
 //
 // Freshness (mirrors the references exactly):
 //
-// The per-file FNV-1 hash + source length (the bytecode tier's size proxy in
-// place of mtimes) is compared against the per-target project.sbcr record
+// The per-file `.sr` modification time plus the FNV-1 hash of the combined
+// source is compared against the per-target project.sbcr record
 // (v3 — unchanged fields, existing records are reused), which additionally
 // keys on the emitting flag set, so a flag switch re-emits. Fresh means: the
-// record matches (hash + size), the .o exists, AND its v5 note peeks with the
-// expected flag set + hash (plan() in the references). Anything else —
+// record matches (mtime + hash, in that order), the .o exists, AND its v5
+// note peeks with the expected flag set + hash (plan() in the references). Anything else —
 // including a v4-era object or a compiler-emitted object whose flag set is
 // not "interp" — is stale (re-emitted), never a hard error on the plan path
 // and never silently reused. Unlike the compilers — which note every project
@@ -5841,24 +5841,23 @@ class ObjSession {
         return -1;
     }
 
-    // Observe the entry source. Freshness keys on the source FNV-1 hash plus
-    // the source length (the bytecode tier's size proxy in place of mtimes —
-    // the same hash the driver lexed, whether its tokens came from synced
-    // .srbc text or fresh source). Out-of-root entries are skipped: they
+    // Observe the entry source. Freshness keys on the `.sr` modification
+    // time plus the source FNV-1 hash — the same pair the driver stat-ed and
+    // hashed once for the bytecode tier (OVERHAUL.md freshness steps 1-2, no
+    // re-hash and no second stat here). Out-of-root entries are skipped: they
     // still run normally, they just are not object-cached.
-    public void noteFile(string absPath, string source, bool fromBytecode) {        if (!this.ok) { return; }
+    public void noteFileHashed(string absPath, int64 srcHash, int mtimeVal, bool fromBytecode) {
+        if (!this.ok) { return; }
         string key = icRelPath(this.root, absPath);
         if (key.length == 0) { return; }
         if (objIsLocalKey(key) == 0) { return; }
-        int64 srcHash = icFnv1(source);
-        int srcLen = source.length;
         int stamp = icNowMillis();
         int tier = 0;
         if (fromBytecode) { tier = 1; }
         int idx = this.findNoted(key);
         if (idx >= 0) {
             this.notedC[idx] = stamp;
-            this.notedM[idx] = srcLen;
+            this.notedM[idx] = mtimeVal;
             this.notedH[idx] = srcHash;
             this.notedStamps[idx] = stamp;
             this.notedTiers[idx] = tier;
@@ -5866,7 +5865,7 @@ class ObjSession {
         }
         this.notedKeys.add(key);
         this.notedC.add(stamp);
-        this.notedM.add(srcLen);
+        this.notedM.add(mtimeVal);
         this.notedH.add(srcHash);
         this.notedStamps.add(stamp);
         this.notedTiers.add(tier);
@@ -5898,16 +5897,16 @@ class ObjSession {
     }
 
     // Freshness probe for one noted entry (mirrors the reference plan()):
-    // the record matches (hash + size), the .o exists, and its v5 note
-    // peeks with the expected flag set + hash. Anything else - a changed
-    // source, a missing file, a v4-era object, a foreign object, a
-    // compiler-emitted object under another flag set - is stale (re-emit),
-    // never a hard error here and never silently reused.
+    // the record matches (`.sr` mtime first, then source hash), the .o
+    // exists, and its v5 note peeks with the expected flag set + hash.
+    // Anything else - a changed source, a missing file, a v4-era object, a
+    // foreign object, a compiler-emitted object under another flag set - is
+    // stale (re-emit), never a hard error here and never silently reused.
     private bool isFresh(int n) {
         int idx = this.findRecord(this.notedKeys[n]);
         if (idx < 0) { return false; }
-        if (this.hashes[idx] != this.notedH[n]) { return false; }
         if (this.mTimes[idx] != this.notedM[n]) { return false; }
+        if (this.hashes[idx] != this.notedH[n]) { return false; }
         string probe = this.objectPath(this.notedKeys[n]);
         if (probe.length == 0 || !file.exists(probe)) { return false; }
         byte[] raw = [];

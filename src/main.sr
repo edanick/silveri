@@ -1399,7 +1399,7 @@ void main() {
     if (cacheObject) {
         ObjSession objs = new ObjSession(cacheRoot, cacheProject, target);
         if (objs.ok) {
-            objs.noteFile(filename, inputSource, bcPayload.length > 0);
+            objs.noteFileHashed(filename, sharedHash, sharedMtime, bcPayload.length > 0);
             if (target == "WINDOWS" || target == "LINUX" || target == "MAC") {
                 // Lowering probe parses through the single parse entry (no
                 // call walk: probe input only, exactly as before).
