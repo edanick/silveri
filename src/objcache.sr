@@ -4928,6 +4928,14 @@ public string macTierReason(Node[] program) {
         } else if (item.kind == ND_ENUM_DEF) {
             return "enum definitions";
         } else if (item.kind == ND_MODULE) {
+            // Pure `mod export name;` declarations carry no code: the
+            // tree-walking register only records the module name (eval.sr),
+            // and the native tier has no module namespace, so there is
+            // nothing to lower and the item is skipped. Anything else —
+            // a real `mod name { ... }` block (items as children) or a bare
+            // `mod name;` forward declaration (empty marker) — stays outside
+            // the tier.
+            if (item.childCount() == 0 && item.strVal == "export") { continue; }
             return "inline module blocks";
         } else if (item.kind == ND_TYPE_ALIAS) {
             return "type aliases";
