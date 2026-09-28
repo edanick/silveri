@@ -296,18 +296,6 @@ public string databName(string filekey) {
     return objDatabPrefix() + parts.join("") + "_" + objHex8(low);
 }
 
-// 16 lowercase hex digits of a 64-bit value (the {:016x} shape the record
-// companions use for FNV-1 hashes).
-public string objHex16(int64 v) {
-    string digits = "0123456789abcdef";
-    string[] parts = [];
-    for (int i = 0; i < 16; i++) {
-        int nib = int((v >> ((15 - i) * 4)) & 0xF);
-        parts.add(digits[nib..nib + 1]);
-    }
-    return parts.join("");
-}
-
 // 8 lowercase hex digits of the low 32 bits (the {:08x} shape of data
 // anchors and entry symbols).
 public string objHex8(int64 v) {
@@ -318,63 +306,6 @@ public string objHex8(int64 v) {
         parts.add(digits[nib..nib + 1]);
     }
     return parts.join("");
-}
-
-// Escape a text-companion field so the output never contains NUL bytes or
-// line breaks (mirrors the reference escape_text).
-public string objEscapeText(string s) {
-    string[] parts = [];
-    for (int i = 0; i < s.length; i++) {
-        char c = s[i];
-        if (c == '\\') { parts.add("\\\\"); }
-        else if (c == char(0)) { parts.add("\\0"); }
-        else if (c == '\n') { parts.add("\\n"); }
-        else if (c == '\r') { parts.add("\\r"); }
-        else { parts.add((string)c); }
-    }
-    return parts.join("");
-}
-
-public string objUnescapeText(string s) {
-    string[] parts = [];
-    for (int i = 0; i < s.length; i++) {
-        char c = s[i];
-        if (c == '\\' && i + 1 < s.length) {
-            char d = s[i + 1];
-            if (d == '\\') { parts.add("\\"); i++; }
-            else if (d == 'n') { parts.add("\n"); i++; }
-            else if (d == 'r') { parts.add("\r"); i++; }
-            else if (d == '0') { parts.add((string)char(0)); i++; }
-            else { parts.add((string)c); }
-        } else {
-            parts.add((string)c);
-        }
-    }
-    return parts.join("");
-}
-
-private bool objIsHex(string s) {
-    if (s.length == 0 || s.length > 16) { return false; }
-    for (int i = 0; i < s.length; i++) {
-        char c = s[i];
-        bool digit = c >= '0' && c <= '9';
-        bool lower = c >= 'a' && c <= 'f';
-        bool upper = c >= 'A' && c <= 'F';
-        if (!digit && !lower && !upper) { return false; }
-    }
-    return true;
-}
-
-private int64 objParseHex(string s) {
-    int64 v = 0;
-    for (int i = 0; i < s.length; i++) {
-        char c = s[i];
-        int d = c - '0';
-        if (c >= 'a' && c <= 'f') { d = c - 'a' + 10; }
-        else if (c >= 'A' && c <= 'F') { d = c - 'A' + 10; }
-        v = v * 16 + int64(d);
-    }
-    return v;
 }
 
 // True (1) when a /-separated record key resolves inside the project root:
@@ -6102,11 +6033,11 @@ class ObjSession {
         // shape plus the flag-set line the object record keys on.
         string[] lines = [];
         lines.add("SBCRI v2\n");
-        lines.add("project " + objEscapeText(this.projectName) + "\n");
-        lines.add("flags " + objEscapeText(this.flags) + "\n");
+        lines.add("project " + icEscapeText(this.projectName) + "\n");
+        lines.add("flags " + icEscapeText(this.flags) + "\n");
         lines.add("created " + (string)this.createdStamp + "\n");
         for (int re = 0; re < this.keys.length; re++) {
-            lines.add(objEscapeText(this.keys[re]) + " " + (string)this.cTimes[re] + " " + (string)this.mTimes[re] + " " + objHex16(int64(this.hashes[re])) + " " + (string)this.cachedAt[re] + "\n");
+            lines.add(icEscapeText(this.keys[re]) + " " + (string)this.cTimes[re] + " " + (string)this.mTimes[re] + " " + icHex16(int64(this.hashes[re])) + " " + (string)this.cachedAt[re] + "\n");
         }
         file.writeString(sbcriPath, lines.join(""));
 
@@ -6383,7 +6314,7 @@ class ObjSession {
             string line = icSliceRange(text, pos, eol);
             pos = eol + 1;
             if (line.startsWith("flags ")) {
-                storedFlags = objUnescapeText(icSliceRange(line, 6, line.length));
+                storedFlags = icUnescapeText(icSliceRange(line, 6, line.length));
                 sawFlags = true;
             } else if (line.startsWith("created ")) {
                 string num = icSliceRange(line, 8, line.length);
@@ -6409,17 +6340,17 @@ class ObjSession {
                     }
                 }
                 if (fieldCount < 4) { continue; }
-                string rel = objUnescapeText(icSliceRange(line, 0, s1));
+                string rel = icUnescapeText(icSliceRange(line, 0, s1));
                 string created = icSliceRange(line, s1 + 1, s2);
                 string modified = icSliceRange(line, s2 + 1, s3);
                 string hex = icSliceRange(line, s3 + 1, s4);
                 string cached = icSliceRange(line, s4 + 1, line.length);
                 if (!created.isDigits() || !modified.isDigits() || !cached.isDigits()) { continue; }
-                if (!objIsHex(hex)) { continue; }
+                if (!icIsHex(hex)) { continue; }
                 this.keys.add(rel);
                 this.cTimes.add((int)created);
                 this.mTimes.add((int)modified);
-                this.hashes.add(objParseHex(hex));
+                this.hashes.add(icParseHex(hex));
                 this.cachedAt.add((int)cached);
             }
         }

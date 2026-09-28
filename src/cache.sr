@@ -45,13 +45,24 @@ import * from mac.libsystem;
 // only. The WINDOWS APPDATA construction and the LINUX /var/cache branch
 // stay byte-identical.
 //
-// **.sbcr (Silver ByteCode Record) v1** — little-endian:
-//   magic "SBCR" | u16 version=1 | u64 created (ms since epoch)
+// **.sbcr (Silver ByteCode Record) v2** — little-endian (OVERHAUL.md
+// "Freshness check and record layout", byte-identical to the reference):
+//   magic "SBCR" | u16 version=2 | u64 created (ms since epoch)
 //   u32 name_len + UTF-8 project name
 //   u32 entry_count
 //   per entry: u32 rel_path_len + UTF-8 '/'-separated path,
 //              u64 creation_millis u64 modified_millis
 //              u64 fnv1_hash       u64 last_cached_millis
+//
+// `modified_millis` IS the `.sr` file's modification time (ms since epoch):
+// the freshness gate compares it first, then the FNV-1 content hash. The
+// NUL-free text companion `project.sbcri` carries the same record as SBCRI
+// v2 text (`SBCRI v2` / `project` / `created` lines plus one
+// `<escaped-rel> <created> <modified> <hexhash> <cached>` entry per line,
+// hashes as 16 hex digits of the exact bits) and is the authoritative read
+// side. Legacy v1 companions (`created` / `name` / `f a|b|c|d|e` lines)
+// match no v2 field count and stay absent: one re-sync, then the flush
+// rewrites the v2 shape.
 //
 // **.srbc (Silver ByteCode) v1** — the linear token stream of one file:
 //   magic "SRBC" | u16 version=1
@@ -129,37 +140,26 @@ class CacheSession {
         this.lexMessages = [];
         this.lastPayload = "";
         this.readOnly = ro;
-        // Linux cache root (mirrors silverc/compiler/bcache.sr): same
+        // Cache root per host (mirrors silverc/compiler/bcache.sr): same
         // .sbcr/.srbc formats under /var/cache/silver/<project>/bytecode/
-        // with `/` separators. The WINDOWS APPDATA construction below is untouched.
-        // MAC root (MAC.md section 5b, UNVALIDATED code-only): same formats
-        // under /Library/Caches/Silver/<project>/bytecode/ (machine-wide, capital
-        // Silver) with `/` separators and a fixed root (no $HOME lookup);
-        // an unwritable root degrades gracefully downstream like the Linux
-        // branch.
+        // with `/` separators on LINUX, under
+        // /Library/Caches/Silver/<project>/bytecode/ (machine-wide, capital
+        // Silver, fixed root) on MAC. Only the root differs per branch; the
+        // record load, the fresh-cache stamp, and the readiness flag are
+        // shared below.
+        // MAC root (MAC.md section 5b, UNVALIDATED code-only): an unwritable
+        // root degrades gracefully downstream like the Linux branch.
         #on LINUX
         this.dir = "/var/cache/silver/" + icSanitize(projName) + "/bytecode";
-        if (!ro) {
-            this.dropLegacyRecords(icDirname(this.dir));
-            icEnsureDirTree(this.dir);
-        }
-        this.loadRecords();
-        this.ok = true;
-        return;
         #on MAC
         this.dir = "/Library/Caches/Silver/" + icSanitize(projName) + "/bytecode";
-        if (!ro) {
-            this.dropLegacyRecords(icDirname(this.dir));
-            icEnsureDirTree(this.dir);
-        }
-        this.loadRecords();
-        this.ok = true;
-        return;
         #off
-        // fs.getenv lowers to native GetEnvironmentVariableA, "" when unset.
-        string appdata = fs.getenv("APPDATA");
-        if (appdata.length == 0) { return; }
-        this.dir = appdata + "\\silver cache\\" + icSanitize(projName) + "\\bytecode";
+        if (this.dir.length == 0) {
+            // fs.getenv lowers to native GetEnvironmentVariableA, "" when unset.
+            string appdata = fs.getenv("APPDATA");
+            if (appdata.length == 0) { return; }
+            this.dir = appdata + "\\silver cache\\" + icSanitize(projName) + "\\bytecode";
+        }
         if (!ro) {
             this.dropLegacyRecords(icDirname(this.dir));
             icEnsureDirTree(this.dir);
@@ -169,12 +169,6 @@ class CacheSession {
         // preserves the stored one (mirrors the reference cache.rs `open`).
         if (this.oldIndexText.length == 0) { this.createdStamp = icNowMillis(); }
         this.ok = true;
-    }
-
-    private string keyOf(int i) {
-        string sep = "|";
-        return this.keys[i] + sep + this.cTimesStr[i] + sep + this.mTimesStr[i]
-            + sep + this.hashesStr[i] + sep + this.cachedAtStr[i];
     }
 
     // Return cached tokens for absPath when its contents are unchanged and
@@ -262,22 +256,35 @@ class CacheSession {
 
         this.sortRecords();
 
-        string indexText = "created " + (string)this.createdStamp + "\n";
-        indexText += "name " + this.projectName + "\n";
+        // Linear index build: one small string per line, joined once
+        // (per-line concatenation was quadratic in the record count). The
+        // SBCRI v2 shape (OVERHAUL.md record layout — the same text the
+        // reference companion and the object tier write): escaped paths
+        // (spaces survive via right-cut parsing on load), decimal stamps,
+        // hashes as 16 hex digits of the exact bits.
+        string[] idxParts = [];
+        idxParts.add("SBCRI v2\n");
+        idxParts.add("project " + icEscapeText(this.projectName) + "\n");
+        idxParts.add("created " + (string)this.createdStamp + "\n");
         for (int r = 0; r < this.keys.length; r++) {
-            indexText += "f " + this.keyOf(r) + "\n";
+            idxParts.add(icEscapeText(this.keys[r]) + " " + this.cTimesStr[r] + " " + this.mTimesStr[r] + " " + icHex16(icDecToI64(this.hashesStr[r])) + " " + this.cachedAtStr[r] + "\n");
         }
-        if (indexText == this.oldIndexText) { return; }
-
-        icEnsureDirTree(this.dir);
+        string indexText = idxParts.join("");
         string sbcriOut = this.dir + "\\project.sbcri";
         #on LINUX or MAC
         sbcriOut = this.dir + "/project.sbcri";
         #off
+        bool sbcriMissing = !file.exists(sbcriOut);
+        if (indexText == this.oldIndexText && !sbcriMissing) { return; }
+        icEnsureDirTree(this.dir);
         file.writeString(sbcriOut, indexText);
+        if (indexText == this.oldIndexText) { return; }
 
-        // Reference-format binary record (little-endian, see module docs),
-        // streamed in adaptive bounded chunks like the .srbc artifacts.
+        // Reference-format binary record (OVERHAUL.md record layout v2,
+        // little-endian, byte-identical to the reference record), streamed
+        // in adaptive bounded chunks like the .srbc artifacts. Values ride
+        // full-width (int64 parses the whole decimal, including negative
+        // hash spellings).
         string sbcrOut = this.dir + "\\project.sbcr";
         #on LINUX or MAC
         sbcrOut = this.dir + "/project.sbcr";
@@ -288,7 +295,7 @@ class CacheSession {
             bw.b8(66);
             bw.b8(67);
             bw.b8(82);
-            bw.b16(1);
+            bw.b16(2);
             bw.b64(this.createdStamp);
             string pn = this.projectName;
             bw.b32(pn.length);
@@ -325,22 +332,44 @@ class CacheSession {
             while (eol < text.length && text[eol] != '\n') { eol++; }
             string line = icSliceRange(text, pos, eol);
             pos = eol + 1;
-            if (icStartsWith(line, "created ")) {
-                this.createdStamp = icDecToI64(icSliceRange(line, 8, line.length));
-            } else if (icStartsWith(line, "f ")) {
-                string rest = icSliceRange(line, 2, line.length);
-                string f1 = icWordAtSep(rest, 0, '|');
-                string f2 = icWordAtSep(rest, 1, '|');
-                string f3 = icWordAtSep(rest, 2, '|');
-                string f4 = icWordAtSep(rest, 3, '|');
-                string f5 = icWordAtSep(rest, 4, '|');
-                if (f5.length > 0) {
-                    this.keys.add(f1);
-                    this.cTimesStr.add(f2);
-                    this.mTimesStr.add(f3);
-                    this.hashesStr.add(f4);
-                    this.cachedAtStr.add(f5);
+            if (line == "SBCRI v2" || line.startsWith("project ") || line.startsWith("name ")) {
+                continue;
+            } else if (line.startsWith("created ")) {
+                string num = icSliceRange(line, 8, line.length);
+                if (num.isDigits()) { this.createdStamp = icDecToI64(num); }
+            } else if (line.length > 0) {
+                // Entry: <escaped-rel> <created> <modified> <hexhash> <cached>
+                // — the SBCRI v2 shape. The last four fields cut from the
+                // right so paths holding spaces survive; legacy `f ...` lines
+                // match no field count and stay absent (one re-sync, then the
+                // flush rewrites this shape).
+                int s1 = -1;
+                int s2 = -1;
+                int s3 = -1;
+                int s4 = -1;
+                int fieldCount = 0;
+                for (int i = 0; i < line.length; i++) {
+                    if (line[i] == ' ') {
+                        s1 = s2;
+                        s2 = s3;
+                        s3 = s4;
+                        s4 = i;
+                        fieldCount++;
+                    }
                 }
+                if (fieldCount < 4) { continue; }
+                string rel = icUnescapeText(icSliceRange(line, 0, s1));
+                string created = icSliceRange(line, s1 + 1, s2);
+                string modified = icSliceRange(line, s2 + 1, s3);
+                string hex = icSliceRange(line, s3 + 1, s4);
+                string cached = icSliceRange(line, s4 + 1, line.length);
+                if (!created.isDigits() || !modified.isDigits() || !cached.isDigits()) { continue; }
+                if (!icIsHex(hex)) { continue; }
+                this.keys.add(rel);
+                this.cTimesStr.add(created);
+                this.mTimesStr.add(modified);
+                this.hashesStr.add((string)icParseHex(hex));
+                this.cachedAtStr.add(cached);
             }
         }
     }
@@ -1026,14 +1055,6 @@ public string icSliceRange(string s, int start, int end) {
     return r;
 }
 
-private bool icStartsWith(string s, string prefix) {
-    if (s.length < prefix.length) { return false; }
-    for (int i = 0; i < prefix.length; i++) {
-        if (s[i] != prefix[i]) { return false; }
-    }
-    return true;
-}
-
 private string icWordAt(string s, int which) {
     return icWordAtSep(s, which, ' ');
 }
@@ -1314,6 +1335,76 @@ private Token? icTokenFromParts(int tag, string payload, int64 iv, int cv) {
         return t;
     }
     return null;
+}
+
+// Escape a text-companion field so the output never contains NUL bytes or
+// line breaks (mirrors the reference escape_text). The single home for both
+// cache tiers (the object tier calls these; its own prefixed copies are gone).
+public string icEscapeText(string s) {
+    string[] parts = [];
+    for (int i = 0; i < s.length; i++) {
+        char c = s[i];
+        if (c == '\\') { parts.add("\\\\"); }
+        else if (c == char(0)) { parts.add("\\0"); }
+        else if (c == '\n') { parts.add("\\n"); }
+        else if (c == '\r') { parts.add("\\r"); }
+        else { parts.add((string)c); }
+    }
+    return parts.join("");
+}
+
+public string icUnescapeText(string s) {
+    string[] parts = [];
+    for (int i = 0; i < s.length; i++) {
+        char c = s[i];
+        if (c == '\\' && i + 1 < s.length) {
+            char d = s[i + 1];
+            if (d == '\\') { parts.add("\\"); i++; }
+            else if (d == 'n') { parts.add("\n"); i++; }
+            else if (d == 'r') { parts.add("\r"); i++; }
+            else if (d == '0') { parts.add((string)char(0)); i++; }
+            else { parts.add((string)c); }
+        } else {
+            parts.add((string)c);
+        }
+    }
+    return parts.join("");
+}
+
+// 16 lowercase hex digits of a 64-bit value (the {:016x} shape the record
+// companions use for FNV-1 hashes). Built over icHexDigits, one byte at a
+// time from the top, so this stays the single hex home beside it.
+public string icHex16(int64 v) {
+    string r = "";
+    for (int i = 7; i >= 0; i--) {
+        int b = int((v >> (i * 8)) & 0xFF);
+        r += icHexDigits(b);
+    }
+    return r;
+}
+
+public bool icIsHex(string s) {
+    if (s.length == 0 || s.length > 16) { return false; }
+    for (int i = 0; i < s.length; i++) {
+        char c = s[i];
+        bool digit = c >= '0' && c <= '9';
+        bool lower = c >= 'a' && c <= 'f';
+        bool upper = c >= 'A' && c <= 'F';
+        if (!digit && !lower && !upper) { return false; }
+    }
+    return true;
+}
+
+public int64 icParseHex(string s) {
+    int64 v = 0;
+    for (int i = 0; i < s.length; i++) {
+        char c = s[i];
+        int d = c - '0';
+        if (c >= 'a' && c <= 'f') { d = c - 'a' + 10; }
+        else if (c >= 'A' && c <= 'F') { d = c - 'A' + 10; }
+        v = v * 16 + int64(d);
+    }
+    return v;
 }
 
 private string icHexDigits(int v) {
