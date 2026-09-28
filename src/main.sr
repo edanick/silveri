@@ -1303,6 +1303,14 @@ void main() {
     string bcPayload = "";
     string cacheRoot = "";
     string cacheProject = "";
+    // OVERHAUL.md freshness steps 1-2, hashed and stat-ed once and shared by
+    // every tier below (the unit record, the bytecode lookup, the object-tier
+    // note, and the pipe logs): the `.sr` mtime first (one stat), then one
+    // FNV-1 over the combined bytes. Both stay 0 on the no-cache path, which
+    // parses straight through with no stats-for-freshness, no hashes, and no
+    // record reads (step 5).
+    int64 sharedHash = 0;
+    int sharedMtime = 0;
     if (cacheBytecode || cacheObject) {
         cacheRoot = projDirname(filename);
         cacheProject = "";
@@ -1317,6 +1325,8 @@ void main() {
         } else {
             cacheProject = "silveri_default";
         }
+        sharedMtime = icFileMtimeMs(filename);
+        sharedHash = icFnv1(inputSource);
     }
     // OVERHAUL.md --cache-object alone (no --cache-bytecode) still routes
     // through the bytecode tier with a READ ONLY session: the synced .srbc
@@ -1325,7 +1335,7 @@ void main() {
     // With --cache-bytecode the same call syncs the tier first (case 3).
     if (cacheBytecode || cacheObject) {
         CacheSession cache = new CacheSession(cacheRoot, cacheProject, !cacheBytecode);
-        tokens = cache.tokensFor(filename, inputSource);
+        tokens = cache.tokensFor(filename, inputSource, sharedHash, sharedMtime);
         bcPayload = cache.lastPayload;
         cache.flush();
         // Cached-path lex diagnostics print grouped under the entry header
@@ -1405,20 +1415,20 @@ void main() {
             bool objSkip = (target == "WINDOWS" || target == "LINUX" || target == "MAC") && (!objs.lowHasProgram || objs.lowSkip.length > 0);
             if (objs.lowHasProgram && objs.lowSkip.length > 0) { lowFallback = objs.lowSkip; }
             if (!objSkip) {
-                objErr = objs.verifyObject(filename, cache.icFnv1(inputSource));
+                objErr = objs.verifyObject(filename, sharedHash);
                 if (objErr.length > 0) {
                     printline(objErr);
                     exit(1);
                 }
                 string objTier = "source";
                 if (bcPayload.length > 0) { objTier = "bytecode"; }
-                string runNote = objs.runNative(filename, cache.icFnv1(inputSource));
+                string runNote = objs.runNative(filename, sharedHash);
                 if (runNote.length > 0) {
                     printline(runNote + " — continuing from verified " + objTier + " tier");
                 } else {
                     // Runner path: the unit entered as a cached `.o` — its
                     // single kind logs exactly once before the process exits.
-                    pipeLogUnit(filename, cache.icFnv1(inputSource), pipeKindCachedObject, diagCrumbs);
+                    pipeLogUnit(filename, sharedHash, pipeKindCachedObject, diagCrumbs);
                     if (diagCrumbs) {
                         printline("[objcache] native object execution: genuine " + objTargetDirName(target) + " entry ran in-process (real program results, imports bound via thunks, " + (string)objs.lastNativeUs + " us)");
                     }
@@ -1438,7 +1448,9 @@ void main() {
     int pipeKind = pipeClassifyUnit(false, bcPayload.length > 0);
     string[] pipeUnits = pipeCanonicalOrder(filename, []);
     for (int pi = 0; pi < pipeUnits.length; pi++) {
-        pipeLogUnit(pipeUnits[pi], cache.icFnv1(inputSource), pipeKind, diagCrumbs);
+        // sharedHash is the one driver hash on cached runs and 0 on the
+        // no-cache path (which hashes nothing — step 5 straight-through).
+        pipeLogUnit(pipeUnits[pi], sharedHash, pipeKind, diagCrumbs);
     }
 
     // Every token stream parses through the single parse entry (the

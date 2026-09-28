@@ -175,21 +175,26 @@ class CacheSession {
     // the stored bytecode decodes; otherwise lex source fresh, store the new
     // bytecode, and return those tokens — unless readOnly (--cache-object
     // alone: case 2 serves the hit from disk and case 1 lexes fresh, both
-    // storing nothing). Source is the combined, import-
-    // resolved text that would otherwise be handed to the Lexer.
-    public Token[] tokensFor(string absPath, string source) {
+    // storing nothing). The caller supplies the combined import-resolved
+    // text's FNV-1 hash plus the `.sr` modification time (ms): the driver
+    // stats + hashes each file once (OVERHAUL.md freshness steps 1-2) and
+    // reuses both for the unit record and the object-tier note, so the same
+    // bytes are never hashed or stat-ed twice on the hot path.
+    public Token[] tokensFor(string absPath, string source, int64 rangeHash, int mtimeVal) {
         this.lastPayload = "";
         if (!this.ok) { return this.icLexSet(source); }
         string key = this.relKey(absPath);
         if (key.length == 0) { return this.icLexSet(source); }
-        int64 hash = icFnv1(source);
-        int size = source.length;
-        string hashKey = (string)hash;
-        string sizeKey = (string)size;
+        string hashKey = (string)rangeHash;
+        string mtimeKey = (string)mtimeVal;
         int idx = this.keys.indexOf(key);
         if (idx >= 0) {
-            if (this.hashesStr[idx] == hashKey && this.mTimesStr[idx] == sizeKey) {
-                Token[] cached = this.loadSrbcText(absPath, hashKey);
+            // OVERHAUL.md freshness gate, in order: the `.sr` mtime first,
+            // then the FNV-1 content hash. A HIT decodes the `.srbc` (its
+            // header hash+stamp is re-validated on load); anything else
+            // syncs below.
+            if (this.mTimesStr[idx] == mtimeKey && this.hashesStr[idx] == hashKey) {
+                Token[] cached = this.loadSrbcText(absPath, hashKey, this.cachedAtStr[idx]);
                 if (cached.length > 0) {
                     this.lexErrors = 0;
                     this.lexMessages = [];
@@ -205,17 +210,17 @@ class CacheSession {
         if (this.lexErrors > 0) { return tokens; }
         int stamp = icNowMillis();
         if (this.encodable(tokens)) {
-            this.storeSrbc(absPath, tokens, stamp, hashKey, sizeKey);
+            this.storeSrbc(absPath, tokens, stamp, hashKey);
             string created = (string)stamp;
             if (idx >= 0) {
                 created = this.cTimesStr[idx];
-                this.mTimesStr[idx] = sizeKey;
+                this.mTimesStr[idx] = mtimeKey;
                 this.hashesStr[idx] = hashKey;
                 this.cachedAtStr[idx] = (string)stamp;
             } else {
                 this.keys.add(key);
                 this.cTimesStr.add(created);
-                this.mTimesStr.add(sizeKey);
+                this.mTimesStr.add(mtimeKey);
                 this.hashesStr.add(hashKey);
                 this.cachedAtStr.add((string)stamp);
             }
@@ -435,7 +440,7 @@ class CacheSession {
         return this.dir + "\\" + dotted.replaceAll("/", "\\") + ".srbc";
     }
 
-    private void storeSrbc(string absPath, Token[] tokens, int stamp, string hashKey, string sizeKey) {
+    private void storeSrbc(string absPath, Token[] tokens, int stamp, string hashKey) {
         string path = this.srbcPathFor(absPath);
         if (path.length == 0) { return; }
         icEnsureDirTree(icDirname(path));
@@ -586,13 +591,17 @@ class CacheSession {
         t.put(" -\n");
     }
 
-    private Token[] loadSrbcText(string absPath, string expectHash) {
+    private Token[] loadSrbcText(string absPath, string expectHash, string expectStamp) {
         string path = this.srbcPathFor(absPath);
         if (path.length == 0) { return []; }
         string text = icTryReadText(path + ".t");
         if (text.length == 0) { return []; }
         this.lastPayload = text;
-        Token[] tokens = icTokensFromText(text, expectHash);
+        // Header hash+stamp re-validated against the record entry that gated
+        // this load (OVERHAUL.md: the payload on disk must agree with the
+        // entry pointing at it); any mismatch returns empty (a miss — the
+        // caller re-lexes and re-syncs).
+        Token[] tokens = icTokensFromText(text, expectHash, expectStamp);
         if (tokens.length == 0) { this.lastPayload = ""; return []; }
         return tokens;
     }
@@ -624,9 +633,9 @@ class CacheSession {
 
 // Decode .srbc.t companion text into tokens (the authoritative read side,
 // shared by the bytecode tier and the --cache-object runner). Returns []
-// on any malformation — header hash mismatch, bad count, undecodable line,
-// or length mismatch — so callers fall back to a fresh lex.
-public Token[] icTokensFromText(string text, string expectHash) {
+// on any malformation — header hash/stamp mismatch, bad count, undecodable
+// line, or length mismatch — so callers fall back to a fresh lex.
+public Token[] icTokensFromText(string text, string expectHash, string expectStamp) {
     int pos = 0;
     string header = "";
     while (pos < text.length && text[pos] != '\n') {
@@ -634,10 +643,13 @@ public Token[] icTokensFromText(string text, string expectHash) {
         pos++;
     }
     pos++;
-    // The header is "<fnv1 hash> <cached at millis> <token count>"; the
-    // hash must match the record's, mirroring the reference load_srbc.
+    // The header is "<fnv1 hash> <cached at millis> <token count>"; hash and
+    // stamp must both match the record entry that gated this load, mirroring
+    // the reference load_srbc.
     string headerHash = icWordAt(header, 0);
     if (headerHash != expectHash) { return []; }
+    string headerStamp = icWordAt(header, 1);
+    if (headerStamp != expectStamp) { return []; }
     string countStr = icWordAt(header, 2);
     if (countStr.length == 0) { return []; }
     int count = icStrToInt(countStr);
@@ -883,6 +895,41 @@ public int icNowMillis() {
     int secLow = ts[0] + ts[1] * 256 + ts[2] * 65536 + ts[3] * 16777216;
     int nsecLow = ts[8] + ts[9] * 256 + ts[10] * 65536 + ts[11] * 16777216;
     return secLow * 1000 + nsecLow / 1000000;
+    #off
+    return 0;
+}
+
+// OVERHAUL.md freshness step 1: one stat of the `.sr` file, returning its
+// modification time in ms since the epoch (0 when the file is missing).
+// Raw-OS stat, field for field like the builtins.sr fileModificationNow
+// channel (FindFirstFileA FILETIME on WINDOWS, stat st_mtim on LINUX,
+// Darwin stat64 st_mtimespec on MAC — the LINUX and MAC branches are
+// code-only, UNVALIDATED until probed on their hardware, mirroring the
+// neighboring arms). This exists because the compiled
+// `file.modification(...).milliseconds()` builtin lowering is broken on the
+// bootstrap (every DateTime field reads back as the year, so the driver
+// would gate on wall-varying garbage): cached-tier freshness stats through
+// this instead, never through that builtin.
+public int icFileMtimeMs(string path) {
+    #on WINDOWS
+    int[] mst = new int[40];
+    int mh = FindFirstFileA(path, mst);
+    if (mh == -1) { return 0; }
+    FindClose(mh);
+    int mLow = (mst[2] >> 32) & 0xFFFFFFFF;
+    int mHigh = mst[3] & 0xFFFFFFFF;
+    int64 mFt = mHigh * 4294967296 + mLow;
+    return mFt / 10000 - 11644473600000;
+    #on LINUX
+    int[] mstLn = new int[18];
+    int mRcLn = stat(path, mstLn);
+    if (mRcLn != 0) { return 0; }
+    return mstLn[11] * 1000 + mstLn[12] / 1000000;
+    #on MAC
+    int[] mstMc = new int[18];
+    int mRcMc = stat(path, mstMc);
+    if (mRcMc != 0) { return 0; }
+    return mstMc[6] * 1000 + mstMc[7] / 1000000;
     #off
     return 0;
 }
