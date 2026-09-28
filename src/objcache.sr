@@ -2051,7 +2051,7 @@ private int winCountLocals(Node block) {
 }
 
 // Fill `unit` with the real lowering of one in-tier entry file: one FUNC per
-// user function (main under the entry symbol), .rdata with the program's
+// reached user function (main under the entry symbol), .rdata with the program's
 // strings, UNDEF imports for printf/ExitProcess when used, and REL32/ABS64
 // relocations. abi selects the calling convention (0 = Win64 for COFF,
 // 1 = SysV for ELF — same ISA, same tier predicate, same loud boundary).
@@ -2061,9 +2061,15 @@ public string winLowerUnit(string filekey, int64 hash, int srcLen, int stamp, No
     if (reason.length > 0) { return reason; }
     WinCtx ctx = new WinCtx();
     ctx.abi = abi;
+    // Lower only the reached closure the predicate admitted above, so the
+    // two can never disagree: unreached functions get no signature and no
+    // .text — no lowered caller can reference them, because any reached
+    // caller of their name would have pulled them into the closure.
+    string[] reached = macReachableSet(program);
     for (int i = 0; i < program.length; i++) {
         Node item = program[i];
         if (item.kind == ND_FUNC) {
+            if (!macNameIn(reached, item.name)) { continue; }
             Node params = item.child(0);
             string kinds = "";
             for (int pi = 0; pi < params.childCount(); pi++) {
@@ -2099,6 +2105,7 @@ public string winLowerUnit(string filekey, int64 hash, int srcLen, int stamp, No
     for (int f = 0; f < program.length; f++) {
         Node item = program[f];
         if (item.kind == ND_FUNC) {
+            if (!macNameIn(reached, item.name)) { continue; }
             int fi = ctx.findFn(item.name);
             string err = winLowerFuncInto(ctx, prog, item, fi);
             if (err.length > 0) { return err; }
@@ -3174,9 +3181,14 @@ public string armLowerUnit(string filekey, int64 hash, int srcLen, int stamp, No
     string reason = macTierReason(program);
     if (reason.length > 0) { return reason; }
     MacCtx ctx = new MacCtx();
+    // Same reached-closure rule as the Windows lowering above: unreached
+    // functions get no signature and no .text, so predicate and lowering
+    // agree on every entry.
+    string[] reached = macReachableSet(program);
     for (int i = 0; i < program.length; i++) {
         Node item = program[i];
         if (item.kind == ND_FUNC) {
+            if (!macNameIn(reached, item.name)) { continue; }
             Node params = item.child(0);
             string kinds = "";
             for (int pi = 0; pi < params.childCount(); pi++) {
@@ -3212,6 +3224,7 @@ public string armLowerUnit(string filekey, int64 hash, int srcLen, int stamp, No
     for (int f = 0; f < program.length; f++) {
         Node item = program[f];
         if (item.kind == ND_FUNC) {
+            if (!macNameIn(reached, item.name)) { continue; }
             MacLayout layout = new MacLayout();
             string chk = macCheckFunc(ctx, item, layout);
             if (chk.length > 0) { return chk; }
@@ -4648,9 +4661,15 @@ public string objParseObject(ObjReader r, string targetOs, ParsedObj obj) {
 //   literal values, and import items. No structs, classes, enums, modules,
 //   type aliases, globals, or any other item kind.
 // - Exactly one main with no parameters and void return.
-// - Every other function is free-standing (no overloads — duplicate names
-//   fall back), takes at most 8 parameters, has no default values, and uses
-//   only int/bool/char parameter and return types (void return allowed).
+// - Only the call-graph closure from main is checked and lowered
+//   (plain-call edges to program functions; method calls contribute no
+//   edge and reject when reached): unreached functions — dead helpers,
+//   uncalled stdlib bodies an `import *` prepends — are skipped, so they
+//   never poison the verdict and are never emitted into the .o.
+// - Every other REACHED function is free-standing (no overloads — duplicate
+//   names fall back), takes at most 8 parameters, has no default values,
+//   and uses only int/bool/char parameter and return types (void return
+//   allowed).
 // - No user function is named print, printline, printf, or exit (those
 //   names are the tier's builtins/imports).
 // - Statements: local int/bool/char declarations with an initializer,
@@ -4844,14 +4863,83 @@ private int macFindVar(MacWalk w, string name) {
     return -1;
 }
 
+// Index of the first top-level function named `name` (-1 when no program
+// function has that name). Builtin calls (print/exit/...) never match, so
+// they contribute no edge.
+private int macFuncIndex(Node[] program, string name) {
+    for (int i = 0; i < program.length; i++) {
+        Node item = program[i];
+        if (item.kind == ND_FUNC && item.name == name) { return i; }
+    }
+    return -1;
+}
+
+private bool macNameIn(string[] names, string name) {
+    for (int i = 0; i < names.length; i++) {
+        if (names[i] == name) { return true; }
+    }
+    return false;
+}
+
+// Every plain-call callee name under n (generic child walk). Method calls
+// contribute no edge: a reached method call already falls back ("method
+// calls in ..."), so method-dispatched stdlib (time.now/stopwatch) can
+// never matter to native execution and stays unreached.
+private void macCollectCalls(Node n, string[] out) {
+    if (n.kind == ND_CALL) {
+        if (!macNameIn(out, n.name)) { out.add(n.name); }
+    }
+    for (int i = 0; i < n.childCount(); i++) { macCollectCalls(n.child(i), out); }
+}
+
+// The functions the tier checks and lowers: the call-graph closure from
+// every `main` over plain-call edges to program functions. Unreached
+// functions (dead helpers, uncalled stdlib bodies an `import *` prepends)
+// are never checked and never emitted — they cannot affect native
+// execution, because any program that could reach them at runtime is
+// rejected at the reached caller instead.
+private string[] macReachableSet(Node[] program) {
+    string[] reached = [];
+    for (int i = 0; i < program.length; i++) {
+        Node item = program[i];
+        if (item.kind == ND_FUNC && item.name == "main") {
+            if (!macNameIn(reached, "main")) { reached.add("main"); }
+        }
+    }
+    int cursor = 0;
+    while (cursor < reached.length) {
+        string cur = reached[cursor];
+        cursor++;
+        for (int i = 0; i < program.length; i++) {
+            Node item = program[i];
+            if (item.kind != ND_FUNC || item.name != cur) { continue; }
+            string[] callees = [];
+            macCollectCalls(item, callees);
+            for (int c = 0; c < callees.length; c++) {
+                if (macFuncIndex(program, callees[c]) < 0) { continue; }
+                if (!macNameIn(reached, callees[c])) { reached.add(callees[c]); }
+            }
+        }
+    }
+    return reached;
+}
+
 // Why a program is outside the mac object tier ("" = in-tier). Reason
 // strings mirror the reference mac_tier_fallback_reason exactly.
 public string macTierReason(Node[] program) {
     MacCtx ctx = new MacCtx();
-    // Pass 1: items and signatures.
+    // Pass 1: items and signatures, in program order so the first error
+    // wins exactly like before. Only the call-graph closure from main is
+    // admitted (macReachableSet): unreached functions — dead helpers and
+    // the uncalled stdlib bodies an `import *` prepends (stopwatch, the
+    // sleep overloads) — are skipped, so they no longer poison an in-tier
+    // entry. Reached out-of-tier constructs still reject with the same
+    // strings (honest fallback preserved).
+    string[] reached = macReachableSet(program);
     for (int i = 0; i < program.length; i++) {
         Node item = program[i];
         if (item.kind == ND_FUNC) {
+            if (!macNameIn(reached, item.name)) { continue; }
             if (item.name == "print" || item.name == "printline" || item.name == "printf" || item.name == "exit") {
                 return "user function '" + item.name + "' collides with a tier builtin";
             }
@@ -4964,10 +5052,11 @@ public string macTierReason(Node[] program) {
     if (mainRet != "v") {
         return "main returns a value";
     }
-    // Pass 2: every function body (also flags printf use).
+    // Pass 2: every reached function body (also flags printf use).
     for (int i = 0; i < program.length; i++) {
         Node item = program[i];
         if (item.kind == ND_FUNC) {
+            if (!macNameIn(reached, item.name)) { continue; }
             MacLayout layout = new MacLayout();
             string err = macCheckFunc(ctx, item, layout);
             if (err.length > 0) { return err; }
