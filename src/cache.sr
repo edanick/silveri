@@ -2,6 +2,7 @@ mod export cache;
 
 import resource;
 import pipeline;
+import value;
 import * from string;
 
 // Raw OS enablers for the cache writers and stamps (kernel32 handles/writes,
@@ -58,12 +59,23 @@ import * from mac.libsystem;
 //   u32 token_count
 //   per token: u16 kind_tag, payload, u32 line, u32 col
 //
-// Tag space matches the reference: 0..118 unit kinds in reference declaration
-// order, 200+ payload kinds (200 int i64 LE, 201 float f64 bits, 202 string
-// u32len+bytes, 203 char u32, 204 identifier, 205 annotation, 206 EOF).
-// Tokens without a reference spelling (float literals, interpreter-only
-// keywords like switch/case/assert/fun/loop/typealias) never cache: the whole
-// file falls back to a fresh lex so behavior stays identical to AST mode.
+// Tag space matches the reference: 0..121 shared unit kinds in reference
+// table order (0..119 shared keywords/punctuation/operators, 120 `uint64`,
+// 121 `internal`), 122..129 reserved for self-hosted-only spellings this
+// toolchain never emits (`?.`, `protected`, ... — decode rejects them into
+// the miss path), 130..136 interpreter-only keywords (`switch`/`case`/
+// `assert`/`sleep`/`fun`/`loop`/`typealias`, kept clear of the self-host
+// range so no tag decodes to the wrong spelling on any tool), 200+ payload
+// kinds (200 int i64 LE, 201 float with the f64 bits, 202 string u32len+
+// bytes, 203 char u32, 204 identifier, 205 annotation, 206 EOF, 207
+// interpolation segments). A file using any of these hits instead of
+// re-lexing + re-syncing on every warm run; an unknown future tag still
+// fails decode into the miss path, exactly like a hash/mtime mismatch.
+// Float literals ride tag 201 with their decimal SPELLING in the text
+// companion (the parser scans the spelling for `.`/`e`, so only the exact
+// text round-trips — never the decimal of the bits); the binary carries the
+// reference f64-bits shape (icFloatBitsOf) so cross-tool readers decode the
+// same value instead of a silent zero.
 //
 // Binary artifacts are written byte-exactly for toolchain compatibility;
 // NUL-free text companions (".sbcri" / ".srbc.t") are the authoritative read
@@ -403,14 +415,17 @@ class CacheSession {
         // adaptive bounded chunks straight to disk — never materialized as
         // one string or one whole-file array. The on-disk bytes are
         // identical to the previous one-shot write regardless of the
-        // host-picked chunk size.
+        // host-picked chunk size. Float literals carry the reference f64
+        // bits (icFloatBitsOf over the spelling the text companion keeps
+        // exactly); interpolation segments ride tag 207 in the reference
+        // segment shape.
         BcBinWriter bw = new BcBinWriter(path);
         if (bw.ok()) {
             bw.b8(83);
             bw.b8(82);
             bw.b8(66);
             bw.b8(67);
-            bw.b16(1);
+            bw.b16(2);
             bw.b64(icDecToI64(hashKey));
             int64 sv = stamp;
             bw.b64(sv);
@@ -421,6 +436,8 @@ class CacheSession {
                 bw.b16(tag);
                 if (tag == 200) {
                     bw.b64(tb.intVal);
+                } else if (tag == 201) {
+                    bw.b64(icFloatBitsOf(tb.text));
                 } else if (tag == 203) {
                     int ccv = tb.charVal;
                     bw.b32(ccv);
@@ -429,6 +446,20 @@ class CacheSession {
                     bw.b32(sv2.length);
                     for (int si3 = 0; si3 < sv2.length; si3++) {
                         bw.b8(sv2[si3] & 0xFF);
+                    }
+                } else if (tag == 207) {
+                    bw.b32(tb.ipKinds.length);
+                    for (int gi3 = 0; gi3 < tb.ipKinds.length; gi3++) {
+                        bw.b8(tb.ipKinds[gi3]);
+                        string gtext2 = tb.ipTexts[gi3];
+                        bw.b32(gtext2.length);
+                        for (int gj2 = 0; gj2 < gtext2.length; gj2++) {
+                            bw.b8(gtext2[gj2] & 0xFF);
+                        }
+                        if (tb.ipKinds[gi3] != 0) {
+                            bw.b32(tb.ipLines[gi3]);
+                            bw.b32(tb.ipCols[gi3]);
+                        }
                     }
                 }
                 bw.b32(tb.line);
@@ -466,7 +497,10 @@ class CacheSession {
 
     // One token as one companion line: <tag> <line> <col> <payload>
     // (payload "-" for unit tags, decimal for int/char, "<byteLen>:<hex>"
-    // for string payloads), emitted piecewise into the streaming writer.
+    // for string payloads and float spellings, "<segCount>" plus per-segment
+    // " T<len>:<hex>" / " H<len>:<hex>@<line>:<col>" runs for interpolation
+    // strings), emitted piecewise into the streaming writer. Hex keeps every
+    // payload NUL-free.
     private void writeTokenLine(BcTextWriter t, Token tok) {
         int tag = icTagOf(tok);
         t.put((string)tag);
@@ -480,6 +514,15 @@ class CacheSession {
             t.put("\n");
             return;
         }
+        if (tag == 201) {
+            // Float spelling as <byteLen>:<hex>: the parser scans the
+            // spelling for `.`/`e`, so only the exact text round-trips —
+            // never the decimal of the bits.
+            t.put(" ");
+            icPutHex(t, tok.text);
+            t.put("\n");
+            return;
+        }
         if (tag == 203) {
             int cvEnc = tok.charVal;
             t.put(" ");
@@ -489,18 +532,25 @@ class CacheSession {
         }
         if (tag == 202 || tag == 204 || tag == 205) {
             t.put(" ");
-            string s = tok.strVal;
-            t.put((string)s.length);
-            t.put(":");
-            string hex = "";
-            for (int i = 0; i < s.length; i++) {
-                hex += icHexDigits(s[i] & 0xFF);
-                if (hex.length >= 64) {
-                    t.put(hex);
-                    hex = "";
+            icPutHex(t, tok.strVal);
+            t.put("\n");
+            return;
+        }
+        if (tag == 207) {
+            // Interpolation segments: <segCount>, then per segment a
+            // T<textLen>:<hex> literal run or a
+            // H<holeLen>:<hex>@<line>:<col> hole — the lexer's four arrays,
+            // verbatim.
+            t.put(" ");
+            t.put((string)tok.ipKinds.length);
+            for (int gi = 0; gi < tok.ipKinds.length; gi++) {
+                if (tok.ipKinds[gi] == 0) { t.put(" T"); }
+                else { t.put(" H"); }
+                icPutHex(t, tok.ipTexts[gi]);
+                if (tok.ipKinds[gi] != 0) {
+                    t.put("@" + (string)tok.ipLines[gi] + ":" + (string)tok.ipCols[gi]);
                 }
             }
-            t.put(hex);
             t.put("\n");
             return;
         }
@@ -808,6 +858,66 @@ public int icNowMillis() {
     return 0;
 }
 
+// IEEE-754 bit pattern of the float64 value of a decimal spelling, as a
+// wrapped int64 (sign in the top bit). Finite spellings — the only kind the
+// lexer produces — decompose exactly: scaling by powers of two never rounds,
+// and the 52 mantissa bits extract with truncating int64 floors. Zero maps
+// to all-zero bits; overflows of the decimal parse (e.g. "1e309") map to the
+// all-ones exponent. Subnormal spellings cannot arise from the decimal
+// parser (they underflow to zero), but a defensive subnormal path keeps the
+// mapping total. The text companion always carries the exact spelling, so
+// the interpreter's warm runs never depend on these bits; they exist so the
+// binary artifact decodes to the same value on every tool instead of a
+// silent zero.
+private int64 icFloatBitsOf(string spelling) {
+    float64 v = floatStrToF64(spelling);
+    bool neg = v < 0.0;
+    float64 a = v;
+    if (neg) { a = -a; }
+    if (a == 0.0) { return 0; }
+    float64 maxFin = floatStrToF64("1.7976931348623157e308");
+    int64 signBit = 0;
+    if (neg) {
+        signBit = 9223372036854775807;
+        signBit = signBit + 1;
+    }
+    if (a > maxFin) {
+        int64 infBits = 2047 * 4503599627370496;
+        return infBits + signBit;
+    }
+    int exp2 = 0;
+    while (a >= 2.0) {
+        a = a / 2.0;
+        exp2++;
+    }
+    while (a < 1.0) {
+        a = a * 2.0;
+        exp2--;
+    }
+    int biased = exp2 + 1023;
+    int64 mant = 0;
+    if (biased >= 1) {
+        float64 frac = a - 1.0;
+        for (int i = 0; i < 52; i++) {
+            frac = frac * 2.0;
+            int64 bit = int64(frac);
+            mant = mant * 2 + bit;
+            frac = frac - bit.toFloat64();
+        }
+    } else {
+        // Defensive subnormal path (unreachable from the parser): scale the
+        // mantissa up to the integer it encodes with an all-zero exponent.
+        int steps = exp2 + 1074;
+        float64 t = a;
+        for (int s = 0; s < steps; s++) {
+            t = t * 2.0;
+        }
+        mant = int64(t);
+        biased = 0;
+    }
+    return mant + int64(biased) * 4503599627370496 + signBit;
+}
+
 // FNV-1 64-bit hash of the source text. Compiled int64 arithmetic wraps in
 // two's complement, matching the reference's u64 wrapping bit for bit.
 public int64 icFnv1(string data) {
@@ -987,7 +1097,10 @@ private int icTagOf(Token t) {
     int k = t.kind;
     if (k == 0) { return 206; }
     if (k == 1) { return 200; }
-    if (k == 2) { return -1; }
+    // Float literal: the decimal spelling rides tag 201 (reference float
+    // shape); the text companion carries the spelling hex, the binary the
+    // f64 bits, so warm runs decode the identical token.
+    if (k == 2) { return 201; }
     if (k == 3) { return 202; }
     if (k == 4) { return 203; }
     if (k == 5) {
@@ -997,6 +1110,8 @@ private int icTagOf(Token t) {
     if (k == 6) { return 34; }
     if (k == 7) { return 204; }
     if (k == 8) { return 205; }
+    // `uint64` rides the shared appended tag 120 (reference position).
+    if (k == 9) { return 120; }
     if (k == 10) { return 0; }
     if (k == 11) { return 1; }
     if (k == 12) { return 2; }
@@ -1043,9 +1158,15 @@ private int icTagOf(Token t) {
     if (k == 53) { return 50; }
     if (k == 54) { return 57; }
     if (k == 55) { return 53; }
-    if (k == 56 || k == 57 || k == 58) { return -1; }
+    // Interpreter-only keywords ride appended tags 130..134, clear of the
+    // self-host range (122..125) so no tag decodes to the wrong spelling on
+    // any tool; readers predating a tag re-lex it (miss, never stale).
+    if (k == 56) { return 130; }
+    if (k == 57) { return 131; }
+    if (k == 58) { return 132; }
     if (k == 59) { return 59; }
-    if (k == 60 || k == 61) { return -1; }
+    if (k == 60) { return 133; }
+    if (k == 61) { return 134; }
     if (k == 62) { return 56; }
     if (k == 63) { return 64; }
     if (k == 64) { return 65; }
@@ -1058,7 +1179,12 @@ private int icTagOf(Token t) {
     if (k == 71) { return 44; }
     if (k == 72) { return 45; }
     if (k == 73) { return 46; }
-    if (k == 74 || k == 75) { return -1; }
+    // `loop` / `typealias` ride appended tags 135..136 (same disjoint rule
+    // as above); `internal` rides the shared appended tag 121, exactly like
+    // the reference, so those files hit instead of re-syncing every run.
+    if (k == 74) { return 135; }
+    if (k == 75) { return 136; }
+    if (k == 76) { return 121; }
     if (k == 100) { return 66; }
     if (k == 101) { return 67; }
     if (k == 102) { return 68; }
@@ -1112,12 +1238,25 @@ private int icTagOf(Token t) {
     if (k == 154) { return 102; }
     if (k == 155) { return 103; }
     if (k == 156) { return 104; }
+    // Interpolation-string token (SPEC 12.2): segments ride tag 207 in the
+    // reference segment shape.
+    if (k == 168) { return 207; }
     return -1;
 }
 
-int[] icUnitKinds = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, -1, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 5, 5, 6, 44, 45, 46, 47, 48, 49, 68, 69, 70, 71, 72, 73, 50, 51, 52, 53, 66, 65, 55, -1, 67, 62, 54, -1, 59, -1, -1, -1, -1, 63, 64, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 148, 124, 150, 125, 126, 130, 131, 132, 133, 151, 152, 153, 154, 155, 156, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 147, 145, 146];
+// Unit-kind table indexed by reference tag. 0..118 shared keywords /
+// punctuation / operators (with -1 where this toolchain emits nothing:
+// 16 `byte`, 54 `export`, 58 `async`, 60 `override`, 61 `virtual`, 62
+// `printline`, 63 `print`); 119 the bootstrap-only RightShiftExpr tag
+// (never produced here, always re-lexed); 120 `uint64` and 121 `internal`
+// (shared appended positions, exactly like the reference); 122..129 the
+// self-hosted-only spellings (never emitted here, always re-lexed);
+// 130..136 the interpreter-only keywords (`switch`/`case`/`assert`/
+// `sleep`/`fun`/`loop`/`typealias`, disjoint from every other tool's
+// appended range so a tag never decodes to the wrong spelling).
+int[] icUnitKinds = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, -1, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 5, 5, 6, 44, 45, 46, 47, 48, 49, 68, 69, 70, 71, 72, 73, 50, 51, 52, 53, 66, 65, 55, -1, 67, 62, 54, -1, 59, -1, -1, -1, -1, 63, 64, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 148, 124, 150, 125, 126, 130, 131, 132, 133, 151, 152, 153, 154, 155, 156, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 147, 145, 146, -1, 9, 76, -1, -1, -1, -1, -1, -1, -1, -1, 56, 57, 58, 60, 61, 74, 75];
 
-string[] icUnitTexts = ["if", "else", "while", "for", "foreach", "return", "match", "void", "int", "int32", "int64", "uint", "float", "float64", "double", "bool", "byte", "char", "string", "var", "struct", "class", "enum", "def", "found", "collect", "mod", "import", "from", "as", "new", "const", "true", "false", "null", "public", "private", "static", "prop", "construct", "unset", "local", "alias", "fixed", "live", "once", "shared", "mut", "ref", "try", "catch", "finally", "throw", "to", "export", "extends", "elif", "in", "async", "await", "override", "virtual", "printline", "print", "break", "continue", "(", ")", "{", "}", "[", "]", ";", ",", ".", ":", "=", "+", "-", "*", "/", "%", "&", "|", "^", "~", "<", ">", "!", "?", "??", "$", "@", "#", "_", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=", "==", "!=", "<=", ">=", "&&", "||", "<<", ">>", "++", "--", "..", "...", "->", "=>"];
+string[] icUnitTexts = ["if", "else", "while", "for", "foreach", "return", "match", "void", "int", "int32", "int64", "uint", "float", "float64", "double", "bool", "byte", "char", "string", "var", "struct", "class", "enum", "def", "found", "collect", "mod", "import", "from", "as", "new", "const", "true", "false", "null", "public", "private", "static", "prop", "construct", "unset", "local", "alias", "fixed", "live", "once", "shared", "mut", "ref", "try", "catch", "finally", "throw", "to", "export", "extends", "elif", "in", "async", "await", "override", "virtual", "printline", "print", "break", "continue", "(", ")", "{", "}", "[", "]", ";", ",", ".", ":", "=", "+", "-", "*", "/", "%", "&", "|", "^", "~", "<", ">", "!", "?", "??", "$", "@", "#", "_", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=", "==", "!=", "<=", ">=", "&&", "||", "<<", ">>", "++", "--", "..", "...", "->", "=>", "", "uint64", "internal", "", "", "", "", "", "", "", "", "switch", "case", "assert", "sleep", "fun", "loop", "typealias"];
 
 private Token? icTokenFromParts(int tag, string payload, int64 iv, int cv) {
     Token t = new Token(0, "", 1, 1);
@@ -1132,7 +1271,14 @@ private Token? icTokenFromParts(int tag, string payload, int64 iv, int cv) {
         return t;
     }
     if (tag == 201) {
-        return null;
+        // Float literal: the payload IS the spelling the lexer produced
+        // (text and strVal both carry it — the parser reads strVal into the
+        // float node, so the cached token evaluates to the identical value
+        // with the identical precision).
+        t.kind = 2;
+        t.text = payload;
+        t.strVal = payload;
+        return t;
     }
     if (tag == 202) {
         t.kind = 3;
@@ -1159,7 +1305,7 @@ private Token? icTokenFromParts(int tag, string payload, int64 iv, int cv) {
         t.text = payload;
         return t;
     }
-    if (tag >= 0 && tag <= 118 && tag != 119) {
+    if (tag >= 0 && tag <= 136 && tag != 119) {
         int k = icUnitKinds[tag];
         if (k < 0) { return null; }
         t.kind = k;
@@ -1180,6 +1326,24 @@ private string icHexDigits(int v) {
     return r;
 }
 
+// One hex payload into the streaming text writer: <byteLen>:<hex>, the hex
+// spilling in bounded windows so no line is ever built with per-char
+// concatenation. The single home for every text-companion hex payload
+// (strings, idents, float spellings, interpolation segments).
+private void icPutHex(BcTextWriter t, string s) {
+    t.put((string)s.length);
+    t.put(":");
+    string hex = "";
+    for (int i = 0; i < s.length; i++) {
+        hex += icHexDigits(s[i] & 0xFF);
+        if (hex.length >= 64) {
+            t.put(hex);
+            hex = "";
+        }
+    }
+    t.put(hex);
+}
+
 private int icHexVal(char c) {
     if (c >= '0' && c <= '9') { return c - '0'; }
     if (c >= 'a' && c <= 'f') { return c - 'a' + 10; }
@@ -1190,12 +1354,21 @@ private Token? icTokenFromLine(string line) {
     string t1 = icWordAt(line, 0);
     string t2 = icWordAt(line, 1);
     string t3 = icWordAt(line, 2);
-    string t4 = icWordAt(line, 3);
-    if (t4.length == 0) { return null; }
     int tag = icStrToInt(t1);
     int ln = icStrToInt(t2);
     int cl = icStrToInt(t3);
     if (tag < 0 || ln < 0 || cl < 0) { return null; }
+    // Payload is everything after the third word (not the fourth word):
+    // interpolation-segment payloads carry spaces, so a word cut would
+    // truncate them. Spaceless payloads read identically either way.
+    int pi = 0;
+    for (int w = 0; w < 3; w++) {
+        while (pi < line.length && line[pi] != ' ') { pi++; }
+        while (pi < line.length && line[pi] == ' ') { pi++; }
+    }
+    string rest = icSliceRange(line, pi, line.length);
+    if (rest.length == 0) { return null; }
+    string t4 = icWordAt(rest, 0);
     string payload = "";
     int64 iv = 0;
     int cv = 32;
@@ -1204,12 +1377,16 @@ private Token? icTokenFromLine(string line) {
     } else if (tag == 203) {
         cv = icStrToInt(t4);
         if (cv < 0) { return null; }
-    } else if (tag == 202 || tag == 204 || tag == 205) {
+    } else if (tag == 202 || tag == 204 || tag == 205 || tag == 201) {
+        // <byteLen>:<hex> — decoded into an exact-size buffer appended in
+        // place, so payload cost is linear with no per-char quadratic copy.
+        // Tag 201 carries the float SPELLING here (the value is re-derived
+        // from it by the parser, exactly like the lexer derived it).
         int colon = 0;
-        while (colon < t4.length && t4[colon] != ':') { colon++; }
-        if (colon >= t4.length) { return null; }
-        int blen = icStrToInt(icSliceRange(t4, 0, colon));
-        string hex = icSliceRange(t4, colon + 1, t4.length);
+        while (colon < rest.length && rest[colon] != ':') { colon++; }
+        if (colon >= rest.length) { return null; }
+        int blen = icStrToInt(icSliceRange(rest, 0, colon));
+        string hex = icSliceRange(rest, colon + 1, rest.length);
         if (blen < 0 || hex.length < blen * 2) { return null; }
         for (int b = 0; b < blen; b++) {
             int hi = icHexVal(hex[b * 2]);
@@ -1218,6 +1395,72 @@ private Token? icTokenFromLine(string line) {
             char pb = char(hi * 16 + lo);
             payload += pb;
         }
+    } else if (tag == 207) {
+        // Interpolation segments: <segCount>, then per segment a
+        // T<textLen>:<hex> literal run or a
+        // H<holeLen>:<hex>@<line>:<col> hole. The token is built inline
+        // (never through a helper taking the segment arrays: arrays received
+        // as function parameters silently stop growing past 8 entries on
+        // some backends, while prop arrays on a local object keep growing).
+        // Any malformation returns null, forcing a re-lex.
+        int rp = 0;
+        while (rp < rest.length && rest[rp] == ' ') { rp++; }
+        int r0 = rp;
+        while (rp < rest.length && rest[rp] >= '0' && rest[rp] <= '9') { rp++; }
+        if (rp <= r0) { return null; }
+        int scount = icStrToInt(icSliceRange(rest, r0, rp));
+        if (scount < 0) { return null; }
+        Token gt = new Token(168, "$", ln, cl);
+        for (int gi2 = 0; gi2 < scount; gi2++) {
+            while (rp < rest.length && rest[rp] == ' ') { rp++; }
+            if (rp >= rest.length) { return null; }
+            char gk = rest[rp];
+            rp++;
+            if (gk != 'T' && gk != 'H') { return null; }
+            int g0 = rp;
+            while (rp < rest.length && rest[rp] >= '0' && rest[rp] <= '9') { rp++; }
+            if (rp <= g0) { return null; }
+            int glen = icStrToInt(icSliceRange(rest, g0, rp));
+            if (glen < 0) { return null; }
+            if (rp >= rest.length || rest[rp] != ':') { return null; }
+            rp++;
+            if (rest.length - rp < glen * 2) { return null; }
+            string gpayload = "";
+            for (int gb = 0; gb < glen; gb++) {
+                int ghi = icHexVal(rest[rp + gb * 2]);
+                int glo = icHexVal(rest[rp + gb * 2 + 1]);
+                if (ghi < 0 || glo < 0) { return null; }
+                gpayload += char(ghi * 16 + glo);
+            }
+            rp += glen * 2;
+            int gln = 0;
+            int gcl = 0;
+            if (gk == 'H') {
+                if (rp >= rest.length || rest[rp] != '@') { return null; }
+                rp++;
+                int l0 = rp;
+                while (rp < rest.length && rest[rp] >= '0' && rest[rp] <= '9') { rp++; }
+                if (rp <= l0) { return null; }
+                gln = icStrToInt(icSliceRange(rest, l0, rp));
+                if (gln < 0) { return null; }
+                if (rp >= rest.length || rest[rp] != ':') { return null; }
+                rp++;
+                int c0 = rp;
+                while (rp < rest.length && rest[rp] >= '0' && rest[rp] <= '9') { rp++; }
+                if (rp <= c0) { return null; }
+                gcl = icStrToInt(icSliceRange(rest, c0, rp));
+                if (gcl < 0) { return null; }
+                gt.ipKinds.add(1);
+            } else {
+                gt.ipKinds.add(0);
+            }
+            gt.ipTexts.add(gpayload);
+            gt.ipLines.add(gln);
+            gt.ipCols.add(gcl);
+        }
+        gt.line = ln;
+        gt.col = cl;
+        return gt;
     }
     Token t = icTokenFromParts(tag, payload, iv, cv);
     if (t == null) { return null; }
