@@ -693,6 +693,17 @@ void pipeLogUnit(string origin, int64 hash, int kind, bool diag) {
     printline(pipeDescribeUnit(u));
 }
 
+// Successful native-run exit shared by the hit-first attempt above and the
+// full object line below (one home: the unit logs its cached-`.o` kind
+// exactly once, then the process exits — output already happened natively).
+void exitNativeHit(string origin, int64 hash, bool diag, string target, int nativeUs) {
+    pipeLogUnit(origin, hash, pipeKindCachedObject, diag);
+    if (diag) {
+        printline("[objcache] native object execution: genuine " + objTargetDirName(target) + " entry ran in-process (real program results, imports bound via thunks, " + (string)nativeUs + " us)");
+    }
+    exit(0);
+}
+
 // A file-attributable native/import diagnostic: single `[input-as-given]`
 // header with the unchanged body, then abort (these sites always exited
 // right after printing).
@@ -1328,6 +1339,32 @@ void main() {
         sharedMtime = icFileMtimeMs(filename);
         sharedHash = icFnv1(inputSource);
     }
+    // OVERHAUL.md object-tier hit, attempted BEFORE any tier syncs: the
+    // entry's record, .o, and note already verify (probeFresh stages the
+    // bytes in RAM), so a previously lowered entry runs without lexing,
+    // parsing, or syncing anything first. A hit means the entry lowered
+    // natively before — out-of-tier entries emit no object at all — and the
+    // verify+run below re-validate the staged bytes themselves. Anything
+    // else (cold runs, changed sources, refused runs) falls through to the
+    // full line below, which reports once with the synced tier and continues
+    // from the verified tokens.
+    if (cacheObject) {
+        ObjSession objs = new ObjSession(cacheRoot, cacheProject, target);
+        if (objs.ok) {
+            objs.noteFileHashed(filename, sharedHash, sharedMtime, false);
+            if (objs.probeFresh(filename)) {
+                string hitErr = objs.verifyObject(filename, sharedHash);
+                if (hitErr.length > 0) {
+                    printline(hitErr);
+                    exit(1);
+                }
+                string hitNote = objs.runNative(filename, sharedHash);
+                if (hitNote.length == 0) {
+                    exitNativeHit(filename, sharedHash, diagCrumbs, target, objs.lastNativeUs);
+                }
+            }
+        }
+    }
     // OVERHAUL.md --cache-object alone (no --cache-bytecode) still routes
     // through the bytecode tier with a READ ONLY session: the synced .srbc
     // decodes on a hit (lastPayload set, packed as the object payload below)
@@ -1396,6 +1433,10 @@ void main() {
     // parsing. Quiet runs stay byte-identical to the uncached tiers
     // (parity demand: no extra stdout on the normal path).
     string lowFallback = "";
+    // A second session for the full line (block scope keeps the attempt's
+    // session local above): the attempt already exited on a hit, so this
+    // only runs on cold/miss/refused runs, where it re-opens the record and
+    // flows through sync, lowering, finish, verify, and run.
     if (cacheObject) {
         ObjSession objs = new ObjSession(cacheRoot, cacheProject, target);
         if (objs.ok) {
@@ -1426,13 +1467,7 @@ void main() {
                 if (runNote.length > 0) {
                     printline(runNote + " — continuing from verified " + objTier + " tier");
                 } else {
-                    // Runner path: the unit entered as a cached `.o` — its
-                    // single kind logs exactly once before the process exits.
-                    pipeLogUnit(filename, sharedHash, pipeKindCachedObject, diagCrumbs);
-                    if (diagCrumbs) {
-                        printline("[objcache] native object execution: genuine " + objTargetDirName(target) + " entry ran in-process (real program results, imports bound via thunks, " + (string)objs.lastNativeUs + " us)");
-                    }
-                    exit(0);
+                    exitNativeHit(filename, sharedHash, diagCrumbs, target, objs.lastNativeUs);
                 }
             }
         }

@@ -5755,15 +5755,24 @@ class ObjSession {
     public prop int[] mTimes;
     public prop int[] hashes;
     public prop int[] cachedAt;
-    // Files observed this run: the source FNV-1 hash plus the source length
-    // (the bytecode tier's size proxy in place of mtimes), and which tier
-    // fed the driver's tokens (1 = synced .srbc text, 0 = fresh source).
+    // Files observed this run: the source FNV-1 hash plus the `.sr`
+    // modification time (the shared driver pair — no re-hash, no second
+    // stat), and which tier fed the driver's tokens (1 = synced .srbc text,
+    // 0 = fresh source).
     public prop string[] notedKeys;
     public prop int[] notedC;
     public prop int[] notedM;
     public prop int[] notedH;
     public prop int[] notedStamps;
     public prop int[] notedTiers;
+    // RAM-staged entry bytes: the last fully-read .o of this run (set by the
+    // freshness probe and the unify/verify reads on success). Within a
+    // single run, validated artifacts stay RAM-resident between stages —
+    // disk is cross-run persistence only (OVERHAUL.md): the unify step and
+    // the runner consume the staged bytes without re-reading the files.
+    public prop string stagedKey;
+    public prop int64 stagedHash;
+    public prop byte[] stagedBytes;
     // Real lowering input: the driver's parsed entry program (set via
     // setLowProgram before finish), and the loud skip reason ("": emit and
     // run normally). Out-of-tier entries emit nothing — never a stub — and
@@ -5807,6 +5816,9 @@ class ObjSession {
         this.notedH = [];
         this.notedStamps = [];
         this.notedTiers = [];
+        this.stagedKey = "";
+        this.stagedHash = 0;
+        this.stagedBytes = [];
         this.lowProgram = [];
         this.lowHasProgram = false;
         this.lowSkip = "";
@@ -5839,6 +5851,18 @@ class ObjSession {
             if (this.notedKeys[i] == key) { return i; }
         }
         return -1;
+    }
+
+    private void stageBytes(string key, int64 hash, byte[] raw) {
+        this.stagedKey = key;
+        this.stagedHash = hash;
+        this.stagedBytes = raw;
+    }
+
+    private bool hasStaged(string key, int64 hash) {
+        if (this.stagedKey != key) { return false; }
+        if (this.stagedHash != hash) { return false; }
+        return this.stagedBytes.length > 0;
     }
 
     // Observe the entry source. Freshness keys on the `.sr` modification
@@ -5877,6 +5901,20 @@ class ObjSession {
     public void setLowProgram(Node[] program) {
         this.lowProgram = program;
         this.lowHasProgram = true;
+    }
+
+    // Execution-plan probe for the driver's entry (OVERHAUL.md object-tier
+    // hit): the record matches, the .o exists, and its note peeks with the
+    // expected flag set + hash — with the bytes staged in RAM on success, so
+    // the verify/run below consume them without re-reading the files. A hit
+    // means the entry lowered natively before (out-of-tier entries emit no
+    // object at all), so the driver may run from the staged object without
+    // lexing, parsing, or syncing any tier first.
+    public bool probeFresh(string absPath) {
+        string key = icRelPath(this.root, absPath);
+        int n = this.findNoted(key);
+        if (n < 0) { return false; }
+        return this.isFresh(n);
     }
 
     // Absolute path of the .o for a record key (mirrors the project tree,
@@ -5922,6 +5960,9 @@ class ObjSession {
         if (note.flags != this.flags) { return false; }
         if (note.hash != int64(this.notedH[n])) { return false; }
         if (this.stubEra(raw)) { return false; }
+        // Validated: stage the bytes so the unify step and the runner below
+        // consume them from RAM instead of re-reading the files.
+        this.stageBytes(this.notedKeys[n], int64(this.notedH[n]), raw);
         return true;
     }
 
@@ -6048,17 +6089,21 @@ class ObjSession {
         // object emitted) are not unified: there is nothing to validate.
         for (int u = 0; u < this.notedKeys.length; u++) {
             if (!this.lowHasProgram || this.lowSkip.length > 0) { continue; }
-            string upath = this.objectPath(this.notedKeys[u]);
-            if (!file.exists(upath)) {
-                return "object cache: cannot read " + upath + ": file not found";
-            }
             byte[] udata = [];
-            try {
-                udata = file.read(upath);
-            } catch (int e) {
-                return "object cache: cannot read " + upath + ": file not found";
+            if (this.hasStaged(this.notedKeys[u], int64(this.notedH[u]))) {
+                udata = this.stagedBytes;
+            } else {
+                string upath = this.objectPath(this.notedKeys[u]);
+                if (!file.exists(upath)) {
+                    return "object cache: cannot read " + upath + ": file not found";
+                }
+                try {
+                    udata = file.read(upath);
+                } catch (int e) {
+                    return "object cache: cannot read " + upath + ": file not found";
+                }
+                if (udata.length == 0) { return this.corruptEmpty(); }
             }
-            if (udata.length == 0) { return this.corruptEmpty(); }
             ObjReader ur = new ObjReader(udata);
             ParsedObj parsed = new ParsedObj();
             string perr = objParseObject(ur, this.targetOs, parsed);
@@ -6071,32 +6116,40 @@ class ObjSession {
             }
             string gasErr = this.checkGas(parsed);
             if (gasErr.length > 0) { return gasErr; }
+            // Validated: stage for the execution-path gate below, which then
+            // consumes these bytes from RAM instead of re-reading the files.
+            this.stageBytes(this.notedKeys[u], int64(this.notedH[u]), udata);
         }
         return "";
     }
 
-    // Execution-path gate (called by the driver after finish()): re-read
-    // the entry's object and fully validate it (magic, machine, sections,
-    // symbols, relocations, flag set, source hash, globals-block agreement).
-    // Returns "" when the object is verified — execution then proceeds from
-    // the verified tokens — else the exact loud error. Stale bytes are never
-    // executed.
+    // Execution-path gate (called by the driver after finish()): validate
+    // the entry's object fully (magic, machine, sections, symbols,
+    // relocations, flag set, source hash, globals-block agreement),
+    // consuming the RAM-staged bytes when a previous stage of this same run
+    // already validated them. Returns "" when the object is verified —
+    // execution then proceeds from the verified tokens — else the exact loud
+    // error. Stale bytes are never executed.
     public string verifyObject(string absPath, int64 expectHash) {
         string key = icRelPath(this.root, absPath);
         if (key.length == 0) {
             return "object cache: cannot read " + absPath + ": file not found";
         }
-        string opath = this.objectPath(key);
-        if (opath.length == 0 || !file.exists(opath)) {
-            return "object cache: cannot read " + opath + ": file not found";
-        }
         byte[] odata = [];
-        try {
-            odata = file.read(opath);
-        } catch (int e) {
-            return "object cache: cannot read " + opath + ": file not found";
+        if (this.hasStaged(key, expectHash)) {
+            odata = this.stagedBytes;
+        } else {
+            string opath = this.objectPath(key);
+            if (opath.length == 0 || !file.exists(opath)) {
+                return "object cache: cannot read " + opath + ": file not found";
+            }
+            try {
+                odata = file.read(opath);
+            } catch (int e) {
+                return "object cache: cannot read " + opath + ": file not found";
+            }
+            if (odata.length == 0) { return this.corruptEmpty(); }
         }
-        if (odata.length == 0) { return this.corruptEmpty(); }
         ObjReader or = new ObjReader(odata);
         ParsedObj obj = new ParsedObj();
         string perr = objParseObject(or, this.targetOs, obj);
@@ -6114,7 +6167,10 @@ class ObjSession {
                 return "object cache: stale object (source hash changed) — re-emit required";
             }
         }
-        return this.checkGas(obj);
+        string gasErr = this.checkGas(obj);
+        if (gasErr.length > 0) { return gasErr; }
+        this.stageBytes(key, expectHash, odata);
+        return "";
     }
 
     // Globals-block agreement check (the same rule the linkers enforce):
@@ -6151,14 +6207,11 @@ class ObjSession {
         }
         string verr = this.verifyObject(absPath, expectHash);
         if (verr.length > 0) { return verr; }
-        string key = icRelPath(this.root, absPath);
-        string opath = this.objectPath(key);
-        byte[] odata = [];
-        try {
-            odata = file.read(opath);
-        } catch (int e) {
-            return "object cache: cannot read " + opath + ": file not found";
-        }
+        // verifyObject staged the validated bytes above: execute them from
+        // RAM instead of re-reading the file (same run, same bytes — a file
+        // swapped between the two calls still cannot run stale, because the
+        // flags + hash below are re-checked on the staged bytes themselves).
+        byte[] odata = this.stagedBytes;
         ObjReader or = new ObjReader(odata);
         ParsedObj obj = new ParsedObj();
         string perr = objParseObject(or, this.targetOs, obj);
