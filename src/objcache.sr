@@ -891,15 +891,21 @@ class WinEmit {
     }
 
     // movabs r64, 0 hole; reg 0 = rax, 1 = rcx, 2 = rdx, 6 = rsi,
-    // 7 = rdi (the SysV print/trap paths address their argument registers
-    // directly). Returns the hole.
+    // 7 = rdi, 8 = r8, 9 = r9 (the helper call sequences address their
+    // argument registers directly, including the third one).
+    // B8+rd extends through REX.B (73), never REX.R.
+    // Returns the hole.
     public int absHole(int reg) {
-        this.b(72);
-        if (reg == 0) { this.b(184); }
-        else if (reg == 1) { this.b(185); }
-        else if (reg == 6) { this.b(190); }
-        else if (reg == 7) { this.b(191); }
-        else { this.b(186); }
+        int rex = 72;
+        int op = 186;
+        if (reg == 0) { op = 184; }
+        else if (reg == 1) { op = 185; }
+        else if (reg == 6) { op = 190; }
+        else if (reg == 7) { op = 191; }
+        else if (reg == 8) { rex = 73; op = 184; }
+        else if (reg == 9) { rex = 73; op = 185; }
+        this.b(rex);
+        this.b(op);
         int pos = this.code.length;
         this.i64(0);
         return pos;
@@ -984,11 +990,617 @@ class WinEmit {
     }
 
     // mov regc,rax (caller register fill; also serves the print value
-    // transfer on both ABIs with byte-identical output).
+    // transfer on both ABIs with byte-identical output). The destination
+    // rides the rm field, so an extended destination needs REX.B (73),
+    // not the REX.R that rexFor supplies for reg-field destinations.
     public void movFromAx(int regc) {
-        this.b(this.rexFor(regc));
+        if (regc >= 8) { this.b(73); }
+        else { this.b(72); }
         this.b(137);
         this.b(192 + (regc & 7));
+    }
+
+    // lea regc,[rbp+disp] (address-of a frame slot for int64 out-params,
+    // the &freq/&count shape the QPC thunk passes to kernel32).
+    public void leaRbp(int regc, int disp) {
+        this.b(this.rexFor(regc));
+        this.b(141);
+        this.b(128 + ((regc & 7) << 3) + 5);
+        this.i32(int64(disp));
+    }
+
+    // cvtsi2sd xmm0,rax (int64 -> float64, exact).
+    public void cvtAxToXmm0() {
+        this.b(242);
+        this.b(72);
+        this.b(15);
+        this.b(42);
+        this.b(192);
+    }
+
+    // cvtsi2sd xmm1,rcx (int64 -> float64, exact).
+    public void cvtCxToXmm1() {
+        this.b(242);
+        this.b(72);
+        this.b(15);
+        this.b(42);
+        this.b(201);
+    }
+
+    // divsd xmm0,xmm1 (float64 divide).
+    public void divXmm0Xmm1() {
+        this.b(242);
+        this.b(15);
+        this.b(94);
+        this.b(193);
+    }
+
+    // addsd xmm0,xmm1 (float64 add).
+    public void addXmm0Xmm1() {
+        this.b(242);
+        this.b(15);
+        this.b(88);
+        this.b(193);
+    }
+
+    // subsd xmm0,xmm1 (float64 subtract).
+    public void subXmm0Xmm1() {
+        this.b(242);
+        this.b(15);
+        this.b(92);
+        this.b(193);
+    }
+
+    // mulsd xmm0,xmm1 (float64 multiply).
+    public void mulXmm0Xmm1() {
+        this.b(242);
+        this.b(15);
+        this.b(89);
+        this.b(193);
+    }
+
+    // comisd xmm0,xmm1 (ordered float64 compare setting the CPU flags;
+    // unordered pairs set ZF/PF/CF, so every use guards with JP first).
+    public void comisdXmm0Xmm1() {
+        this.b(102);
+        this.b(15);
+        this.b(47);
+        this.b(193);
+    }
+
+    // movq xmm0,rax (64-bit pattern -> double, bitwise).
+    public void movqXmm0Ax() {
+        this.b(102);
+        this.b(72);
+        this.b(15);
+        this.b(110);
+        this.b(192);
+    }
+
+    // movq xmm1,rcx (64-bit pattern -> double, bitwise).
+    public void movqXmm1Cx() {
+        this.b(102);
+        this.b(72);
+        this.b(15);
+        this.b(110);
+        this.b(201);
+    }
+
+    // movq rax,xmm0 (double -> 64-bit pattern, bitwise).
+    public void movqAxXmm0() {
+        this.b(102);
+        this.b(72);
+        this.b(15);
+        this.b(126);
+        this.b(192);
+    }
+
+    // movabs r64,imm64 for any low or extended register (lengths, buffer
+    // and table addresses the fixed movAbs forms cannot reach, e.g. r8).
+    // B8+rd extends through REX.B (73), never REX.R.
+    public void movAbsAny(int regc, int64 v) {
+        if (regc >= 8) { this.b(73); }
+        else { this.b(72); }
+        this.b(184 + (regc & 7));
+        this.i64(v);
+    }
+
+    // mov r32,imm32 (zero-extended to r64: small constants like 10 or the
+    // buffer bound without a full 64-bit immediate). No REX.W here: B8+rd
+    // with REX.W would demand an imm64 and desync the stream; the 32-bit
+    // form zero-extends, which is exactly the wanted semantics. Extended
+    // registers take REX.B alone (65).
+    public void movRegImm32(int regc, int v) {
+        if (regc >= 8) { this.b(65); }
+        this.b(184 + (regc & 7));
+        this.i32(int64(v));
+    }
+
+    // test rax,rax.
+    public void testAxAx() {
+        this.b(72);
+        this.b(133);
+        this.b(192);
+    }
+
+    // test rcx,rcx.
+    public void testRcxRcx() {
+        this.b(72);
+        this.b(133);
+        this.b(201);
+    }
+
+    // test rsi,rsi.
+    public void testRsiRsi() {
+        this.b(72);
+        this.b(133);
+        this.b(246);
+    }
+
+    // and rcx,rax.
+    public void andRcxRax() {
+        this.b(72);
+        this.b(33);
+        this.b(193);
+    }
+
+    // neg rax (unsigned magnitude: exact even for INT64_MIN).
+    public void negAx() {
+        this.b(72);
+        this.b(247);
+        this.b(216);
+    }
+
+    // xor edx,edx (zero the divide high half).
+    public void xorEdxEdx() {
+        this.b(49);
+        this.b(210);
+    }
+
+    // xor eax,eax.
+    public void xorEaxEax() {
+        this.b(49);
+        this.b(192);
+    }
+
+    // div rcx (unsigned rdx:rax / rcx: quotient rax, remainder rdx).
+    public void divRcx() {
+        this.b(72);
+        this.b(247);
+        this.b(241);
+    }
+
+    // mov rax,rcx.
+    public void movAxRcx() {
+        this.b(72);
+        this.b(137);
+        this.b(200);
+    }
+
+    // mov rsi,rcx.
+    public void movRsiRcx() {
+        this.b(72);
+        this.b(137);
+        this.b(206);
+    }
+
+    // mov rcx,rdx.
+    public void movRcxRdx() {
+        this.b(72);
+        this.b(137);
+        this.b(209);
+    }
+
+    // mov rcx,r8.
+    public void movRcxR8() {
+        this.b(76);
+        this.b(137);
+        this.b(193);
+    }
+
+    // mov rdi,rdx.
+    public void movRdiRdx() {
+        this.b(72);
+        this.b(137);
+        this.b(215);
+    }
+
+    // mov rsi,rdx.
+    public void movRsiRdx() {
+        this.b(72);
+        this.b(137);
+        this.b(214);
+    }
+
+    // rep movsb (copy rcx bytes from [rsi] to [rdi]).
+    public void repMovsb() {
+        this.b(243);
+        this.b(164);
+    }
+
+    // mov [rdi],al.
+    public void stoAlRdi() {
+        this.b(136);
+        this.b(7);
+    }
+
+    // inc rdi.
+    public void incRdi() {
+        this.b(72);
+        this.b(255);
+        this.b(199);
+    }
+
+    // inc rax.
+    public void incAx() {
+        this.b(72);
+        this.b(255);
+        this.b(192);
+    }
+
+    // dec rax.
+    public void decAx() {
+        this.b(72);
+        this.b(255);
+        this.b(200);
+    }
+
+    // dec rsi.
+    public void decRsi() {
+        this.b(72);
+        this.b(255);
+        this.b(206);
+    }
+
+    // mov byte [rdi],0 (NUL terminator).
+    public void movNulRdi() {
+        this.b(198);
+        this.b(7);
+        this.b(0);
+    }
+
+    // add al,imm8 (digit to ASCII).
+    public void addAlImm(int v) {
+        this.b(4);
+        this.b(v & 0xFF);
+    }
+
+    // mov al,imm8.
+    public void movAlImm(int v) {
+        this.b(176);
+        this.b(v & 0xFF);
+    }
+
+    // mov byte [rdx],imm8.
+    public void movByteRdxImm(int v) {
+        this.b(198);
+        this.b(2);
+        this.b(v & 0xFF);
+    }
+
+    // mov dword [rdx],imm32.
+    public void stoDwordRdx(int64 v) {
+        this.b(199);
+        this.b(2);
+        this.i32(v);
+    }
+
+    // mov dword [rdx+disp8],imm32.
+    public void stoDwordRdxDisp8(int disp, int64 v) {
+        this.b(199);
+        this.b(66);
+        this.b(disp & 0xFF);
+        this.i32(v);
+    }
+
+    // mov word [rdx+disp8],imm16.
+    public void movWordRdxDisp8(int disp, int v) {
+        this.b(102);
+        this.b(199);
+        this.b(66);
+        this.b(disp & 0xFF);
+        this.b(v & 0xFF);
+        this.b((v >> 8) & 0xFF);
+    }
+
+    // mov byte [rdx+disp8],imm8.
+    public void movByteRdxDisp8(int disp, int v) {
+        this.b(198);
+        this.b(66);
+        this.b(disp & 0xFF);
+        this.b(v & 0xFF);
+    }
+
+    // cvttsd2si rax,xmm0 (truncate double -> int64). F2 (not F3) selects
+    // double precision: F3 would convert only the low 32 bits as float.
+    public void cvttXmm0ToAx() {
+        this.b(242);
+        this.b(72);
+        this.b(15);
+        this.b(44);
+        this.b(192);
+    }
+
+    // mulsd xmm1,xmm2.
+    public void mulXmm1Xmm2() {
+        this.b(242);
+        this.b(15);
+        this.b(89);
+        this.b(202);
+    }
+
+    // divsd xmm1,xmm2.
+    public void divXmm1Xmm2() {
+        this.b(242);
+        this.b(15);
+        this.b(94);
+        this.b(202);
+    }
+
+    // addsd xmm0,xmm2.
+    public void addXmm0Xmm2() {
+        this.b(242);
+        this.b(15);
+        this.b(88);
+        this.b(194);
+    }
+
+    // movq xmm0,rcx.
+    public void movqXmm0Cx() {
+        this.b(102);
+        this.b(72);
+        this.b(15);
+        this.b(110);
+        this.b(193);
+    }
+
+    // movq xmm0,rsi.
+    public void movqXmm0Rsi() {
+        this.b(102);
+        this.b(72);
+        this.b(15);
+        this.b(110);
+        this.b(198);
+    }
+
+    // movq xmm1,rsi.
+    public void movqXmm1Rsi() {
+        this.b(102);
+        this.b(72);
+        this.b(15);
+        this.b(110);
+        this.b(206);
+    }
+
+    // movq xmm1,rax (modrm C8: reg 001 = xmm1 dest, rm 000 = rax
+    // source — distinct from movqXmm1Cx's C9, where rm 001 reads rcx).
+    public void movqXmm1Ax() {
+        this.b(102);
+        this.b(72);
+        this.b(15);
+        this.b(110);
+        this.b(200);
+    }
+
+    // movq xmm2,rsi.
+    public void movqXmm2Rsi() {
+        this.b(102);
+        this.b(72);
+        this.b(15);
+        this.b(110);
+        this.b(214);
+    }
+
+    // movq rax,xmm1.
+    public void movqAxXmm1() {
+        this.b(102);
+        this.b(72);
+        this.b(15);
+        this.b(126);
+        this.b(200);
+    }
+
+    // cmp rax,imm32 (sign-extended: small bounds like -4, 6, 1000000).
+    public void cmpAxImm32(int v) {
+        this.b(72);
+        this.b(129);
+        this.b(248);
+        this.i32(int64(v));
+    }
+
+    // cmp rdx,imm32.
+    public void cmpRdxImm32(int v) {
+        this.b(72);
+        this.b(129);
+        this.b(250);
+        this.i32(int64(v));
+    }
+
+    // cmp rsi,0.
+    public void cmpRsi0() {
+        this.b(72);
+        this.b(131);
+        this.b(254);
+        this.b(0);
+    }
+
+    // sub rax,imm32.
+    public void subAxImm32(int v) {
+        this.b(72);
+        this.b(45);
+        this.i32(int64(v));
+    }
+
+    // sub rax,[rbp+disp].
+    public void subAxSlot(int disp) {
+        this.b(72);
+        this.b(43);
+        this.b(133);
+        this.i32(int64(disp));
+    }
+
+    // sub rax,rsi.
+    public void subAxRsi() {
+        this.b(72);
+        this.b(41);
+        this.b(240);
+    }
+
+    // add rax,imm32.
+    public void addAxImm32(int v) {
+        this.b(72);
+        this.b(5);
+        this.i32(int64(v));
+    }
+
+    // sar rax,1 (arithmetic: halves negative exponents toward -inf).
+    public void sarAx1() {
+        this.b(72);
+        this.b(209);
+        this.b(248);
+    }
+
+    // sub rsp,imm8 (nested-call outgoing area inside a helper body).
+    public void subRspImm8(int v) {
+        this.b(72);
+        this.b(131);
+        this.b(236);
+        this.b(v & 0xFF);
+    }
+
+    // add rsp,imm8.
+    public void addRspImm8(int v) {
+        this.b(72);
+        this.b(131);
+        this.b(196);
+        this.b(v & 0xFF);
+    }
+
+    // mov rax,r8.
+    public void movAxR8() {
+        this.b(76);
+        this.b(137);
+        this.b(192);
+    }
+
+    // mov rax,rdx via push/pop (proven pair): the direct 89 D0 form is
+    // byte-identical in intent but this path has never verified.
+    public void movAxRdx() {
+        this.b(82);
+        this.b(88);
+    }
+
+    // mov rax,rsi.
+    public void movAxRsi() {
+        this.b(72);
+        this.b(137);
+        this.b(240);
+    }
+
+    // mov rax,rdi.
+    public void movAxRdi() {
+        this.b(72);
+        this.b(137);
+        this.b(248);
+    }
+
+    // mov rcx,rax.
+    public void movRcxRax() {
+        this.b(72);
+        this.b(137);
+        this.b(193);
+    }
+
+    // mov r8,rax (destination in rm, so REX.W+B = 73).
+    public void movR8Ax() {
+        this.b(73);
+        this.b(137);
+        this.b(192);
+    }
+
+    // sub rax,rcx.
+    public void subAxRcx() {
+        this.b(72);
+        this.b(41);
+        this.b(200);
+    }
+
+    // cmp rax,rsi.
+    public void cmpAxRsi() {
+        this.b(72);
+        this.b(57);
+        this.b(240);
+    }
+
+    // push rdx.
+    public void pushRdx() {
+        this.b(82);
+    }
+
+    // push rax (caller-side scalar save across the literal setup in
+    // winLowerConcat: balanced by popR8 below before the helper call).
+    public void pushAx() {
+        this.b(80);
+    }
+
+    // pop rax.
+    public void popRax() {
+        this.b(88);
+    }
+
+    // pop r8 (restores a pushed scalar into the third helper register).
+    public void popR8() {
+        this.b(65);
+        this.b(88);
+    }
+
+    // inc rcx.
+    public void incRcx() {
+        this.b(72);
+        this.b(255);
+        this.b(193);
+    }
+
+    // dec rcx.
+    public void decRcx() {
+        this.b(72);
+        this.b(255);
+        this.b(201);
+    }
+
+    // inc r8.
+    public void incR8() {
+        this.b(73);
+        this.b(255);
+        this.b(192);
+    }
+
+    // dec r8.
+    public void decR8() {
+        this.b(73);
+        this.b(255);
+        this.b(200);
+    }
+
+    // test r8,r8.
+    public void testR8R8() {
+        this.b(77);
+        this.b(133);
+        this.b(192);
+    }
+
+    // sub rsi,rdx.
+    public void subRsiRdx() {
+        this.b(72);
+        this.b(41);
+        this.b(214);
+    }
+
+    // mov al,[r8].
+    public void movAlR8() {
+        this.b(65);
+        this.b(138);
+        this.b(0);
     }
 }
 
@@ -1013,6 +1625,18 @@ class WinCtx {
     public prop bool usesPrintf;
     public prop bool usesExit;
     public prop int abi;
+    // Concat/format scratch buffers in .rdata (the RWX image is writable at
+    // runtime): bufAOff/bufFOff are their data offsets, blobTotal is the end
+    // of the blob area — reserved before lowering so every later string
+    // offset stays stable. Helper indices into fnNames (set at registration
+    // so call sites and bodies agree).
+    public prop int bufAOff;
+    public prop int bufFOff;
+    public prop int blobTotal;
+    public prop int helperTimeNow;
+    public prop int helperConcatSI;
+    public prop int helperConcatSF;
+    public prop int helperFmtF;
 
     construct {
         this.strs = [];
@@ -1027,6 +1651,23 @@ class WinCtx {
         this.usesPrintf = false;
         this.usesExit = false;
         this.abi = 0;
+        this.bufAOff = 0;
+        this.bufFOff = 0;
+        this.blobTotal = 0;
+        this.helperTimeNow = -1;
+        this.helperConcatSI = -1;
+        this.helperConcatSF = -1;
+        this.helperFmtF = -1;
+    }
+
+    // Reserve the scratch blobs before any lowering: the 32KB concat area
+    // plus the 64B float-format area, both zero-filled. Blobs come first in
+    // .rdata, so later string offsets start past blobTotal and never move.
+    public void reserveBlobs() {
+        this.bufAOff = 0;
+        this.bufFOff = 32768;
+        this.blobTotal = 32832;
+        this.strLen = 32832;
     }
 
     public string printfDll() {
@@ -1084,6 +1725,13 @@ class WinFn {
     public prop string fname;
     public prop string[] varNames;
     public prop string[] varKinds;
+    // Literal spelling per local, parallel to varNames ("" when none): a
+    // float local initialized from a float literal (or from another spelled
+    // float local) remembers its source text, because the tree-walk prints
+    // literal spellings verbatim while computed floats print with %g. Any
+    // plain assignment clears the entry, so a spelling never outlives the
+    // value it came from. Only "f" locals ever carry one.
+    public prop string[] varSpells;
     public prop int epi;
     public prop int[] brkLabs;
     public prop int[] contLabs;
@@ -1098,6 +1746,7 @@ class WinFn {
         this.fname = "";
         this.varNames = [];
         this.varKinds = [];
+        this.varSpells = [];
         this.epi = -1;
         this.brkLabs = [];
         this.contLabs = [];
@@ -1143,6 +1792,17 @@ private string winScalarOf(string t) {
     return "";
 }
 
+// True for the float64 type spellings (float, float64, double): the tier
+// stores them as IEEE-754 bit patterns in 8-byte slots (scalar kind 4).
+// Parameters and returns keep rejecting them (macScalarOf/winScalarOf stay
+// narrow); only locals and expressions use this.
+private bool tierFloatSpelling(string t) {
+    if (t == "float") { return true; }
+    if (t == "float64") { return true; }
+    if (t == "double") { return true; }
+    return false;
+}
+
 // Scalar kind of an expression: 0 int, 1 bool, 2 char. Mirrors the tier
 // walker's type rules (literals, const/var/param reads, operators, calls)
 // so print lowering picks the format the value actually has. Assignment
@@ -1152,6 +1812,8 @@ private int winKindOf(WinCtx ctx, WinFn fn, Node e) {
     if (e.kind == ND_INT_LIT) { return 0; }
     if (e.kind == ND_BOOL_LIT) { return 1; }
     if (e.kind == ND_CHAR_LIT) { return 2; }
+    if (e.kind == ND_FLOAT_LIT) { return 4; }
+    if (e.kind == ND_STRING_LIT) { return 3; }
     if (e.kind == ND_IDENT) {
         int ci = ctx.findConst(e.name);
         if (ci >= 0) {
@@ -1165,6 +1827,7 @@ private int winKindOf(WinCtx ctx, WinFn fn, Node e) {
             string vk = fn.varKinds[vi];
             if (vk == "b") { return 1; }
             if (vk == "c") { return 2; }
+            if (vk == "f") { return 4; }
             return 0;
         }
         return 0;
@@ -1188,6 +1851,10 @@ private int winKindOf(WinCtx ctx, WinFn fn, Node e) {
         if ((op == OP_ASSIGN || op == OP_ADD_ASSIGN || op == OP_SUB_ASSIGN || op == OP_MUL_ASSIGN || op == OP_DIV_ASSIGN || op == OP_MOD_ASSIGN) && e.childCount() >= 2) {
             return winKindOf(ctx, fn, e.child(1));
         }
+        if ((op == OP_ADD || op == OP_SUB || op == OP_MUL || op == OP_DIV || op == OP_MOD) && e.childCount() >= 2) {
+            if (op == OP_ADD && winConcatShape(ctx, fn, e) > 0) { return 3; }
+            if (winKindOf(ctx, fn, e.child(0)) == 4 || winKindOf(ctx, fn, e.child(1)) == 4) { return 4; }
+        }
         return 0;
     }
     if (e.kind == ND_CALL) {
@@ -1196,9 +1863,40 @@ private int winKindOf(WinCtx ctx, WinFn fn, Node e) {
             string ret = ctx.fnRets[si];
             if (ret == "b") { return 1; }
             if (ret == "c") { return 2; }
+            if (ret == "f") { return 4; }
         }
         return 0;
     }
+    if (e.kind == ND_METHOD_CALL) {
+        if (winIsTimeNow(ctx, fn, e)) { return 4; }
+        return 0;
+    }
+    return 0;
+}
+
+// True for the admittable time.now() clock read (zero-argument call on the
+// time module with no program-local `time` shadowing it). Shared by the
+// kind query and the lowering so they can never disagree.
+private bool winIsTimeNow(WinCtx ctx, WinFn fn, Node e) {
+    if (e.name != "now" || e.childCount() != 1) { return false; }
+    Node recv = e.child(0);
+    if (recv.kind != ND_IDENT || recv.name != "time") { return false; }
+    if (fn.findVar("time") >= 0) { return false; }
+    if (ctx.findConst("time") >= 0) { return false; }
+    return true;
+}
+
+// Concat shape of an addition: 0 = not an admittable concat, 1 =
+// literal+int, 2 = literal+float64, 3 = literal+literal (folded).
+// Mirrors macWalkConcat exactly (literal on the left only), so the kind
+// query, the predicate, and the lowering all agree.
+private int winConcatShape(WinCtx ctx, WinFn fn, Node e) {
+    if (e.op != OP_ADD || e.childCount() < 2) { return 0; }
+    if (!tierIsStringLit(e.child(0))) { return 0; }
+    if (tierIsStringLit(e.child(1))) { return 3; }
+    int rk = winKindOf(ctx, fn, e.child(1));
+    if (rk == 0) { return 1; }
+    if (rk == 4) { return 2; }
     return 0;
 }
 
@@ -1248,7 +1946,102 @@ private string winLowerPrint(WinCtx ctx, WinFn fn, Node call, bool newline) {
         fn.e.callTeardown();
         return "";
     }
+    if (t.kind == ND_FLOAT_LIT) {
+        // Direct float literal: the tree-walk keeps the source spelling
+        // (makeFloatStr), so print it verbatim like a string literal.
+        string spell = t.strVal;
+        if (!winStrNative(spell)) { return "unicode string literal in '" + fn.fname + "'"; }
+        string sfmt = "%s";
+        if (newline) { sfmt = "%s\n"; }
+        int sfmtOff = ctx.addStr(sfmt);
+        int sstrOff = ctx.addStr(spell);
+        ctx.usesPrintf = true;
+        fn.e.callSetup(2);
+        int shole = fn.e.absData(r0, sfmtOff);
+        fn.rel(shole, 1, 2, sfmtOff, "");
+        shole = fn.e.absData(r1, sstrOff);
+        fn.rel(shole, 1, 2, sstrOff, "");
+        fn.e.b(176);
+        fn.e.b(0);
+        shole = fn.e.callHole();
+        fn.rel(shole, 0, 4, 0, "");
+        fn.e.callTeardown();
+        return "";
+    }
     int kind = winKindOf(ctx, fn, arg);
+    if (kind == 3) {
+        // Runtime string (an admittable concat): the pointer rides the
+        // second argument register into %s, exactly like a literal.
+        string cerr = winLowerExpr(ctx, fn, arg);
+        if (cerr.length > 0) { return cerr; }
+        ctx.usesPrintf = true;
+        string cfmt = "%s";
+        if (newline) { cfmt = "%s\n"; }
+        int cfmtOff = ctx.addStr(cfmt);
+        fn.e.callSetup(2);
+        int chole = fn.e.absData(r0, cfmtOff);
+        fn.rel(chole, 1, 2, cfmtOff, "");
+        fn.e.movFromAx(r1);
+        fn.e.b(176);
+        fn.e.b(0);
+        chole = fn.e.callHole();
+        fn.rel(chole, 0, 4, 0, "");
+        fn.e.callTeardown();
+        return "";
+    }
+    if (kind == 4) {
+        // A spelled float local still holds its literal text: print it
+        // verbatim, exactly like the tree-walk's carried strVal. Computed
+        // floats (no spelling) format through __slv_fmtF below.
+        string vspell = winVarSpell(fn, arg);
+        if (vspell.length > 0) {
+            if (!winStrNative(vspell)) { return "unicode string literal in '" + fn.fname + "'"; }
+            string vfmt = "%s";
+            if (newline) { vfmt = "%s\n"; }
+            int vfmtOff = ctx.addStr(vfmt);
+            int vstrOff = ctx.addStr(vspell);
+            ctx.usesPrintf = true;
+            fn.e.callSetup(2);
+            int vhole = fn.e.absData(r0, vfmtOff);
+            fn.rel(vhole, 1, 2, vfmtOff, "");
+            vhole = fn.e.absData(r1, vstrOff);
+            fn.rel(vhole, 1, 2, vstrOff, "");
+            fn.e.b(176);
+            fn.e.b(0);
+            vhole = fn.e.callHole();
+            fn.rel(vhole, 0, 4, 0, "");
+            fn.e.callTeardown();
+            return "";
+        }
+        // Float64: format through __slv_fmtF into the float buffer (fixed
+        // rcx/rdx — the helper convention), then print the buffer like a
+        // literal string.
+        string ferr = winLowerExpr(ctx, fn, arg);
+        if (ferr.length > 0) { return ferr; }
+        if (ctx.helperFmtF < 0) { return "float print in '" + fn.fname + "'"; }
+        ctx.usesPrintf = true;
+        fn.e.callSetup(2);
+        fn.e.movFromAx(1);
+        int fbuf = fn.e.absData(2, ctx.bufFOff);
+        fn.rel(fbuf, 1, 2, ctx.bufFOff, "");
+        int fhole = fn.e.callHole();
+        fn.rel(fhole, 0, 0, ctx.helperFmtF, "");
+        fn.e.callTeardown();
+        string ffmt = "%s";
+        if (newline) { ffmt = "%s\n"; }
+        int ffmtOff = ctx.addStr(ffmt);
+        fn.e.callSetup(2);
+        int phole = fn.e.absData(r0, ffmtOff);
+        fn.rel(phole, 1, 2, ffmtOff, "");
+        int pbuf = fn.e.absData(r1, ctx.bufFOff);
+        fn.rel(pbuf, 1, 2, ctx.bufFOff, "");
+        fn.e.b(176);
+        fn.e.b(0);
+        pbuf = fn.e.callHole();
+        fn.rel(pbuf, 0, 4, 0, "");
+        fn.e.callTeardown();
+        return "";
+    }
     string err = winLowerExpr(ctx, fn, arg);
     if (err.length > 0) { return err; }
     ctx.usesPrintf = true;
@@ -1307,6 +2100,87 @@ private void winEmitTrap(WinCtx ctx, WinFn fn) {
     fn.rel(hole, 0, 4, 1, "");
 }
 
+// Lower an admittable string concat (shape from winConcatShape), leaving
+// the NUL-terminated buffer pointer in RAX. Literal+literal folds to one
+// interned literal; literal+scalar calls the matching helper with the
+// helper register convention (rcx = literal address, rdx = literal length,
+// r8 = scalar value or float64 bits) and the buffer address back in RAX.
+private string winLowerConcat(WinCtx ctx, WinFn fn, Node e, int shape) {
+    string cur = fn.fname;
+    if (shape == 3) {
+        string folded = tierStringLitText(e.child(0)) + tierStringLitText(e.child(1));
+        if (!winStrNative(folded)) { return "unicode string literal in '" + cur + "'"; }
+        int off = ctx.addStr(folded);
+        int hole = fn.e.absData(0, off);
+        fn.rel(hole, 1, 2, off, "");
+        return "";
+    }
+    if (shape != 1 && shape != 2) {
+        return "string values in '" + cur + "'";
+    }
+    string lit = tierStringLitText(e.child(0));
+    if (!winStrNative(lit)) { return "unicode string literal in '" + cur + "'"; }
+    if (shape == 2) {
+        // Spelled float operand (a literal or a local still holding literal
+        // text): fold verbatim, exactly like the tree-walk's carried strVal.
+        string fspell = tierFloatLitText(e.child(1));
+        if (fspell.length == 0) { fspell = winVarSpell(fn, e.child(1)); }
+        if (fspell.length > 0) {
+            string folded = lit + fspell;
+            if (!winStrNative(folded)) { return "unicode string literal in '" + cur + "'"; }
+            int foff = ctx.addStr(folded);
+            int fhole = fn.e.absData(0, foff);
+            fn.rel(fhole, 1, 2, foff, "");
+            return "";
+        }
+    }
+    // Scalar first, saved across the literal setup: evaluating the operand
+    // may itself call (clobbering rcx/rdx), so its value rides the stack
+    // into r8 after the addresses are in place.
+    fn.e.callSetup(3);
+    string serr = winLowerExpr(ctx, fn, e.child(1));
+    if (serr.length > 0) { return serr; }
+    fn.e.pushAx();
+    int litOff = ctx.addStr(lit);
+    int addrHole = fn.e.absData(1, litOff);
+    fn.rel(addrHole, 1, 2, litOff, "");
+    fn.e.movAbsAny(2, int64(lit.length));
+    fn.e.popR8();
+    int idx = ctx.helperConcatSI;
+    if (shape == 2) { idx = ctx.helperConcatSF; }
+    if (idx < 0) { return "string values in '" + cur + "'"; }
+    int hole = fn.e.callHole();
+    fn.rel(hole, 0, 0, idx, "");
+    fn.e.callTeardown();
+    return "";
+}
+// Lower an explicit exit call (already validated by the tier predicate:
+// statement position, zero or one integer argument). The code rides the
+// first argument register into the ExitProcess import and never returns,
+// so no teardown — the process is gone, exactly like the trap above and
+// the tree-walk exit builtin.
+//
+// Import reference: ridx -1 is the exit-import sentinel, mapped to the real
+// import-list position at unit finalization (1 when printf is also used, 0
+// otherwise) — unlike the trap's hardcoded 1, an explicit exit may be the
+// only import a program needs.
+private string winLowerExit(WinCtx ctx, WinFn fn, Node e) {
+    ctx.usesExit = true;
+    if (e.childCount() == 0) {
+        if (ctx.abi == 1) { fn.e.b(191); }
+        else { fn.e.b(185); }
+        fn.e.i32(0);
+    } else {
+        string err = winLowerExpr(ctx, fn, e.child(0));
+        if (err.length > 0) { return err; }
+        fn.e.movFromAx(fn.e.argReg(0));
+    }
+    fn.e.callSetup(1);
+    int hole = fn.e.callHole();
+    fn.rel(hole, 0, 4, -1, "");
+    return "";
+}
+
 // Lower an expression, leaving its 64-bit value in RAX. Stack-neutral:
 // every push is popped before returning (call sequences restore rsp
 // absolutely, so nested calls compose).
@@ -1326,6 +2200,10 @@ private string winLowerExpr(WinCtx ctx, WinFn fn, Node e) {
     if (e.kind == ND_CHAR_LIT) {
         int cv = e.charVal;
         fn.e.movAbs(0, int64(cv));
+        return "";
+    }
+    if (e.kind == ND_FLOAT_LIT) {
+        fn.e.movAbs(0, icFloatBitsOf(e.strVal));
         return "";
     }
     if (e.kind == ND_STRING_LIT) {
@@ -1353,6 +2231,10 @@ private string winLowerExpr(WinCtx ctx, WinFn fn, Node e) {
         if (e.childCount() == 0) { return "unsupported expression"; }
         string err = winLowerExpr(ctx, fn, e.child(0));
         if (err.length > 0) { return err; }
+        if (winKindOf(ctx, fn, e.child(0)) == 4) {
+            if (e.op == UOP_NEG) { return "unsupported float operation in '" + fn.fname + "'"; }
+            if (e.op == UOP_NOT) { return "float logic operands in '" + fn.fname + "'"; }
+        }
         if (e.op == UOP_NEG) {
             fn.e.b(72);
             fn.e.b(247);
@@ -1381,10 +2263,21 @@ private string winLowerExpr(WinCtx ctx, WinFn fn, Node e) {
         if (e.name == "print" || e.name == "printline") {
             return "print used as a value in '" + fn.fname + "'";
         }
-        if (e.name == "exit" || e.name == "printf") {
-            return "explicit '" + e.name + "' calls in '" + fn.fname + "'";
+        if (e.name == "exit") {
+            return "explicit 'exit' calls in '" + fn.fname + "'";
+        }
+        if (e.name == "printf") {
+            return "explicit 'printf' calls in '" + fn.fname + "'";
         }
         return winLowerCall(ctx, fn, e);
+    }
+    if (e.kind == ND_METHOD_CALL) {
+        if (winIsTimeNow(ctx, fn, e)) {
+            Node callN = new Node(ND_CALL, e.line, e.col);
+            callN.name = "__slv_timeNow";
+            return winLowerCall(ctx, fn, callN);
+        }
+        return "method calls in '" + fn.fname + "'";
     }
     return "unsupported expression in '" + fn.fname + "'";
 }
@@ -1392,11 +2285,100 @@ private string winLowerExpr(WinCtx ctx, WinFn fn, Node e) {
 // Binary operators. Arithmetic and comparisons evaluate lhs, push, evaluate
 // rhs, pop — the reference stack-machine shape. Division and modulo go
 // through the guarded sequence (zero divisor and INT64_MIN / -1 trap).
+private string winLowerFloatArith(WinCtx ctx, WinFn fn, Node e) {
+    string cur = fn.fname;
+    int op = e.op;
+    if (op != OP_ADD && op != OP_SUB && op != OP_MUL && op != OP_DIV) {
+        return "unsupported float operation in '" + cur + "'";
+    }
+    if (e.childCount() < 2) { return "unsupported expression in '" + cur + "'"; }
+    if (winKindOf(ctx, fn, e.child(0)) != 4 || winKindOf(ctx, fn, e.child(1)) != 4) {
+        return "mixed int and float operands in '" + cur + "'";
+    }
+    string err = winLowerExpr(ctx, fn, e.child(0));
+    if (err.length > 0) { return err; }
+    fn.e.b(80);
+    err = winLowerExpr(ctx, fn, e.child(1));
+    if (err.length > 0) { return err; }
+    fn.e.b(72);
+    fn.e.b(137);
+    fn.e.b(193);
+    fn.e.b(88);
+    fn.e.movqXmm0Ax();
+    fn.e.movqXmm1Cx();
+    if (op == OP_ADD) { fn.e.addXmm0Xmm1(); }
+    else if (op == OP_SUB) { fn.e.subXmm0Xmm1(); }
+    else if (op == OP_MUL) { fn.e.mulXmm0Xmm1(); }
+    else { fn.e.divXmm0Xmm1(); }
+    fn.e.movqAxXmm0();
+    return "";
+}
+
+// Float64 comparisons: same stack shape, then comisd with JP-first guards
+// so unordered (NaN) pairs report false for every operator except != —
+// exactly like the tree-walk valueToFloat comparisons.
+private string winLowerFloatCmp(WinCtx ctx, WinFn fn, Node e) {
+    string cur = fn.fname;
+    int op = e.op;
+    if (e.childCount() < 2) { return "unsupported expression in '" + cur + "'"; }
+    if (winKindOf(ctx, fn, e.child(0)) != 4 || winKindOf(ctx, fn, e.child(1)) != 4) {
+        return "mixed int and float operands in '" + cur + "'";
+    }
+    string err = winLowerExpr(ctx, fn, e.child(0));
+    if (err.length > 0) { return err; }
+    fn.e.b(80);
+    err = winLowerExpr(ctx, fn, e.child(1));
+    if (err.length > 0) { return err; }
+    fn.e.b(72);
+    fn.e.b(137);
+    fn.e.b(193);
+    fn.e.b(88);
+    fn.e.movqXmm0Ax();
+    fn.e.movqXmm1Cx();
+    fn.e.comisdXmm0Xmm1();
+    int trueLab = fn.e.lab();
+    int endLab = fn.e.lab();
+    if (op == OP_EQ) {
+        fn.e.jcc(138, endLab);
+        fn.e.jcc(132, trueLab);
+    } else if (op == OP_NEQ) {
+        fn.e.jcc(138, trueLab);
+        fn.e.jcc(133, trueLab);
+    } else if (op == OP_LT) {
+        fn.e.jcc(138, endLab);
+        fn.e.jcc(130, trueLab);
+    } else if (op == OP_LEQ) {
+        fn.e.jcc(138, endLab);
+        fn.e.jcc(134, trueLab);
+    } else if (op == OP_GT) {
+        fn.e.jcc(138, endLab);
+        fn.e.jcc(135, trueLab);
+    } else if (op == OP_GEQ) {
+        fn.e.jcc(138, endLab);
+        fn.e.jcc(131, trueLab);
+    } else {
+        return "unsupported binary operator in '" + cur + "'";
+    }
+    fn.e.b(49);
+    fn.e.b(192);
+    fn.e.jmp(endLab);
+    fn.e.bind(trueLab);
+    fn.e.movAbs(0, 1);
+    fn.e.bind(endLab);
+    return "";
+}
 private string winLowerBinary(WinCtx ctx, WinFn fn, Node e) {
     int op = e.op;
     string cur = fn.fname;
     if (op == OP_ADD || op == OP_SUB || op == OP_MUL) {
         if (e.childCount() < 2) { return "unsupported expression in '" + cur + "'"; }
+        int shape = winConcatShape(ctx, fn, e);
+        if (shape > 0) {
+            return winLowerConcat(ctx, fn, e, shape);
+        }
+        if (winKindOf(ctx, fn, e.child(0)) == 4 || winKindOf(ctx, fn, e.child(1)) == 4) {
+            return winLowerFloatArith(ctx, fn, e);
+        }
         string err = winLowerExpr(ctx, fn, e.child(0));
         if (err.length > 0) { return err; }
         fn.e.b(80);
@@ -1424,6 +2406,9 @@ private string winLowerBinary(WinCtx ctx, WinFn fn, Node e) {
     }
     if (op == OP_DIV || op == OP_MOD) {
         if (e.childCount() < 2) { return "unsupported expression in '" + cur + "'"; }
+        if (winKindOf(ctx, fn, e.child(0)) == 4 || winKindOf(ctx, fn, e.child(1)) == 4) {
+            return winLowerFloatArith(ctx, fn, e);
+        }
         string err = winLowerExpr(ctx, fn, e.child(0));
         if (err.length > 0) { return err; }
         fn.e.b(80);
@@ -1472,6 +2457,9 @@ private string winLowerBinary(WinCtx ctx, WinFn fn, Node e) {
     }
     if (op == OP_EQ || op == OP_NEQ || op == OP_LT || op == OP_LEQ || op == OP_GT || op == OP_GEQ) {
         if (e.childCount() < 2) { return "unsupported expression in '" + cur + "'"; }
+        if (winKindOf(ctx, fn, e.child(0)) == 4 || winKindOf(ctx, fn, e.child(1)) == 4) {
+            return winLowerFloatCmp(ctx, fn, e);
+        }
         string err = winLowerExpr(ctx, fn, e.child(0));
         if (err.length > 0) { return err; }
         fn.e.b(80);
@@ -1502,6 +2490,9 @@ private string winLowerBinary(WinCtx ctx, WinFn fn, Node e) {
     }
     if (op == OP_AND || op == OP_OR) {
         if (e.childCount() < 2) { return "unsupported expression in '" + cur + "'"; }
+        if (winKindOf(ctx, fn, e.child(0)) == 4 || winKindOf(ctx, fn, e.child(1)) == 4) {
+            return "float logic operands in '" + cur + "'";
+        }
         string err = winLowerExpr(ctx, fn, e.child(0));
         if (err.length > 0) { return err; }
         fn.e.b(72);
@@ -1530,6 +2521,7 @@ private string winLowerBinary(WinCtx ctx, WinFn fn, Node e) {
         if (t.kind != ND_IDENT) { return "complex assignment targets in '" + cur + "'"; }
         int vi = fn.findVar(t.name);
         if (vi < 0) { return "unknown variable '" + t.name + "' in '" + cur + "'"; }
+        if (op != OP_ASSIGN && (fn.varKinds[vi] == "f" || winKindOf(ctx, fn, e.child(1)) == 4)) { return "unsupported float operation in '" + cur + "'"; }
         if (op == OP_ASSIGN) {
             string err = winLowerExpr(ctx, fn, e.child(1));
             if (err.length > 0) { return err; }
@@ -1537,6 +2529,9 @@ private string winLowerBinary(WinCtx ctx, WinFn fn, Node e) {
             fn.e.b(137);
             fn.e.b(133);
             fn.e.i32(int64(-8 * (vi + 1)));
+            // The stored value is no longer the declaration text (if it ever
+            // was): drop any literal spelling so later prints use %g.
+            fn.varSpells[vi] = "";
             return "";
         }
         fn.e.b(72);
@@ -1578,6 +2573,7 @@ private string winLowerBinary(WinCtx ctx, WinFn fn, Node e) {
         if (t.kind != ND_IDENT) { return "complex assignment targets in '" + cur + "'"; }
         int vi = fn.findVar(t.name);
         if (vi < 0) { return "unknown variable '" + t.name + "' in '" + cur + "'"; }
+        if (fn.varKinds[vi] == "f" || winKindOf(ctx, fn, e.child(1)) == 4) { return "unsupported float operation in '" + cur + "'"; }
         fn.e.b(72);
         fn.e.b(139);
         fn.e.b(133);
@@ -1746,6 +2742,7 @@ private string winLowerStmt(WinCtx ctx, WinFn fn, Node s) {
             fn.e.jmp(fn.epi);
             return "";
         }
+        if (winKindOf(ctx, fn, s.child(0)) == 4) { return "float return values in '" + cur + "'"; }
         string err = winLowerExpr(ctx, fn, s.child(0));
         if (err.length > 0) { return err; }
         fn.e.jmp(fn.epi);
@@ -1753,6 +2750,7 @@ private string winLowerStmt(WinCtx ctx, WinFn fn, Node s) {
     }
     if (s.kind == ND_IF_STMT) {
         if (s.childCount() < 2) { return "unsupported statement in '" + cur + "'"; }
+        if (winKindOf(ctx, fn, s.child(0)) == 4) { return "float conditions in '" + cur + "'"; }
         string err = winLowerExpr(ctx, fn, s.child(0));
         if (err.length > 0) { return err; }
         fn.e.b(72);
@@ -1774,6 +2772,7 @@ private string winLowerStmt(WinCtx ctx, WinFn fn, Node s) {
     }
     if (s.kind == ND_WHILE) {
         if (s.childCount() < 2) { return "unsupported statement in '" + cur + "'"; }
+        if (winKindOf(ctx, fn, s.child(0)) == 4) { return "float conditions in '" + cur + "'"; }
         int condLab = fn.e.lab();
         int endLab = fn.e.lab();
         fn.e.bind(condLab);
@@ -1821,8 +2820,11 @@ private string winLowerExprAsStmt(WinCtx ctx, WinFn fn, Node inner) {
         if (inner.name == "print" || inner.name == "printline") {
             return "print used as a value in '" + cur + "'";
         }
-        if (inner.name == "exit" || inner.name == "printf") {
-            return "explicit '" + inner.name + "' calls in '" + cur + "'";
+        if (inner.name == "printf") {
+            return "explicit 'printf' calls in '" + cur + "'";
+        }
+        if (inner.name == "exit") {
+            return winLowerExit(ctx, fn, inner);
         }
         return winLowerCall(ctx, fn, inner);
     }
@@ -1836,14 +2838,27 @@ private string winLowerLocalDecl(WinCtx ctx, WinFn fn, Node s) {
     string vk = "i";
     if (kind == 1) { vk = "b"; }
     else if (kind == 2) { vk = "c"; }
+    else if (kind == 4) { vk = "f"; }
     if (s.typeHint != "" && s.typeHint != "var") {
-        vk = winScalarOf(s.typeHint);
-        if (vk.length == 0) { return "local '" + s.name + "' has non-tier type in '" + cur + "'"; }
+        if (tierFloatSpelling(s.typeHint)) { vk = "f"; }
+        else {
+            vk = winScalarOf(s.typeHint);
+            if (vk.length == 0) { return "local '" + s.name + "' has non-tier type in '" + cur + "'"; }
+        }
     }
     string err = winLowerExpr(ctx, fn, s.child(0));
     if (err.length > 0) { return err; }
     fn.varNames.add(s.name);
     fn.varKinds.add(vk);
+    // A float local from a float literal (or a spelled float local) keeps
+    // the source text for exact literal-verbatim printing; anything else
+    // (calls, arithmetic, idents without spellings) prints with %g.
+    string spell = "";
+    if (vk == "f") {
+        spell = tierFloatLitText(s.child(0));
+        if (spell.length == 0) { spell = winVarSpell(fn, s.child(0)); }
+    }
+    fn.varSpells.add(spell);
     int vi = fn.varNames.length - 1;
     fn.e.b(72);
     fn.e.b(137);
@@ -1922,6 +2937,7 @@ private string winLowerForC(WinCtx ctx, WinFn fn, Node s) {
     int updLab = fn.e.lab();
     int endLab = fn.e.lab();
     fn.e.bind(condLab);
+    if (winKindOf(ctx, fn, s.child(1)) == 4) { return "float conditions in '" + cur + "'"; }
     string cerr = winLowerExpr(ctx, fn, s.child(1));
     if (cerr.length > 0) { return cerr; }
     fn.e.b(72);
@@ -1954,6 +2970,7 @@ private string winLowerFuncInto(WinCtx ctx, WinProg prog, Node func, int fnIdx) 
     for (int i = 0; i < params.childCount(); i++) {
         fn.varNames.add(params.child(i).name);
         fn.varKinds.add(pks[i..i + 1]);
+        fn.varSpells.add("");
     }
     int nvars = params.childCount() + winCountLocals(body);
     int frame = (nvars * 8 + 8 + 15) / 16 * 16 - 8;
@@ -2018,6 +3035,640 @@ private string winLowerFuncInto(WinCtx ctx, WinProg prog, Node func, int fnIdx) 
     return "";
 }
 
+// Emit the __slv_timeNow helper: the native time.now() clock read. Two
+// int64 frame slots (freq at [rbp-8], count at [rbp-16]) feed the QPC pair
+// by address (the &freq/&count out-param shape), then the result derives
+// exactly like silverc/std/time.sr now(): float64(count) / float64(freq) *
+// 1000.0 in IEEE-754 double precision, with the bit pattern returned in
+// RAX (the tier's float64 value shape). A zero frequency divides to
+// infinity exactly like the tree-walk module body.
+private string winEmitTimeNow(WinCtx ctx, WinProg prog) {
+    WinFn fn = new WinFn();
+    fn.fname = "__slv_timeNow";
+    fn.e.abi = ctx.abi;
+    fn.e.prologue(24);
+    fn.e.callSetup(1);
+    fn.e.leaRbp(fn.e.argReg(0), -8);
+    int holeF = fn.e.callHole();
+    fn.rel(holeF, 0, 4, -2, "");
+    fn.e.callTeardown();
+    fn.e.callSetup(1);
+    fn.e.leaRbp(fn.e.argReg(0), -16);
+    int holeC = fn.e.callHole();
+    fn.rel(holeC, 0, 4, -3, "");
+    fn.e.callTeardown();
+    fn.e.fillReg(0, -16);
+    fn.e.cvtAxToXmm0();
+    fn.e.fillReg(1, -8);
+    fn.e.cvtCxToXmm1();
+    fn.e.divXmm0Xmm1();
+    fn.e.movAbs(1, icFloatBitsOf("1000.0"));
+    fn.e.movqXmm1Cx();
+    fn.e.mulXmm0Xmm1();
+    fn.e.movqAxXmm0();
+    fn.e.epilogue();
+    string err = fn.e.finish();
+    if (err.length > 0) { return err; }
+    prog.fns.add(fn);
+    return "";
+}
+
+// Pop-and-emit helper for the %g renderer below: rcx = remaining pops,
+// r8 = pending zeros (0 on entry). Pops most-first digits, suppressing
+// trailing zeros through the pending count (no lookahead, no indexing).
+private void winEmitDigitRun(WinFn fn) {
+    int runLoop = fn.e.lab();
+    int runDone = fn.e.lab();
+    int runEmit = fn.e.lab();
+    int flushLoop = fn.e.lab();
+    int flushDone = fn.e.lab();
+    int runNext = fn.e.lab();
+    fn.e.bind(runLoop);
+    fn.e.testRcxRcx();
+    fn.e.jcc(132, runDone);
+    fn.e.popRax();
+    fn.e.decRcx();
+    fn.e.testAxAx();
+    fn.e.jcc(133, runEmit);
+    fn.e.incR8();
+    fn.e.jmp(runNext);
+    fn.e.bind(runEmit);
+    fn.e.bind(flushLoop);
+    fn.e.testR8R8();
+    fn.e.jcc(132, flushDone);
+    fn.e.movAlImm(48);
+    fn.e.stoAlRdi();
+    fn.e.incRdi();
+    fn.e.decR8();
+    fn.e.jmp(flushLoop);
+    fn.e.bind(flushDone);
+    fn.e.addAxImm32(48);
+    fn.e.stoAlRdi();
+    fn.e.incRdi();
+    fn.e.bind(runNext);
+    fn.e.jmp(runLoop);
+    fn.e.bind(runDone);
+}
+
+// Emit the __slv_fmtF helper: (rcx = float64 bits, rdx = 64-byte buffer)
+// -> rax = content length, buffer NUL-terminated. Renders the C99 %g shape
+// with 6 significant digits and MSVC-style 3-digit exponents — the exact
+// observable convention of the tree-walk float64.toString(): finite values
+// in fixed or exponential form (exponential iff decimal exponent < -4 or
+// >= 6), "+inf" as "1.#INF", "-inf" as "-1.#INF", nan as "-1.#IND", and
+// negative zero as "-0".
+//
+// Method: decimal exponent by scaling 10^e against the value (bounded
+// loops, overflow/underflow-proof by comparison), then 6 digits by
+// split-half power scaling (intermediates provably finite, so no inf/zero
+// can leak in), half-away rounding, and positional rendering with
+// pending-zero suppression. Correct rounding at 6-figure boundaries can
+// differ in the last digit in measure-zero cases (documented tier bound);
+// every probed value matches the tree-walk byte for byte.
+private string winEmitFmtF(WinCtx ctx, WinProg prog) {
+    WinFn fn = new WinFn();
+    fn.fname = "__slv_fmtF";
+    fn.e.abi = ctx.abi;
+    fn.e.prologue(40);
+    fn.e.spillReg(1, -8);
+    // Load the value through the proven slot+rax path (fill + movqXmm0Ax)
+    // rather than direct movqXmm0Cx: identical semantics, proven emitters.
+    fn.e.fillReg(0, -8);
+    fn.e.movqXmm0Ax();
+    fn.e.movAbsAny(6, icFloatBitsOf("1.7976931348623157e308"));
+    fn.e.movqXmm1Rsi();
+    fn.e.comisdXmm0Xmm1();
+    int isNan = fn.e.lab();
+    int isInf = fn.e.lab();
+    int negInf = fn.e.lab();
+    fn.e.jcc(138, isNan);
+    fn.e.jcc(135, isInf);
+    // Negative infinity sits below every finite double: compare against an
+    // exact -DBL_MAX so only -inf takes the branch. The bits are built with
+    // integers (sign + 2046-biased exponent + all-ones mantissa), never the
+    // decimal parser, so the boundary is slop-free.
+    int64 negMaxBits = 9223372036854775807 + 1 + 2046 * 4503599627370496 + 4503599627370495;
+    fn.e.movAbsAny(6, negMaxBits);
+    fn.e.movqXmm1Rsi();
+    fn.e.comisdXmm0Xmm1();
+    fn.e.jcc(130, negInf);
+    fn.e.movAbsAny(6, 0);
+    fn.e.movqXmm1Rsi();
+    fn.e.comisdXmm0Xmm1();
+    int notZero = fn.e.lab();
+    fn.e.jcc(133, notZero);
+    fn.e.fillReg(0, -8);
+    fn.e.testAxAx();
+    int negZero = fn.e.lab();
+    fn.e.jcc(136, negZero);
+    fn.e.movByteRdxImm(48);
+    fn.e.movByteRdxDisp8(1, 0);
+    fn.e.movRegImm32(0, 1);
+    fn.e.epilogue();
+    fn.e.bind(negZero);
+    fn.e.movByteRdxImm(45);
+    fn.e.movByteRdxDisp8(1, 48);
+    fn.e.movByteRdxDisp8(2, 0);
+    fn.e.movRegImm32(0, 2);
+    fn.e.epilogue();
+    fn.e.bind(isNan);
+    fn.e.stoDwordRdx(0x232E312D);
+    fn.e.stoDwordRdxDisp8(4, 0x00444E49);
+    fn.e.movRegImm32(0, 7);
+    fn.e.epilogue();
+    fn.e.bind(isInf);
+    fn.e.fillReg(0, -8);
+    fn.e.testAxAx();
+    fn.e.jcc(136, negInf);
+    fn.e.stoDwordRdx(0x49232E31);
+    fn.e.movWordRdxDisp8(4, 0x464E);
+    fn.e.movByteRdxDisp8(6, 0);
+    fn.e.movRegImm32(0, 6);
+    fn.e.epilogue();
+    fn.e.bind(negInf);
+    fn.e.stoDwordRdx(0x232E312D);
+    fn.e.stoDwordRdxDisp8(4, 0x00464E49);
+    fn.e.movRegImm32(0, 7);
+    fn.e.epilogue();
+    fn.e.bind(notZero);
+    fn.e.fillReg(0, -8);
+    fn.e.testAxAx();
+    int posFin = fn.e.lab();
+    int haveCursor = fn.e.lab();
+    fn.e.jcc(137, posFin);
+    fn.e.movByteRdxImm(45);
+    fn.e.movAbsAny(0, 9223372036854775807);
+    fn.e.andRcxRax();
+    fn.e.movqXmm0Cx();
+    fn.e.movRdiRdx();
+    fn.e.incRdi();
+    fn.e.jmp(haveCursor);
+    fn.e.bind(posFin);
+    fn.e.movRdiRdx();
+    fn.e.bind(haveCursor);
+    fn.e.movRsiRdx();
+    fn.e.spillReg(6, -40);
+    fn.e.movAbsAny(6, icFloatBitsOf("10.0"));
+    fn.e.movqXmm2Rsi();
+    fn.e.movRegImm32(0, 0);
+    fn.e.spillReg(0, -16);
+    fn.e.movAbsAny(0, icFloatBitsOf("1.0"));
+    fn.e.spillReg(0, -32);
+    fn.e.movRegImm32(1, 320);
+    int upLoop = fn.e.lab();
+    int upDone = fn.e.lab();
+    fn.e.bind(upLoop);
+    fn.e.fillReg(0, -32);
+    fn.e.movqXmm1Ax();
+    fn.e.mulXmm1Xmm2();
+    fn.e.comisdXmm0Xmm1();
+    fn.e.jcc(138, upDone);
+    fn.e.jcc(130, upDone);
+    fn.e.movqAxXmm1();
+    fn.e.spillReg(0, -32);
+    fn.e.fillReg(0, -16);
+    fn.e.incAx();
+    fn.e.spillReg(0, -16);
+    fn.e.decRcx();
+    fn.e.testRcxRcx();
+    fn.e.jcc(133, upLoop);
+    fn.e.bind(upDone);
+    fn.e.movRegImm32(1, 320);
+    int dnLoop = fn.e.lab();
+    int dnDone = fn.e.lab();
+    fn.e.bind(dnLoop);
+    fn.e.fillReg(0, -32);
+    fn.e.movqXmm1Ax();
+    // Compare against the scale itself (not scale/10): the loop shrinks
+    // while the value sits below the scale, stopping with
+    // scale <= value < 10*scale. Comparing against scale/10 stops one
+    // power early (exact powers of ten land a full decade high).
+    fn.e.comisdXmm0Xmm1();
+    fn.e.jcc(138, dnDone);
+    fn.e.jcc(131, dnDone);
+    fn.e.divXmm1Xmm2();
+    fn.e.movqAxXmm1();
+    fn.e.spillReg(0, -32);
+    fn.e.fillReg(0, -16);
+    fn.e.decAx();
+    fn.e.spillReg(0, -16);
+    fn.e.decRcx();
+    fn.e.testRcxRcx();
+    fn.e.jcc(133, dnLoop);
+    fn.e.bind(dnDone);
+    // The decimal exponent stays in its frame slot [rbp-16] for the
+    // renderers below (reloaded where needed): it never rides the data
+    // stack, so digit push/pop imbalance cannot corrupt it, and the
+    // carry increment above stays visible to every later reader.
+    fn.e.movRegImm32(0, 5);
+    fn.e.subAxSlot(-16);
+    fn.e.sarAx1();
+    fn.e.spillReg(0, -32);
+    fn.e.movRegImm32(0, 5);
+    fn.e.subAxSlot(-16);
+    fn.e.subAxSlot(-32);
+    // Powers of ten through the proven rcx loader (movAbsAny + movqXmm1Cx):
+    // rsi is reloaded right after, so no live value is disturbed.
+    fn.e.movAbsAny(1, icFloatBitsOf("1.0"));
+    fn.e.movqXmm1Cx();
+    fn.e.fillReg(1, -32);
+    fn.e.testRcxRcx();
+    int s1done = fn.e.lab();
+    int s1neg = fn.e.lab();
+    int s1pos = fn.e.lab();
+    fn.e.jcc(132, s1done);
+    fn.e.jcc(136, s1neg);
+    fn.e.bind(s1pos);
+    fn.e.mulXmm1Xmm2();
+    fn.e.decRcx();
+    fn.e.testRcxRcx();
+    fn.e.jcc(133, s1pos);
+    fn.e.jmp(s1done);
+    fn.e.bind(s1neg);
+    fn.e.divXmm1Xmm2();
+    fn.e.incRcx();
+    fn.e.testRcxRcx();
+    fn.e.jcc(133, s1neg);
+    fn.e.bind(s1done);
+    fn.e.mulXmm0Xmm1();
+    fn.e.movAbsAny(1, icFloatBitsOf("1.0"));
+    fn.e.movqXmm1Cx();
+    fn.e.movRcxRax();
+    fn.e.testRcxRcx();
+    int s2done = fn.e.lab();
+    int s2neg = fn.e.lab();
+    int s2pos = fn.e.lab();
+    fn.e.jcc(132, s2done);
+    fn.e.jcc(136, s2neg);
+    fn.e.bind(s2pos);
+    fn.e.mulXmm1Xmm2();
+    fn.e.decRcx();
+    fn.e.testRcxRcx();
+    fn.e.jcc(133, s2pos);
+    fn.e.jmp(s2done);
+    fn.e.bind(s2neg);
+    fn.e.divXmm1Xmm2();
+    fn.e.incRcx();
+    fn.e.testRcxRcx();
+    fn.e.jcc(133, s2neg);
+    fn.e.bind(s2done);
+    fn.e.mulXmm0Xmm1();
+    // Round-half-away via the proven addXmm0Xmm1 form (xmm1 = 0.5): the
+    // dedicated C2 emitter is byte-identical in intent, but this path reuses
+    // only emitters already proven by native arithmetic.
+    fn.e.movAbsAny(1, icFloatBitsOf("0.5"));
+    fn.e.movqXmm1Cx();
+    fn.e.addXmm0Xmm1();
+    fn.e.cvttXmm0ToAx();
+    // Digits ride r8 from here (not a frame slot): rax stays live through
+    // the carry/range checks, r8 backs it up across the exp++ scratch and
+    // the push loop for the isExp reload below.
+    fn.e.movR8Ax();
+    fn.e.cmpAxImm32(1000000);
+    int noCarry = fn.e.lab();
+    fn.e.jcc(140, noCarry);
+    fn.e.movRegImm32(0, 100000);
+    fn.e.movR8Ax();
+    fn.e.fillReg(0, -16);
+    fn.e.incAx();
+    fn.e.spillReg(0, -16);
+    fn.e.movAxR8();
+    fn.e.bind(noCarry);
+    fn.e.fillReg(0, -16);
+    fn.e.cmpAxImm32(-4);
+    int isExp = fn.e.lab();
+    int fmtDone = fn.e.lab();
+    fn.e.jcc(140, isExp);
+    fn.e.cmpAxImm32(6);
+    fn.e.jcc(141, isExp);
+    fn.e.movAxR8();
+    fn.e.movRegImm32(1, 10);
+    for (int di = 0; di < 6; di++) {
+        fn.e.xorEdxEdx();
+        fn.e.divRcx();
+        fn.e.pushRdx();
+    }
+    fn.e.fillReg(0, -16);
+    fn.e.cmpAxImm32(0);
+    int fixedPos = fn.e.lab();
+    int fixedDone = fn.e.lab();
+    fn.e.jcc(141, fixedPos);
+    fn.e.movAlImm(48);
+    fn.e.stoAlRdi();
+    fn.e.incRdi();
+    fn.e.movAlImm(46);
+    fn.e.stoAlRdi();
+    fn.e.incRdi();
+    fn.e.fillReg(0, -16);
+    fn.e.incAx();
+    fn.e.negAx();
+    fn.e.movRcxRax();
+    int zLoop = fn.e.lab();
+    int zDone = fn.e.lab();
+    fn.e.bind(zLoop);
+    fn.e.testRcxRcx();
+    fn.e.jcc(132, zDone);
+    fn.e.movAlImm(48);
+    fn.e.stoAlRdi();
+    fn.e.incRdi();
+    fn.e.decRcx();
+    fn.e.jmp(zLoop);
+    fn.e.bind(zDone);
+    fn.e.movRegImm32(1, 6);
+    fn.e.movRegImm32(8, 0);
+    winEmitDigitRun(fn);
+    fn.e.jmp(fixedDone);
+    fn.e.bind(fixedPos);
+    fn.e.fillReg(1, -16);
+    fn.e.incRcx();
+    fn.e.movRegImm32(0, 6);
+    fn.e.subAxRcx();
+    fn.e.spillReg(0, -32);
+    int intLoop = fn.e.lab();
+    int intDone = fn.e.lab();
+    fn.e.bind(intLoop);
+    fn.e.testRcxRcx();
+    fn.e.jcc(132, intDone);
+    fn.e.popRax();
+    fn.e.addAxImm32(48);
+    fn.e.stoAlRdi();
+    fn.e.incRdi();
+    fn.e.decRcx();
+    fn.e.jmp(intLoop);
+    fn.e.bind(intDone);
+    // %g omits the point when the fraction is all zeros ("100000", not
+    // "100000."): scan the frac digits (pop, test, push back — the stack is
+    // restored exactly) recording any nonzero in r8, then branch.
+    fn.e.fillReg(1, -32);
+    fn.e.movRegImm32(8, 0);
+    int fracScan = fn.e.lab();
+    int fracScanDone = fn.e.lab();
+    int fracSeen = fn.e.lab();
+    fn.e.bind(fracScan);
+    fn.e.testRcxRcx();
+    fn.e.jcc(132, fracScanDone);
+    fn.e.popRax();
+    fn.e.decRcx();
+    fn.e.testAxAx();
+    fn.e.jcc(133, fracSeen);
+    fn.e.pushAx();
+    fn.e.jmp(fracScan);
+    fn.e.bind(fracSeen);
+    fn.e.movRegImm32(8, 1);
+    fn.e.pushAx();
+    fn.e.jmp(fracScan);
+    fn.e.bind(fracScanDone);
+    fn.e.testR8R8();
+    int fracEmpty = fn.e.lab();
+    fn.e.jcc(132, fracEmpty);
+    fn.e.movAlImm(46);
+    fn.e.stoAlRdi();
+    fn.e.incRdi();
+    fn.e.fillReg(1, -32);
+    fn.e.movRegImm32(8, 0);
+    winEmitDigitRun(fn);
+    fn.e.jmp(fixedDone);
+    fn.e.bind(fracEmpty);
+    // All-zero fraction: discard the digits without emitting.
+    fn.e.fillReg(1, -32);
+    int fracDrop = fn.e.lab();
+    int fracDropDone = fn.e.lab();
+    fn.e.bind(fracDrop);
+    fn.e.testRcxRcx();
+    fn.e.jcc(132, fracDropDone);
+    fn.e.popRax();
+    fn.e.decRcx();
+    fn.e.jmp(fracDrop);
+    fn.e.bind(fracDropDone);
+    fn.e.bind(fixedDone);
+    fn.e.jmp(fmtDone);
+    fn.e.bind(isExp);
+    fn.e.movAxR8();
+    fn.e.movRegImm32(1, 100000);
+    fn.e.xorEdxEdx();
+    fn.e.divRcx();
+    fn.e.addAxImm32(48);
+    fn.e.stoAlRdi();
+    fn.e.incRdi();
+    // The remainder lives in RDX here: test it directly, because the '.'
+    // byte below rides AL and would clobber a remainder held in RAX
+    // (50000 becomes 49966, so every inexact mantissa misrenders).
+    fn.e.cmpRdxImm32(0);
+    int noFrac = fn.e.lab();
+    fn.e.jcc(132, noFrac);
+    fn.e.movAlImm(46);
+    fn.e.stoAlRdi();
+    fn.e.incRdi();
+    fn.e.movAxRdx();
+    fn.e.movRegImm32(1, 10);
+    for (int dj = 0; dj < 5; dj++) {
+        fn.e.xorEdxEdx();
+        fn.e.divRcx();
+        fn.e.pushRdx();
+    }
+    fn.e.movRegImm32(1, 5);
+    fn.e.movRegImm32(8, 0);
+    winEmitDigitRun(fn);
+    fn.e.bind(noFrac);
+    fn.e.movAlImm(101);
+    fn.e.stoAlRdi();
+    fn.e.incRdi();
+    // Reload the decimal exponent from its frame slot (never pushed:
+    // digit traffic cannot disturb it, and any carry increment is seen).
+    fn.e.fillReg(0, -16);
+    fn.e.testAxAx();
+    int expPosM = fn.e.lab();
+    int expMag = fn.e.lab();
+    fn.e.jcc(137, expPosM);
+    fn.e.movAlImm(45);
+    fn.e.stoAlRdi();
+    fn.e.incRdi();
+    // The '-' byte above rode AL: reload the exponent before negating
+    // (negating the clobbered value renders every negative exponent
+    // as "211").
+    fn.e.fillReg(0, -16);
+    fn.e.negAx();
+    fn.e.jmp(expMag);
+    fn.e.bind(expPosM);
+    fn.e.movAlImm(43);
+    fn.e.stoAlRdi();
+    fn.e.incRdi();
+    // Same AL clobber on the '+' path (every positive exponent rendered
+    // as "043"): reload before the digit loop below.
+    fn.e.fillReg(0, -16);
+    fn.e.bind(expMag);
+    // Three digits units-first via div10 (the proven digit-loop idiom),
+    // then pop hundreds-first. Exponents stay below 1000 on tier inputs.
+    fn.e.movRegImm32(1, 10);
+    for (int de = 0; de < 3; de++) {
+        fn.e.xorEdxEdx();
+        fn.e.divRcx();
+        fn.e.pushRdx();
+    }
+    for (int dg = 0; dg < 3; dg++) {
+        fn.e.popRax();
+        fn.e.addAxImm32(48);
+        fn.e.stoAlRdi();
+        fn.e.incRdi();
+    }
+    fn.e.bind(fmtDone);
+    fn.e.movNulRdi();
+    fn.e.movAxRdi();
+    fn.e.fillReg(6, -40);
+    fn.e.subAxRsi();
+    fn.e.epilogue();
+    string err = fn.e.finish();
+    if (err.length > 0) { return err; }
+    prog.fns.add(fn);
+    return "";
+}
+// length, r8 = int64 value) -> rax = concat buffer with the literal bytes
+// plus the %lld rendering of the value, NUL-terminated. Output is capped
+// at 32767 content bytes (documented tier bound: longer inputs truncate
+// rather than overrun). Integer rendering is exact manual digit extraction
+// (unsigned magnitude, so INT64_MIN renders correctly), matching the
+// tree-walk int64.toString() byte for byte.
+private string winEmitConcatSI(WinCtx ctx, WinProg prog) {
+    WinFn fn = new WinFn();
+    fn.fname = "__slv_concatSI";
+    fn.e.abi = ctx.abi;
+    fn.e.prologue(8);
+    int bufHole = fn.e.absData(7, ctx.bufAOff);
+    fn.rel(bufHole, 1, 2, ctx.bufAOff, "");
+    fn.e.cmpRdxImm32(32767);
+    int lenOk = fn.e.lab();
+    fn.e.jcc(134, lenOk);
+    fn.e.movRegImm32(2, 32767);
+    fn.e.bind(lenOk);
+    fn.e.movRsiRcx();
+    fn.e.movRcxRdx();
+    fn.e.repMovsb();
+    fn.e.movRegImm32(6, 32767);
+    fn.e.subRsiRdx();
+    fn.e.movAxR8();
+    fn.e.testAxAx();
+    int posVal = fn.e.lab();
+    fn.e.jcc(137, posVal);
+    fn.e.cmpRsi0();
+    int noDash = fn.e.lab();
+    fn.e.jcc(132, noDash);
+    fn.e.movAlImm(45);
+    fn.e.stoAlRdi();
+    fn.e.incRdi();
+    fn.e.decRsi();
+    fn.e.bind(noDash);
+    // The '-' byte above rode AL: reload the value (still intact in R8)
+    // before negating, or every negative renders from magnitude 211.
+    fn.e.movAxR8();
+    fn.e.negAx();
+    fn.e.bind(posVal);
+    fn.e.movRegImm32(1, 10);
+    fn.e.movRegImm32(8, 0);
+    int digLoop = fn.e.lab();
+    fn.e.bind(digLoop);
+    fn.e.xorEdxEdx();
+    fn.e.divRcx();
+    fn.e.pushRdx();
+    fn.e.incR8();
+    fn.e.testAxAx();
+    fn.e.jcc(133, digLoop);
+    int digNext = fn.e.lab();
+    int digDone = fn.e.lab();
+    fn.e.bind(digNext);
+    fn.e.testR8R8();
+    fn.e.jcc(132, digDone);
+    fn.e.popRax();
+    fn.e.decR8();
+    fn.e.cmpRsi0();
+    fn.e.jcc(132, digNext);
+    fn.e.addAxImm32(48);
+    fn.e.stoAlRdi();
+    fn.e.incRdi();
+    fn.e.decRsi();
+    fn.e.jmp(digNext);
+    fn.e.bind(digDone);
+    fn.e.movNulRdi();
+    int retHole = fn.e.absData(0, ctx.bufAOff);
+    fn.rel(retHole, 1, 2, ctx.bufAOff, "");
+    fn.e.epilogue();
+    string err = fn.e.finish();
+    if (err.length > 0) { return err; }
+    prog.fns.add(fn);
+    return "";
+}
+
+// Emit the __slv_concatSF helper: (rcx = literal address, rdx = literal
+// length, r8 = float64 bits) -> rax = concat buffer with the literal bytes
+// plus the %g rendering of the value (through __slv_fmtF into the float
+// buffer, then appended), NUL-terminated with the same 32767-byte cap.
+private string winEmitConcatSF(WinCtx ctx, WinProg prog) {
+    WinFn fn = new WinFn();
+    fn.fname = "__slv_concatSF";
+    fn.e.abi = ctx.abi;
+    if (ctx.helperFmtF < 0) { return "string values in 'concat'"; }
+    // Two frame slots shelter the cursor (rdi) and the remaining count
+    // (rsi) across the __slv_fmtF call below: helpers may use the volatile
+    // registers freely, but rsi/rdi are callee-saved, so the callee is
+    // allowed to clobber them and the caller must spill what stays live.
+    fn.e.prologue(24);
+    int bufHole = fn.e.absData(7, ctx.bufAOff);
+    fn.rel(bufHole, 1, 2, ctx.bufAOff, "");
+    fn.e.cmpRdxImm32(32767);
+    int lenOk = fn.e.lab();
+    fn.e.jcc(134, lenOk);
+    fn.e.movRegImm32(2, 32767);
+    fn.e.bind(lenOk);
+    fn.e.movRsiRcx();
+    fn.e.movRcxRdx();
+    fn.e.repMovsb();
+    fn.e.movRegImm32(6, 32767);
+    fn.e.subRsiRdx();
+    fn.e.spillReg(7, -8);
+    fn.e.spillReg(6, -16);
+    // The float-format call rides the proven anchored pair (callSetup /
+    // callTeardown, exactly like the print path's __slv_fmtF call): the
+    // anchor nests (r13 stacks), the outgoing area carries the Win64
+    // shadow space, and rsp is 16-aligned at the call either way.
+    fn.e.callSetup(2);
+    fn.e.movRcxR8();
+    int fbufHole = fn.e.absData(2, ctx.bufFOff);
+    fn.rel(fbufHole, 1, 2, ctx.bufFOff, "");
+    int callHole = fn.e.callHole();
+    fn.rel(callHole, 0, 0, ctx.helperFmtF, "");
+    fn.e.callTeardown();
+    fn.e.fillReg(6, -16);
+    fn.e.fillReg(7, -8);
+    int srcHole = fn.e.absData(8, ctx.bufFOff);
+    fn.rel(srcHole, 1, 2, ctx.bufFOff, "");
+    // The byte load below rides AL, so the remaining length rides RCX (a
+    // full-width register this loop owns): holding it in RAX would corrupt
+    // the count on the first byte and overrun the float buffer.
+    fn.e.movRcxRax();
+    int cpLoop = fn.e.lab();
+    int cpDone = fn.e.lab();
+    fn.e.bind(cpLoop);
+    fn.e.testRcxRcx();
+    fn.e.jcc(132, cpDone);
+    fn.e.cmpRsi0();
+    fn.e.jcc(132, cpDone);
+    fn.e.movAlR8();
+    fn.e.stoAlRdi();
+    fn.e.incRdi();
+    fn.e.incR8();
+    fn.e.decRsi();
+    fn.e.decRcx();
+    fn.e.jmp(cpLoop);
+    fn.e.bind(cpDone);
+    fn.e.movNulRdi();
+    int retHole = fn.e.absData(0, ctx.bufAOff);
+    fn.rel(retHole, 1, 2, ctx.bufAOff, "");
+    fn.e.epilogue();
+    string err = fn.e.finish();
+    if (err.length > 0) { return err; }
+    prog.fns.add(fn);
+    return "";
+}
+
 // Count the local declarations a body introduces (var decls plus C-for init
 // decls, range-for desugared the same way) so the frame reserves them all up
 // front. Slots are still assigned in encounter order during lowering.
@@ -2061,6 +3712,7 @@ public string winLowerUnit(string filekey, int64 hash, int srcLen, int stamp, No
     if (reason.length > 0) { return reason; }
     WinCtx ctx = new WinCtx();
     ctx.abi = abi;
+    ctx.reserveBlobs();
     // Lower only the reached closure the predicate admitted above, so the
     // two can never disagree: unreached functions get no signature and no
     // .text — no lowered caller can reference them, because any reached
@@ -2101,6 +3753,28 @@ public string winLowerUnit(string filekey, int64 hash, int srcLen, int stamp, No
             }
         }
     }
+    // Native helper functions (one home per helper, called from lowered user
+    // code by name through the same call machinery): __slv_timeNow serves
+    // the time.now() clock read, __slv_concatSI/SF serve literal+scalar
+    // string concats, __slv_fmtF formats float64 values. Registered after
+    // the user signatures so helper indices follow the user functions in
+    // both tables.
+    ctx.fnNames.add("__slv_timeNow");
+    ctx.fnPKinds.add("");
+    ctx.fnRets.add("f");
+    ctx.helperTimeNow = ctx.fnNames.length - 1;
+    ctx.fnNames.add("__slv_concatSI");
+    ctx.fnPKinds.add("iii");
+    ctx.fnRets.add("i");
+    ctx.helperConcatSI = ctx.fnNames.length - 1;
+    ctx.fnNames.add("__slv_concatSF");
+    ctx.fnPKinds.add("iii");
+    ctx.fnRets.add("i");
+    ctx.helperConcatSF = ctx.fnNames.length - 1;
+    ctx.fnNames.add("__slv_fmtF");
+    ctx.fnPKinds.add("ii");
+    ctx.fnRets.add("i");
+    ctx.helperFmtF = ctx.fnNames.length - 1;
     WinProg prog = new WinProg();
     for (int f = 0; f < program.length; f++) {
         Node item = program[f];
@@ -2111,6 +3785,14 @@ public string winLowerUnit(string filekey, int64 hash, int srcLen, int stamp, No
             if (err.length > 0) { return err; }
         }
     }
+    string helperErr = winEmitTimeNow(ctx, prog);
+    if (helperErr.length > 0) { return helperErr; }
+    helperErr = winEmitConcatSI(ctx, prog);
+    if (helperErr.length > 0) { return helperErr; }
+    helperErr = winEmitConcatSF(ctx, prog);
+    if (helperErr.length > 0) { return helperErr; }
+    helperErr = winEmitFmtF(ctx, prog);
+    if (helperErr.length > 0) { return helperErr; }
     unit.filekey = filekey;
     unit.datab = databName(filekey);
     unit.gas = 0;
@@ -2128,7 +3810,18 @@ public string winLowerUnit(string filekey, int64 hash, int srcLen, int stamp, No
         unit.impDlls.add(ctx.exitDll());
         unit.impNames.add(ctx.exitName());
     }
+    // QPC clock pair for the __slv_timeNow helper: unconditional (mirrors
+    // the ARM lowering's unconditional exit import). kernel32 is always
+    // loaded, so runNative always resolves these; LINUX/MAC objects carry
+    // the same note but validate only and never bind it.
+    unit.undefImports.add(unit.impDlls.length);
+    unit.impDlls.add("kernel32.dll");
+    unit.impNames.add("QueryPerformanceFrequency");
+    unit.undefImports.add(unit.impDlls.length);
+    unit.impDlls.add("kernel32.dll");
+    unit.impNames.add("QueryPerformanceCounter");
     ObjWriter dw = new ObjWriter();
+    for (int z = 0; z < ctx.blobTotal; z++) { dw.u8(0); }
     for (int s = 0; s < ctx.strs.length; s++) {
         dw.rawStr(ctx.strs[s]);
         dw.u8(0);
@@ -2157,10 +3850,25 @@ public string winLowerUnit(string filekey, int64 hash, int srcLen, int stamp, No
         unit.defSizes.add(wfn.e.code.length);
         for (int c = 0; c < wfn.e.code.length; c++) { unit.code.add(wfn.e.code[c]); }
         for (int r = 0; r < wfn.rsites.length; r++) {
+            int ri = wfn.ridx[r];
+            if (wfn.rkinds[r] == 0 && wfn.rtgts[r] == 4 && ri < 0) {
+                if (ri == -1) {
+                    if (ctx.usesPrintf) { ri = 1; }
+                    else { ri = 0; }
+                } else if (ri == -2 || ri == -3) {
+                    int qb = 0;
+                    if (ctx.usesPrintf) { qb++; }
+                    if (ctx.usesExit) { qb++; }
+                    if (ri == -3) { qb++; }
+                    ri = qb;
+                } else {
+                    return "unresolvable import reference in '" + wname + "'";
+                }
+            }
             unit.relSites.add(base + wfn.rsites[r]);
             unit.relKinds.add(wfn.rkinds[r]);
             unit.relTargets.add(wfn.rtgts[r]);
-            unit.relIdx.add(wfn.ridx[r]);
+            unit.relIdx.add(ri);
             unit.relNames.add(wfn.rnames[r]);
         }
     }
@@ -4943,6 +6651,9 @@ public string macTierReason(Node[] program) {
             if (item.name == "print" || item.name == "printline" || item.name == "printf" || item.name == "exit") {
                 return "user function '" + item.name + "' collides with a tier builtin";
             }
+            if (item.name.length >= 6 && item.name.substr(0, 6) == "__slv_") {
+                return "user function '" + item.name + "' collides with a tier builtin";
+            }
             if (macFindSig(ctx, item.name) >= 0) {
                 return "overloaded function '" + item.name + "' (duplicate name)";
             }
@@ -5127,11 +6838,22 @@ private string macWalkLocalDecl(MacWalk w, Node s, int base) {
     string vk = "";
     if (v.kind == 0) { vk = "i"; }
     else if (v.kind == 1) { vk = "b"; }
+    else if (v.kind == 4) { vk = "f"; }
     else { vk = "c"; }
     if (s.typeHint != "" && s.typeHint != "var") {
-        vk = macScalarOf(s.typeHint);
-        if (vk.length == 0) {
-            return "local '" + s.name + "' has non-tier type in '" + w.fname + "'";
+        if (tierFloatSpelling(s.typeHint)) {
+            if (v.kind != 4) {
+                return "local '" + s.name + "' has non-tier type in '" + w.fname + "'";
+            }
+            vk = "f";
+        } else {
+            if (v.kind == 4) {
+                return "local '" + s.name + "' has non-tier type in '" + w.fname + "'";
+            }
+            vk = macScalarOf(s.typeHint);
+            if (vk.length == 0) {
+                return "local '" + s.name + "' has non-tier type in '" + w.fname + "'";
+            }
         }
     }
     if (w.guardNames.contains(s.name)) {
@@ -5178,6 +6900,9 @@ private string macWalkStmt(MacWalk w, Node s, int base) {
         if (v.kind == 3) {
             return "string values in '" + w.fname + "'";
         }
+        if (v.kind == 4) {
+            return "float return values in '" + w.fname + "'";
+        }
         w.maxDepth = macMax(w.maxDepth, base + v.depth);
         return "";
     }
@@ -5190,6 +6915,9 @@ private string macWalkStmt(MacWalk w, Node s, int base) {
         if (err.length > 0) { return err; }
         if (v.kind == 3) {
             return "string values in '" + w.fname + "'";
+        }
+        if (v.kind == 4) {
+            return "float conditions in '" + w.fname + "'";
         }
         w.maxDepth = macMax(w.maxDepth, base + v.depth);
         err = macWalkBlock(w, s.child(1), base);
@@ -5209,6 +6937,9 @@ private string macWalkStmt(MacWalk w, Node s, int base) {
         if (err.length > 0) { return err; }
         if (v.kind == 3) {
             return "string values in '" + w.fname + "'";
+        }
+        if (v.kind == 4) {
+            return "float conditions in '" + w.fname + "'";
         }
         w.maxDepth = macMax(w.maxDepth, base + v.depth);
         w.loopDepth++;
@@ -5309,6 +7040,9 @@ private string macWalkStmt(MacWalk w, Node s, int base) {
         if (cv.kind == 3) {
             return "string values in '" + w.fname + "'";
         }
+        if (cv.kind == 4) {
+            return "float conditions in '" + w.fname + "'";
+        }
         w.maxDepth = macMax(w.maxDepth, base + cv.depth);
         MacVal uv = new MacVal();
         string uerr = macWalkExpr(w, s.child(2), true, base, uv);
@@ -5368,7 +7102,9 @@ private string macWalkExpr(MacWalk w, Node e, bool inStmt, int base, MacVal out)
         return "";
     }
     if (e.kind == ND_FLOAT_LIT) {
-        return "float literals in '" + w.fname + "'";
+        out.kind = 4;
+        out.depth = 1;
+        return "";
     }
     if (e.kind == ND_STRING_LIT) {
         out.kind = 3;
@@ -5392,6 +7128,7 @@ private string macWalkExpr(MacWalk w, Node e, bool inStmt, int base, MacVal out)
         string vk = w.varKinds[vi];
         if (vk == "i") { out.kind = 0; }
         else if (vk == "b") { out.kind = 1; }
+        else if (vk == "f") { out.kind = 4; }
         else { out.kind = 2; }
         out.depth = 1;
         return "";
@@ -5413,6 +7150,9 @@ private string macWalkExpr(MacWalk w, Node e, bool inStmt, int base, MacVal out)
             if (v.kind == 3) {
                 return "string values in '" + w.fname + "'";
             }
+            if (v.kind == 4) {
+                return "unsupported float operation in '" + w.fname + "'";
+            }
             out.kind = 0;
             out.depth = v.depth;
             return "";
@@ -5423,6 +7163,9 @@ private string macWalkExpr(MacWalk w, Node e, bool inStmt, int base, MacVal out)
             if (err.length > 0) { return err; }
             if (v.kind == 3) {
                 return "string values in '" + w.fname + "'";
+            }
+            if (v.kind == 4) {
+                return "float logic operands in '" + w.fname + "'";
             }
             out.kind = 1;
             out.depth = v.depth;
@@ -5439,7 +7182,7 @@ private string macWalkExpr(MacWalk w, Node e, bool inStmt, int base, MacVal out)
         return macWalkCall(w, e, inStmt, base, out);
     }
     if (e.kind == ND_METHOD_CALL) {
-        return "method calls in '" + w.fname + "'";
+        return macWalkMethod(w, e, inStmt, base, out);
     }
     if (e.kind == ND_MEMBER) {
         return "member access in '" + w.fname + "'";
@@ -5499,7 +7242,15 @@ private string macWalkBinary(MacWalk w, Node e, bool inStmt, int base, MacVal ou
         err = macWalkExpr(w, e.child(1), false, base + 1, r);
         if (err.length > 0) { return err; }
         if (l.kind == 3 || r.kind == 3) {
-            return "string values in '" + w.fname + "'";
+            return macWalkConcat(w, e, l, r, base, out);
+        }
+        if (l.kind == 4 || r.kind == 4) {
+            if (l.kind != 4 || r.kind != 4) {
+                return "mixed int and float operands in '" + w.fname + "'";
+            }
+            out.kind = 4;
+            out.depth = macMax(l.depth, 1 + r.depth);
+            return "";
         }
         out.kind = 0;
         out.depth = macMax(l.depth, 1 + r.depth);
@@ -5523,6 +7274,19 @@ private string macWalkBinary(MacWalk w, Node e, bool inStmt, int base, MacVal ou
         if (l.kind == 3 || r.kind == 3) {
             return "string values in '" + w.fname + "'";
         }
+        if (l.kind == 4 || r.kind == 4) {
+            if (l.kind != 4 || r.kind != 4) {
+                return "mixed int and float operands in '" + w.fname + "'";
+            }
+            if (op == OP_MOD) {
+                return "unsupported float operation in '" + w.fname + "'";
+            }
+            // Float division never traps (zero divisor yields infinity,
+            // exactly like the tree-walk), so no printf import is needed.
+            out.kind = 4;
+            out.depth = macMax(l.depth, 1 + r.depth);
+            return "";
+        }
         w.ctx.usesPrintf = true;
         out.kind = 0;
         out.depth = macMax(l.depth, 1 + r.depth);
@@ -5541,6 +7305,11 @@ private string macWalkBinary(MacWalk w, Node e, bool inStmt, int base, MacVal ou
         if (l.kind == 3 || r.kind == 3) {
             return "string values in '" + w.fname + "'";
         }
+        if (l.kind == 4 || r.kind == 4) {
+            if (l.kind != 4 || r.kind != 4) {
+                return "mixed int and float operands in '" + w.fname + "'";
+            }
+        }
         out.kind = 1;
         out.depth = macMax(l.depth, 1 + r.depth);
         return "";
@@ -5558,6 +7327,9 @@ private string macWalkBinary(MacWalk w, Node e, bool inStmt, int base, MacVal ou
         if (l.kind == 3 || r.kind == 3) {
             return "string values in '" + w.fname + "'";
         }
+        if (l.kind == 4 || r.kind == 4) {
+            return "float logic operands in '" + w.fname + "'";
+        }
         out.kind = 1;
         out.depth = macMax(l.depth, r.depth);
         return "";
@@ -5574,7 +7346,8 @@ private string macWalkBinary(MacWalk w, Node e, bool inStmt, int base, MacVal ou
         if (t.kind != ND_IDENT) {
             return "complex assignment targets in '" + w.fname + "'";
         }
-        if (macFindVar(w, t.name) < 0) {
+        int vari = macFindVar(w, t.name);
+        if (vari < 0) {
             return "unknown variable '" + t.name + "' in '" + w.fname + "'";
         }
         MacVal v = new MacVal();
@@ -5583,10 +7356,20 @@ private string macWalkBinary(MacWalk w, Node e, bool inStmt, int base, MacVal ou
         if (v.kind == 3) {
             return "string values in '" + w.fname + "'";
         }
+        bool targetFloat = w.varKinds[vari] == "f";
+        if (op == OP_ASSIGN) {
+            if (targetFloat != (v.kind == 4)) {
+                return "mixed int and float operands in '" + w.fname + "'";
+            }
+        } else {
+            if (targetFloat || v.kind == 4) {
+                return "unsupported float operation in '" + w.fname + "'";
+            }
+        }
         if (op == OP_DIV_ASSIGN || op == OP_MOD_ASSIGN) {
             w.ctx.usesPrintf = true;
         }
-        out.kind = 0;
+        out.kind = v.kind;
         out.depth = v.depth;
         return "";
     }
@@ -5617,16 +7400,19 @@ private string macWalkCall(MacWalk w, Node e, bool inStmt, int base, MacVal out)
         MacVal v = new MacVal();
         string err = macWalkExpr(w, arg, false, base, v);
         if (err.length > 0) { return err; }
-        if (v.kind == 3) {
-            return "string values in '" + w.fname + "'";
-        }
+        // String and float64 arguments print through the concat/format
+        // helpers: their admittable shapes were already established while
+        // walking the operand above (anything else errored there first).
         w.ctx.usesPrintf = true;
         out.kind = 0;
         out.depth = v.depth;
         return "";
     }
-    if (e.name == "exit" || e.name == "printf") {
-        return "explicit '" + e.name + "' calls in '" + w.fname + "'";
+    if (e.name == "printf") {
+        return "explicit 'printf' calls in '" + w.fname + "'";
+    }
+    if (e.name == "exit") {
+        return macWalkExit(w, e, inStmt, base, out);
     }
     int si = macFindSig(w.ctx, e.name);
     if (si < 0) {
@@ -5644,6 +7430,9 @@ private string macWalkCall(MacWalk w, Node e, bool inStmt, int base, MacVal out)
         if (v.kind == 3) {
             return "string values in '" + w.fname + "'";
         }
+        if (v.kind == 4) {
+            return "float call arguments in '" + w.fname + "'";
+        }
         depth = macMax(depth, i + v.depth);
     }
     string ret = w.ctx.sigRets[si];
@@ -5659,6 +7448,127 @@ private string macWalkCall(MacWalk w, Node e, bool inStmt, int base, MacVal out)
     else if (ret == "b") { out.kind = 1; }
     else { out.kind = 2; }
     out.depth = macMax(depth, 1);
+    return "";
+}
+
+// Check a method call: only the zero-argument time.now() clock reads as a
+// native QPC thunk (float64 milliseconds, the exact derivation in
+// silverc/std/time.sr now()). The receiver must be the time module itself —
+// a program-local `time` variable keeps the honest method-call fallback —
+// and anything else does too.
+private string macWalkMethod(MacWalk w, Node e, bool inStmt, int base, MacVal out) {
+    if (e.name == "now" && e.childCount() == 1) {
+        Node recv = e.child(0);
+        if (recv.kind == ND_IDENT && recv.name == "time") {
+            if (macFindVar(w, "time") < 0 && macFindConst(w.ctx, "time") < 0) {
+                out.kind = 4;
+                out.depth = 1;
+                return "";
+            }
+        }
+    }
+    return "method calls in '" + w.fname + "'";
+}
+
+// Check a string-concat addition: the admittable shapes are a literal on
+// the left with an int or float64 scalar on the right (the printline forms
+// the benchmark needs), or two literals (folded at lowering). The string
+// side must be a literal — never a computed string — so no intermediate
+// buffer can be live: nested concats keep the honest "string values"
+// fallback. Scalar on the left, bool/char scalars, and any other string
+// operator do too.
+private string macWalkConcat(MacWalk w, Node e, MacVal l, MacVal r, int base, MacVal out) {
+    if (e.op != OP_ADD) {
+        return "string values in '" + w.fname + "'";
+    }
+    if (e.childCount() < 2) {
+        return "unsupported expression in '" + w.fname + "'";
+    }
+    bool leftLit = tierIsStringLit(e.child(0));
+    bool rightLit = tierIsStringLit(e.child(1));
+    if (leftLit && rightLit) {
+        if (!winStrNative(tierStringLitText(e.child(0))) || !winStrNative(tierStringLitText(e.child(1)))) {
+            return "unicode string literal in '" + w.fname + "'";
+        }
+        out.kind = 3;
+        out.depth = 0;
+        return "";
+    }
+    if (leftLit && (r.kind == 0 || r.kind == 4)) {
+        if (!winStrNative(tierStringLitText(e.child(0)))) {
+            return "unicode string literal in '" + w.fname + "'";
+        }
+        out.kind = 3;
+        out.depth = r.depth;
+        return "";
+    }
+    return "string values in '" + w.fname + "'";
+}
+
+// True for a string literal possibly wrapped in parentheses. Shared by the
+// predicate and the lowering so both agree on the concat shapes.
+private bool tierIsStringLit(Node e) {
+    Node t = e;
+    while (t.kind == ND_PAREN && t.childCount() > 0) { t = t.child(0); }
+    return t.kind == ND_STRING_LIT;
+}
+
+// Spelling of a string literal possibly wrapped in parentheses.
+private string tierStringLitText(Node e) {
+    Node t = e;
+    while (t.kind == ND_PAREN && t.childCount() > 0) { t = t.child(0); }
+    return t.strVal;
+}
+
+// Spelling of a float literal possibly wrapped in parentheses, or "" when
+// the node is not one. The tree-walk prints literal spellings verbatim
+// (makeFloatStr), so direct-literal print/concat folds the same text while
+// computed floats (and spelled locals, via winVarSpell) take their own
+// exact paths. A unary minus is NOT a literal: its value is computed.
+private string tierFloatLitText(Node e) {
+    Node t = e;
+    while (t.kind == ND_PAREN && t.childCount() > 0) { t = t.child(0); }
+    if (t.kind == ND_FLOAT_LIT) { return t.strVal; }
+    return "";
+}
+
+// Literal spelling remembered for a float local, or "" when the operand is
+// not a spelled local (params, computed values, and cleared vars print with
+// %g exactly like the tree-walk's makeFloat).
+private string winVarSpell(WinFn fn, Node e) {
+    Node t = e;
+    while (t.kind == ND_PAREN && t.childCount() > 0) { t = t.child(0); }
+    if (t.kind != ND_IDENT) { return ""; }
+    int vi = fn.findVar(t.name);
+    if (vi < 0 || vi >= fn.varSpells.length) { return ""; }
+    return fn.varSpells[vi];
+}
+// Check an explicit exit call: statement position only (exit ends the
+// process, so a value use is meaningless), with zero arguments (code 0) or
+// exactly one integer argument. Anything else keeps the honest
+// "explicit 'exit' calls" fallback. The lowering binds exit(int) to the
+// ExitProcess import (winLowerExit), matching the tree-walk builtin which
+// exits the process with the same code.
+private string macWalkExit(MacWalk w, Node e, bool inStmt, int base, MacVal out) {
+    if (!inStmt) {
+        return "explicit 'exit' calls in '" + w.fname + "'";
+    }
+    if (e.childCount() == 0) {
+        out.kind = 0;
+        out.depth = 0;
+        return "";
+    }
+    if (e.childCount() != 1) {
+        return "explicit 'exit' calls in '" + w.fname + "'";
+    }
+    MacVal v = new MacVal();
+    string err = macWalkExpr(w, e.child(0), false, base, v);
+    if (err.length > 0) { return err; }
+    if (v.kind != 0) {
+        return "explicit 'exit' calls in '" + w.fname + "'";
+    }
+    out.kind = 0;
+    out.depth = v.depth;
     return "";
 }
 
