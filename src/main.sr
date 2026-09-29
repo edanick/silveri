@@ -713,6 +713,20 @@ void failEntryDiagnostic(string msg, string entryName) {
     exit(1);
 }
 
+// DOCS/261 -- custom-native effective name for the resolveImports
+// fixpoint: a non-fixed `linux.X` source validates against the manifest's
+// bare `X` entry. `win32.X` keeps the moduleAlwaysResolvable skip in the
+// fixpoint, fixed modules never reach the custom branch, and `mac.X`
+// prefixed customs stay unsupported (the full name falls through to the
+// undeclared path, exactly like checkOneNativeImport, which owns the
+// prefixed diagnostics).
+string natEffCustom(string module) {
+    if (module.length > 6 && module.substr(0, 6) == "linux.") {
+        return module.substr(6);
+    }
+    return module;
+}
+
 // DOCS/261 -- validate one parsed import against the fixed tables plus the
 // manifest's custom declarations. Failures print the contract message and
 // exit, mirroring the compilers' import-site errors in interpreter style.
@@ -1020,11 +1034,14 @@ string resolveImports(string source, string inputFile, int[] prependLen, string 
         // sources, `import*from m;` in minified `.qs` bundles), and the
         // named/braced `from` shapes (`import x from m;`,
         // `import {a, b} from m;`) -- DOCS/260. Any other `import` spelling
-        // (a bare `import m;`) belongs to the plain pass below.
+        // (a bare `import m;`) belongs to the plain pass below. Star-ness
+        // is kept: only star imports on a declared custom native need an
+        // export list (single-export grants need no list).
         int[] mm = [];
         mm.add(0);
         mm.add(0);
-        if (!matchStarImport(aggregate, importPos, mm) && !matchFromImport(aggregate, importPos, mm)) {
+        bool isStar = matchStarImport(aggregate, importPos, mm);
+        if (!isStar && !matchFromImport(aggregate, importPos, mm)) {
             cursor = importPos + 1;
             continue;
         }
@@ -1046,6 +1063,10 @@ string resolveImports(string source, string inputFile, int[] prependLen, string 
             continue;
         }
         if (module.length > 0) { seenMods += module + ";"; }
+        // DOCS/261 effective custom-native name (natEffCustom): a
+        // non-fixed `linux.X` source validates against the manifest's
+        // bare `X` entry here, mirroring validateNativeImports.
+        string effCustom = natEffCustom(module);
         // Fixed win32/linux/mac natives (and bare `win32`/`linux`/`mac`)
         // never come from disk: native prefix handling stays before file
         // probing, and validateNativeImports owns their diagnostics and
@@ -1062,14 +1083,16 @@ string resolveImports(string source, string inputFile, int[] prependLen, string 
                 // already in the aggregate: Silver wins over custom names.
             } else if (moduleAlwaysResolvable(module)) {
                 // Fixed/embedded modules need no source.
-            } else if (customNativeDeclared(module)) {
-                // DOCS/261 -- star import on a declared custom native:
-                // wrong-target side and missing export list fail here with
-                // the contract message; the grant itself registers later.
-                if (customNativeFileFor(module, target) == "") {
+            } else if (customNativeDeclared(effCustom)) {
+                // DOCS/261 -- declared custom native: the missing-side
+                // error applies to bare names only (prefixed sides own
+                // their diagnostics in validateNativeImports) and the
+                // export-list rule to star imports only (single-export
+                // grants need no list); the grant itself registers later.
+                if (effCustom == module && customNativeFileFor(module, target) == "") {
                     failEntryDiagnostic(customNativeSideError(module, target), inputFile);
                 }
-                if (customNativeStarExports(module, target).length == 0) {
+                if (isStar && customNativeStarExports(effCustom, target).length == 0) {
                     failEntryDiagnostic(customNativeStarMsg(module), inputFile);
                 }
             } else if (natInBundle(aggSpans, natImportLine(aggregate, importPos)) || customNativeOptIn()) {
