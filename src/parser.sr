@@ -3713,9 +3713,15 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             || fn == "UpdateWindow" || fn == "SetWindowTextA"
             || fn == "DestroyWindow" || fn == "GetSystemMetrics"
             || fn == "LoadImageA" || fn == "SendMessageA"
+            || fn == "SetFocus" || fn == "SetForegroundWindow"
+            || fn == "PeekMessageA" || fn == "ScreenToClient"
+            || fn == "GetClientRect"
             || fn == "MessageBoxA") { return "user32.dll"; }
         if (fn == "OpenProcess" || fn == "QueryFullProcessImageNameA"
-            || fn == "CloseHandle" || fn == "GetModuleHandleA") { return "kernel32.dll"; }
+            || fn == "CloseHandle" || fn == "GetModuleHandleA"
+            || fn == "GetSystemInfo" || fn == "GlobalMemoryStatusEx"
+            || fn == "QueryPerformanceCounter" || fn == "QueryPerformanceFrequency"
+            || fn == "GetLocalTime" || fn == "GetSystemTime") { return "kernel32.dll"; }
         return "";
     }
 
@@ -3735,6 +3741,9 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
 
     // LINUX (additive, mirrors Evaluator linux tables): small grant entries
     // only -- the core libc names the interpreter defines builtins for.
+    // localtime_r/gmtime_r are granted parse-OK for std/datetime.sr's
+    // wall-clock bodies but stay safe-default null at runtime like
+    // clock_gettime (interpreted `&` is a pseudo-address, never a pointer).
     private void recordLinuxImportGrant(string src, bool all, string[] names) {
         if (src == "linux") {
             if (all || names.length == 0) { this.linuxAllModules = true; return; }
@@ -3773,7 +3782,8 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             || fn == "send" || fn == "recv"
             || fn == "getuid" || fn == "setsockopt"
             || fn == "getaddrinfo" || fn == "freeaddrinfo"
-            || fn == "getrandom" || fn == "memcpy") { return "libc.so.6"; }
+            || fn == "getrandom" || fn == "memcpy"
+            || fn == "localtime_r" || fn == "gmtime_r") { return "libc.so.6"; }
         return "";
     }
 
@@ -3834,7 +3844,8 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             || fn == "accept" || fn == "send"
             || fn == "recv" || fn == "getuid"
             || fn == "setsockopt" || fn == "getaddrinfo"
-            || fn == "freeaddrinfo" || fn == "memcpy") { return "/usr/lib/libSystem.B.dylib"; }
+            || fn == "freeaddrinfo" || fn == "memcpy"
+            || fn == "localtime_r" || fn == "gmtime_r") { return "/usr/lib/libSystem.B.dylib"; }
         if (fn == "objc_getClass" || fn == "sel_registerName"
             || fn == "objc_msgSend") { return "/usr/lib/libobjc.A.dylib"; }
         return "";

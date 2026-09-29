@@ -736,6 +736,8 @@ class Evaluator {
             fns.add("freeaddrinfo");
             fns.add("getrandom");
             fns.add("memcpy");
+            fns.add("localtime_r");
+            fns.add("gmtime_r");
             for (int i = 0; i < fns.length; i++) {
                 if (this.linuxHasExport(lib, fns[i])) {
                     this.globals.define(fns[i], makeBuiltin(fns[i]));
@@ -907,6 +909,8 @@ class Evaluator {
             fns.add("getaddrinfo");
             fns.add("freeaddrinfo");
             fns.add("memcpy");
+            fns.add("localtime_r");
+            fns.add("gmtime_r");
             for (int i = 0; i < fns.length; i++) {
                 if (this.macHasExport(lib, fns[i])) {
                     this.globals.define(fns[i], makeBuiltin(fns[i]));
