@@ -2318,6 +2318,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
     // separator is allowed.
     private void parseNewInits(Node n) {
         this.expect(TK_LBRACE);
+        string[] seenFields = [];
         while (!this.check(TK_RBRACE) && !this.check(TK_EOF)) {
             int fln = this.line(); int fc = this.col();
             string fieldName = this.expectIdent();
@@ -2328,10 +2329,22 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
                 this.expect(TK_ASSIGN);
             }
             Node val = this.parseExpr(0);
-            Node field = new Node(ND_VAR_DECL, fln, fc);
-            field.name = fieldName;
-            field.addChild(val);
-            n.addChild(field);
+            // DOCS/270: a collision — the same field twice in one brace
+            // list — is a compile error; the initializer has no ordering
+            // that could give one entry priority.
+            bool isDup = false;
+            for (int si = 0; si < seenFields.length; si++) {
+                if (seenFields[si] == fieldName) { isDup = true; break; }
+            }
+            if (isDup) {
+                this.recordError("duplicate field '" + fieldName + "' in object initializer at line " + fln.toString() + ", column " + fc.toString());
+            } else {
+                seenFields.add(fieldName);
+                Node field = new Node(ND_VAR_DECL, fln, fc);
+                field.name = fieldName;
+                field.addChild(val);
+                n.addChild(field);
+            }
             if (this.check(TK_COMMA) || this.check(TK_SEMI)) { this.advance(); } else { break; }
         }
         this.expect(TK_RBRACE);
