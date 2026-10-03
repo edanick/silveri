@@ -1,6 +1,6 @@
 {
     name: "silveri",
-    version: "0.7.9",
+    version: "0.7.9.4",
     license: "Edan M. © 2025 All Rights Reserved Proprietary",
     entry: "src/main.sr",
     sources: [
