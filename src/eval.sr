@@ -1847,6 +1847,47 @@ class Evaluator {
         exit(1);
     }
 
+    // DOCS/271: declaring class of `fieldName` for `className` (most-derived
+    // declarer wins walking leaf -> root; structs never declare visible, so
+    // only the class chain is walked).
+    private string visibleOwner(string className, string fieldName) {
+        string cur = className;
+        int guard = 0;
+        while (this.classes.contains(cur) && guard < 64) {
+            Node classDef = this.classes[cur];
+            for (int i = 0; i < classDef.childCount(); i++) {
+                Node child = classDef.child(i);
+                if (child.kind == ND_VAR_DECL && child.name == fieldName) {
+                    return cur;
+                }
+            }
+            Node pn = this.classes[cur];
+            cur = pn.parentClass;
+            guard++;
+        }
+        return className;
+    }
+
+    // DOCS/271: true when `fieldName` of class `className` (or any ancestor)
+    // is a visible prop. Reads are unaffected; only stores check this.
+    private bool isVisibleField(string className, string fieldName) {
+        string cur = className;
+        int guard = 0;
+        while (this.classes.contains(cur) && guard < 64) {
+            Node classDef = this.classes[cur];
+            for (int i = 0; i < classDef.childCount(); i++) {
+                Node child = classDef.child(i);
+                if (child.kind == ND_VAR_DECL && child.name == fieldName) {
+                    return child.isVisible;
+                }
+            }
+            Node pn = this.classes[cur];
+            cur = pn.parentClass;
+            guard++;
+        }
+        return false;
+    }
+
     private Value assignTo(Node target, Value val, Env env) {
         if (target.kind == ND_IDENT) {
             // Inside a class method, a bare field assignment (`msg = val`)
@@ -1865,6 +1906,13 @@ class Evaluator {
                     if (this.isReadOnlyField(thisVal.typeName, target.name)) {
                         this.rejectReadOnlyAssign(thisVal.typeName, target.name, target);
                         return makeNull();
+                    }
+                    if (this.isVisibleField(thisVal.typeName, target.name)) {
+                        string owner = this.visibleOwner(thisVal.typeName, target.name);
+                        if (this.currentClassName != owner) {
+                            this.throwException("VisibleWriteException", "cannot write to visible prop '" + owner + "." + target.name + "' outside class '" + owner + "'");
+                            return makeNull();
+                        }
                     }
                     mirrorPut(thisVal, target.name, val);
                     return val;
@@ -1894,6 +1942,13 @@ class Evaluator {
                 if (this.isReadOnlyField(obj.typeName, target.name)) {
                     this.rejectReadOnlyAssign(obj.typeName, target.name, target);
                     return makeNull();
+                }
+                if (this.isVisibleField(obj.typeName, target.name)) {
+                    string owner = this.visibleOwner(obj.typeName, target.name);
+                    if (this.currentClassName != owner) {
+                        this.throwException("VisibleWriteException", "cannot write to visible prop '" + owner + "." + target.name + "' outside class '" + owner + "'");
+                        return makeNull();
+                    }
                 }
 mirrorPut(obj, target.name, val);
                 return val;
@@ -2253,7 +2308,10 @@ mirrorPut(obj, target.name, val);
                 this.checkInternalUse(methodKey, node.name, receiver.typeName, node);
                 Value[] methodArgs = [receiver];
                 foreach (Value a in args) { methodArgs.add(a); }
+                string savedClass = this.currentClassName;
+                this.currentClassName = this.methodDeclaringClass(receiver.typeName, node.name);
                 result = this.callNode(selected, methodArgs, env);
+                this.currentClassName = savedClass;
                 for (int i = 0; i < rooted; i++) { GC.popRoot(); }
                 return result;
             }
@@ -2313,7 +2371,10 @@ mirrorPut(obj, target.name, val);
                     this.checkInternalUse(staticKey, node.name, className, node);
                     bool savedStatic = this.inStaticMethod;
                     this.inStaticMethod = true;
+                    string savedStaticClass = this.currentClassName;
+                    this.currentClassName = className;
                     result = this.callNode(selectedStatic, args, env);
+                    this.currentClassName = savedStaticClass;
                     this.inStaticMethod = savedStatic;
                     for (int i = 0; i < rooted; i++) { GC.popRoot(); }
                     return result;
@@ -2712,6 +2773,13 @@ mirrorPut(obj, target.name, val);
                 this.rejectReadOnlyAssign(actual, fieldName, where);
                 return;
             }
+            if (this.isVisibleField(actual, fieldName)) {
+                string owner = this.visibleOwner(actual, fieldName);
+                if (this.currentClassName != owner) {
+                    this.throwException("VisibleWriteException", "cannot write to visible prop '" + owner + "." + fieldName + "' outside class '" + owner + "'");
+                    return;
+                }
+            }
             mirrorPut(inst, fieldName, val);
             return;
         }
@@ -2931,6 +2999,22 @@ mirrorPut(obj, target.name, val);
             guard++;
         }
         return "";
+    }
+
+    // DOCS/271: declaring class of `method` for `typeName` (leaf -> root, so
+    // an override reports the subclass, an inherited method the ancestor).
+    // Drives currentClassName during method bodies for visible-prop checks.
+    private string methodDeclaringClass(string typeName, string method) {
+        string cur = typeName;
+        int guard = 0;
+        while (this.classes.contains(cur) && guard < 64) {
+            string key = cur + "." + method;
+            if (this.functions.contains(key)) { return cur; }
+            Node pc = this.classes[cur];
+            cur = pc.parentClass;
+            guard++;
+        }
+        return typeName;
     }
 
     private Value evalArrayLit(Node node, Env env) {

@@ -152,6 +152,7 @@ class Node {
     public prop bool isAlias;
     public prop bool isShared;
     public prop bool isReadOnly;
+    public prop bool isVisible;
     public prop bool hasFinally;
     public prop string parentClass;
     public prop Node[] children;
@@ -178,6 +179,7 @@ class Node {
         this.isAlias = false;
         this.isShared = false;
         this.isReadOnly = false;
+        this.isVisible = false;
         this.hasFinally = false;
         this.parentClass = "";
         this.children = [];

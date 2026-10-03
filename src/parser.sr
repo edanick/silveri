@@ -936,24 +936,42 @@ private Node? parseItem() {
             bool isPub = true;
             bool isStat = false;
             bool isInt = sectionInternal;
+            bool isExplicitPrivate = false;
             bool sawModifier = true;
             while (sawModifier) {
                 sawModifier = false;
-                if (this.check(TK_PUBLIC)) { this.advance(); isPub = true; sectionInternal = false; sawModifier = true; }
-                else if (this.check(TK_PRIVATE)) { this.advance(); isPub = false; sectionInternal = false; sawModifier = true; }
+                if (this.check(TK_PUBLIC)) { this.advance(); isPub = true; isExplicitPrivate = false; sectionInternal = false; sawModifier = true; }
+                else if (this.check(TK_PRIVATE)) { this.advance(); isPub = false; isExplicitPrivate = true; sectionInternal = false; sawModifier = true; }
                 else if (this.check(TK_INTERNAL)) { this.advance(); isInt = true; sawModifier = true; }
                 else if (this.check(TK_STATIC)) { this.advance(); isStat = true; sawModifier = true; }
             }
-            // `read only` contextual modifier pair directly before `prop`.
-            // `read`/`only` are plain identifiers (TK_IDENT) and stay usable
-            // as ordinary names everywhere else.
+            // `read only` / `visible` contextual modifiers directly before
+            // `prop`, in either order (`read only visible prop`, `visible read
+            // only prop`). `read`/`only`/`visible` are plain identifiers
+            // (TK_IDENT) and stay usable as ordinary names everywhere else.
             bool isRO = false;
-            if (this.check(TK_IDENT) && this.peek().text == "read"
-                && this.pos + 1 < this.tokens.length && this.tokens[this.pos + 1].kind == TK_IDENT && this.tokens[this.pos + 1].text == "only"
-                && this.pos + 2 < this.tokens.length && this.tokens[this.pos + 2].kind == TK_PROP) {
-                this.advance();
-                this.advance();
-                isRO = true;
+            bool isVis = false;
+            while (true) {
+                if (this.check(TK_IDENT) && this.peek().text == "read"
+                    && this.pos + 1 < this.tokens.length && this.tokens[this.pos + 1].kind == TK_IDENT && this.tokens[this.pos + 1].text == "only"
+                    && this.pos + 2 < this.tokens.length && (this.tokens[this.pos + 2].kind == TK_PROP
+                        || (this.tokens[this.pos + 2].kind == TK_IDENT && this.tokens[this.pos + 2].text == "visible"
+                            && this.pos + 3 < this.tokens.length && this.tokens[this.pos + 3].kind == TK_PROP))) {
+                    this.advance();
+                    this.advance();
+                    isRO = true;
+                    continue;
+                }
+                if (this.check(TK_IDENT) && this.peek().text == "visible"
+                    && this.pos + 1 < this.tokens.length && (this.tokens[this.pos + 1].kind == TK_PROP
+                        || (this.tokens[this.pos + 1].kind == TK_IDENT && this.tokens[this.pos + 1].text == "read"
+                            && this.pos + 2 < this.tokens.length && this.tokens[this.pos + 2].kind == TK_IDENT && this.tokens[this.pos + 2].text == "only"
+                            && this.pos + 3 < this.tokens.length && this.tokens[this.pos + 3].kind == TK_PROP))) {
+                    this.advance();
+                    isVis = true;
+                    continue;
+                }
+                break;
             }
             if (this.check(TK_DEF)) {
                 this.advance();
@@ -1032,11 +1050,31 @@ private Node? parseItem() {
                 Node field = new Node(ND_VAR_DECL, ln, c);
                 field.name = fieldName;
                 field.typeHint = typ;
+                if (isVis) {
+                    if (isExplicitPrivate) {
+                        Token pvTok = this.peek();
+                        this.recordError(pvTok.line.toString() + ":" + pvTok.col.toString() + ": visible prop \"" + fieldName + "\" cannot be private");
+                    }
+                    if (isInt) {
+                        Token ivTok = this.peek();
+                        this.recordError(ivTok.line.toString() + ":" + ivTok.col.toString() + ": visible prop \"" + fieldName + "\" cannot be internal");
+                    }
+                    if (isStat) {
+                        Token svTok = this.peek();
+                        this.recordError(svTok.line.toString() + ":" + svTok.col.toString() + ": visible prop \"" + fieldName + "\" cannot be static");
+                    }
+                    if (isRO) {
+                        Token rvTok = this.peek();
+                        this.recordError(rvTok.line.toString() + ":" + rvTok.col.toString() + ": visible prop \"" + fieldName + "\" cannot be read only");
+                    }
+                    isPub = true;
+                }
                 field.isPublic = isPub;
                 field.isInternal = isInt;
                 field.isReadOnly = isRO;
+                field.isVisible = isVis;
                 // Read-only props are set exactly once, by the declaration
-                // initializer. Mutable props take no initializer.
+                // initializer. Mutable and visible props take no initializer.
                 if (isRO) {
                     if (!this.check(TK_ASSIGN)) {
                         Token roTok = this.peek();
@@ -1048,10 +1086,17 @@ private Node? parseItem() {
                     this.advance();
                     field.addChild(this.parseExpr(0));
                 } else if (this.check(TK_ASSIGN)) {
-                    Token mutTok = this.peek();
-                    this.recordError(mutTok.line.toString() + ":" + mutTok.col.toString() + ": prop \"" + fieldName + "\" takes an initializer only as `read only prop`");
-                    this.advance();
-                    field.addChild(this.parseExpr(0));
+                    if (isVis) {
+                        Token vvTok = this.peek();
+                        this.recordError(vvTok.line.toString() + ":" + vvTok.col.toString() + ": visible prop \"" + fieldName + "\" takes no initializer");
+                        this.advance();
+                        field.addChild(this.parseExpr(0));
+                    } else {
+                        Token mutTok = this.peek();
+                        this.recordError(mutTok.line.toString() + ":" + mutTok.col.toString() + ": prop \"" + fieldName + "\" takes an initializer only as `read only prop`");
+                        this.advance();
+                        field.addChild(this.parseExpr(0));
+                    }
                 }
                 this.expectSemi();
                 n.addChild(field);
