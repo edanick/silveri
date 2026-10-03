@@ -2311,6 +2311,32 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         return 0;
     }
 
+    // DOCS/270: parse `{ field = value, ... }` into an ND_NEW_INIT node
+    // whose args are already added (count in `op`). Entries use `=`
+    // (a `:` is diagnosed — that separator belongs to struct literals),
+    // are separated by `,` (a `;` is also accepted), and a trailing
+    // separator is allowed.
+    private void parseNewInits(Node n) {
+        this.expect(TK_LBRACE);
+        while (!this.check(TK_RBRACE) && !this.check(TK_EOF)) {
+            int fln = this.line(); int fc = this.col();
+            string fieldName = this.expectIdent();
+            if (this.check(TK_COLON)) {
+                this.recordError("object initializers use `field = value`; `{ field: value }` is a struct literal at line " + fln.toString() + ", column " + fc.toString());
+                this.advance();
+            } else {
+                this.expect(TK_ASSIGN);
+            }
+            Node val = this.parseExpr(0);
+            Node field = new Node(ND_VAR_DECL, fln, fc);
+            field.name = fieldName;
+            field.addChild(val);
+            n.addChild(field);
+            if (this.check(TK_COMMA) || this.check(TK_SEMI)) { this.advance(); } else { break; }
+        }
+        this.expect(TK_RBRACE);
+    }
+
     private Node parsePrefix() {
         int ln = this.line(); int c = this.col();
         // DOCS/261: a bare `in` has no left operand, and `not in` needs one
@@ -2432,6 +2458,15 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
                 n.addChild(size);
                 return n;
             }
+            if (this.check(TK_LBRACE)) {
+                // DOCS/270: `new Type { field = value, ... }` — no
+                // constructor parens; zero ctor args plus brace inits.
+                Node n = new Node(ND_NEW_INIT, ln, c);
+                n.name = typeName;
+                n.op = 0;
+                this.parseNewInits(n);
+                return n;
+            }
             this.expect(TK_LPAREN);
             Node[] args = [];
             while (!this.check(TK_RPAREN) && !this.check(TK_EOF)) {
@@ -2439,6 +2474,16 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
                 if (this.check(TK_COMMA)) { this.advance(); }
             }
             this.expect(TK_RPAREN);
+            if (this.check(TK_LBRACE)) {
+                // DOCS/270: `new Type(args) { field = value, ... }` —
+                // constructor runs first, brace assignments after it.
+                Node n = new Node(ND_NEW_INIT, ln, c);
+                n.name = typeName;
+                n.op = args.length;
+                foreach (Node a in args) { n.addChild(a); }
+                this.parseNewInits(n);
+                return n;
+            }
             Node n = new Node(ND_NEW, ln, c);
             n.name = typeName;
             foreach (Node a in args) { n.addChild(a); }
@@ -3430,6 +3475,23 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         if (n.kind == ND_METHOD_CALL && n.line > 0) {
             this.checkMemberPathValueException(n);
         }
+        if (n.kind == ND_NEW_INIT) {
+            // DOCS/270: the first `op` children are constructor args;
+            // the rest are ND_VAR_DECL init fields — walk only values.
+            int nargs = n.op;
+            if (nargs < 0) { nargs = 0; }
+            if (nargs > n.childCount()) { nargs = n.childCount(); }
+            for (int i = 0; i < nargs; i++) {
+                this.walkCallDiagnostics(n.child(i));
+            }
+            for (int i = nargs; i < n.childCount(); i++) {
+                Node f = n.child(i);
+                if (f.childCount() > 0) {
+                    this.walkCallDiagnostics(f.child(0));
+                }
+            }
+            return;
+        }
         // Struct/class bodies are opaque to this pass: their member functions
         // are not symbol-checked (the reference checker walks free functions
         // only).
@@ -3482,6 +3544,23 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
     // DOCS/259 -- declared names inside an anonymous body (its own locals).
     private void collectAnonBodyLocals(Node n, string[] locals) {
         if (n.kind == ND_VAR_DECL && n.name.length > 0) { locals.add(n.name); }
+        if (n.kind == ND_NEW_INIT) {
+            // DOCS/270: init fields are ND_VAR_DECL nodes but their names
+            // are field names, not locals — collect arg/value idents only.
+            int nargs = n.op;
+            if (nargs < 0) { nargs = 0; }
+            if (nargs > n.childCount()) { nargs = n.childCount(); }
+            for (int i = 0; i < nargs; i++) {
+                this.collectAnonBodyLocals(n.child(i), locals);
+            }
+            for (int i = nargs; i < n.childCount(); i++) {
+                Node f = n.child(i);
+                if (f.childCount() > 0) {
+                    this.collectAnonBodyLocals(f.child(0), locals);
+                }
+            }
+            return;
+        }
         if (n.kind == ND_FOREACH && n.name.length > 0) { locals.add(n.name); }
         if (n.kind == ND_TUPLE_LIT && n.childCount() == 2 && n.name == "arrow" && n.child(0).kind == ND_IDENT
             && n.child(0).name.length > 0 && n.child(0).name != "_") { locals.add(n.child(0).name); }

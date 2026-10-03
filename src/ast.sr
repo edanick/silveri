@@ -32,6 +32,11 @@ const int ND_ANON_FN = 85;
 const int ND_AS_CAST = 86;
 // DOCS/259 G3 -- indirect call through a fn-typed value (`jobs[0]()`).
 const int ND_INDIRECT_CALL = 87;
+// DOCS/270 -- object initializer `new Type(args) { field = value, ... }`:
+// `name` is the type, `op` counts the constructor args, children are
+// [args..., initFields...] where each init field is an ND_VAR_DECL named
+// for the field holding the value expression.
+const int ND_NEW_INIT = 88;
 
 const int ND_VAR_DECL = 50;
 const int ND_RETURN = 51;
@@ -236,6 +241,7 @@ string kindName(int k) {
     if (k == ND_ANON_FN) { return "AnonFn"; }
     if (k == ND_AS_CAST) { return "AsCast"; }
     if (k == ND_INDIRECT_CALL) { return "IndirectCall"; }
+    if (k == ND_NEW_INIT) { return "NewInit"; }
     if (k == ND_VAR_DECL) { return "VarDecl"; }
     if (k == ND_RETURN) { return "Return"; }
     if (k == ND_IF_STMT) { return "IfStmt"; }

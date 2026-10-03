@@ -1527,6 +1527,7 @@ class Evaluator {
             return this.evalExpr(node.child(2), env);
         }
         if (node.kind == ND_NEW) { return this.evalNew(node, env); }
+        if (node.kind == ND_NEW_INIT) { return this.evalNewInit(node, env); }
         if (node.kind == ND_ARRAY_LIT) { return this.evalArrayLit(node, env); }
         if (node.kind == ND_TUPLE_LIT) { return this.evalTupleLit(node, env); }
         if (node.kind == ND_STRUCT_LIT) { return this.evalStructLit(node, env); }
@@ -2616,9 +2617,20 @@ mirrorPut(obj, target.name, val);
             GC.pushRoot(a);
             rooted++;
         }
+        Value result = this.constructNamed(node.name, args, node);
+        for (int i = 0; i < rooted; i++) {
+            GC.popRoot();
+        }
+        return result;
+    }
+
+    // Shared construction for ND_NEW and ND_NEW_INIT: the evaluated
+    // constructor arguments build the instance; the caller applies any
+    // object-initializer fields afterwards.
+    private Value constructNamed(string typeName, Value[] args, Node where) {
         Value result = makeNull();
-        if (node.name == "byte" && node.childCount() == 1) {
-            int count = this.evalExpr(node.child(0), env).toInt();
+        if (typeName == "byte" && args.length == 1) {
+            int count = args[0].toInt();
             if (count < 0) {
                 printline("Runtime error: byte array size cannot be negative");
                 exit(1);
@@ -2628,8 +2640,8 @@ mirrorPut(obj, target.name, val);
                 bytes.add(makeByte(0));
             }
             result = makeArray(bytes);
-        } else if ((node.name == "int" || node.name == "int32" || node.name == "int64" || node.name == "uint") && node.childCount() == 1) {
-            int icount = this.evalExpr(node.child(0), env).toInt();
+        } else if ((typeName == "int" || typeName == "int32" || typeName == "int64" || typeName == "uint") && args.length == 1) {
+            int icount = args[0].toInt();
             if (icount < 0) {
                 printline("Runtime error: int array size cannot be negative");
                 exit(1);
@@ -2639,25 +2651,104 @@ mirrorPut(obj, target.name, val);
                 ints.add(makeInt(0));
             }
             result = makeArray(ints);
-        } else if (this.classes.contains(node.name)) {
-            this.checkInternalClassUse(node.name, node);
-            result = this.constructClass(node.name, args);
-        } else if (node.name == "FileOps") {
+        } else if (this.classes.contains(typeName)) {
+            this.checkInternalClassUse(typeName, where);
+            result = this.constructClass(typeName, args);
+        } else if (typeName == "FileOps") {
             result = makeBuiltin("file_module");
-        } else if (node.name == "FolderOps") {
+        } else if (typeName == "FolderOps") {
             result = makeBuiltin("folder_module");
-        } else if (this.structs.contains(node.name)) {
-            this.checkInternalClassUse(node.name, node);
-            result = this.constructStruct(node.name, args);
-        } else if (node.name == "kvp") {
+        } else if (this.structs.contains(typeName)) {
+            this.checkInternalClassUse(typeName, where);
+            result = this.constructStruct(typeName, args);
+        } else if (typeName == "kvp") {
             result = makeDict({});
         } else {
-            printline("Runtime error: unknown type '" + node.name + "'");
+            printline("Runtime error: unknown type '" + typeName + "'");
         }
+        return result;
+    }
+
+    // DOCS/270: object initializer `new Type(args) { field = value, ... }`.
+    // The first `op` children are the constructor arguments; the rest are
+    // ND_VAR_DECL init fields applied in order after construction.
+    private Value evalNewInit(Node node, Env env) {
+        int nargs = node.op;
+        if (nargs < 0) { nargs = 0; }
+        if (nargs > node.childCount()) { nargs = node.childCount(); }
+        Value[] args = [];
+        int rooted = 0;
+        for (int i = 0; i < nargs; i++) {
+            Value a = this.evalExpr(node.child(i), env);
+            args.add(a);
+            GC.pushRoot(a);
+            rooted++;
+        }
+        Value result = this.constructNamed(node.name, args, node);
+        GC.pushRoot(result);
+        for (int i = nargs; i < node.childCount(); i++) {
+            Node field = node.child(i);
+            Value v = this.evalExpr(field.child(0), env);
+            GC.pushRoot(v);
+            this.applyInitField(result, field.name, v, field);
+            GC.popRoot();
+        }
+        GC.popRoot();
         for (int i = 0; i < rooted; i++) {
             GC.popRoot();
         }
         return result;
+    }
+
+    private void applyInitField(Value inst, string fieldName, Value val, Node where) {
+        if (inst.tag == VAL_CLASS_INST) {
+            string actual = inst.typeName;
+            if (!this.classHasField(actual, fieldName)) {
+                printline("Runtime error: unknown field '" + fieldName + "' for type '" + actual + "'");
+                exit(1);
+            }
+            this.checkInternalUse(actual + "." + fieldName, fieldName, actual, where);
+            if (this.isReadOnlyField(actual, fieldName)) {
+                this.rejectReadOnlyAssign(actual, fieldName, where);
+                return;
+            }
+            mirrorPut(inst, fieldName, val);
+            return;
+        }
+        if ((inst.tag == VAL_OBJECT || inst.tag == VAL_STRUCT) && this.structs.contains(inst.typeName)) {
+            if (!this.structHasField(inst.typeName, fieldName)) {
+                printline("Runtime error: unknown field '" + fieldName + "' for type '" + inst.typeName + "'");
+                exit(1);
+            }
+            mirrorPut(inst, fieldName, val);
+            return;
+        }
+        printline("Runtime error: object initializer is only supported for class and struct types");
+        exit(1);
+    }
+
+    private bool classHasField(string className, string fieldName) {
+        string cur = className;
+        int guard = 0;
+        while (this.classes.contains(cur) && guard < 64) {
+            Node classDef = this.classes[cur];
+            for (int i = 0; i < classDef.childCount(); i++) {
+                Node child = classDef.child(i);
+                if (child.kind == ND_VAR_DECL && child.name == fieldName) { return true; }
+            }
+            cur = classDef.parentClass;
+            guard++;
+        }
+        return false;
+    }
+
+    private bool structHasField(string structName, string fieldName) {
+        if (!this.structs.contains(structName)) { return false; }
+        Node structDef = this.structs[structName];
+        for (int i = 0; i < structDef.childCount(); i++) {
+            if (structDef.child(i).name == fieldName) { return true; }
+        }
+        return false;
     }
 
     private Value constructClass(string name, Value[] args) {

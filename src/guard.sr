@@ -708,6 +708,19 @@ class MemoryGuard {
             for (int i = 0; i < n.childCount(); i++) { this.checkExpr(n.child(i)); }
             return 0;
         }
+        if (k == ND_NEW_INIT) {
+            // DOCS/270: the first `op` children are constructor args;
+            // the rest are ND_VAR_DECL init fields — check only values.
+            int nargs = n.op;
+            if (nargs < 0) { nargs = 0; }
+            if (nargs > n.childCount()) { nargs = n.childCount(); }
+            for (int i = 0; i < nargs; i++) { this.checkExpr(n.child(i)); }
+            for (int i = nargs; i < n.childCount(); i++) {
+                Node f = n.child(i);
+                if (f.childCount() > 0) { this.checkExpr(f.child(0)); }
+            }
+            return 0;
+        }
         if (k == ND_INTERP) {
             for (int i = 0; i < n.childCount(); i++) { this.checkExpr(n.child(i)); }
             return 0;
