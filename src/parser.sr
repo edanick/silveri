@@ -286,7 +286,7 @@ class Parser {
     // declaration? If not, a lowercase statement-leading identifier is an
     // unknown keyword (SYNTAX_EXCEPTIONS.md).
     private bool tokenContinuesExpr(int nk) {
-        return nk == TK_LPAREN || nk == TK_DOT || nk == TK_LBRACKET || nk == TK_ASSIGN || nk == TK_PLUS_EQ || nk == TK_MINUS_EQ || nk == TK_STAR_EQ || nk == TK_SLASH_EQ || nk == TK_PERCENT_EQ || nk == TK_AMP_EQ || nk == TK_PIPE_EQ || nk == TK_CARET_EQ || nk == TK_SHL_EQ || nk == TK_SHR_EQ || nk == TK_INC || nk == TK_DEC || nk == TK_QUESTION || nk == TK_QUESTIONQUESTION || nk == TK_COLON || nk == TK_RANGE || nk == TK_SPREAD || nk == TK_LESS || nk == TK_SHL;
+        return nk == TK_LPAREN || nk == TK_DOT || nk == TK_LBRACKET || nk == TK_ASSIGN || nk == TK_PLUS_EQ || nk == TK_MINUS_EQ || nk == TK_STAR_EQ || nk == TK_SLASH_EQ || nk == TK_PERCENT_EQ || nk == TK_AMP_EQ || nk == TK_PIPE_EQ || nk == TK_CARET_EQ || nk == TK_SHL_EQ || nk == TK_SHR_EQ || nk == TK_INC || nk == TK_DEC || nk == TK_QUESTION || nk == TK_QUESTIONQUESTION || nk == TK_QUESTIONDOT || nk == TK_QUESTIONLBRACKET || nk == TK_COALESCE_ASSIGN || nk == TK_COLON || nk == TK_RANGE || nk == TK_SPREAD || nk == TK_LESS || nk == TK_SHL;
     }
 
     // Flag an unknown keyword / keyword typo at the token's position.
@@ -2314,8 +2314,9 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             || k == TK_RANGE
             || k == TK_SPREAD
             || k == TK_LPAREN || k == TK_LBRACKET || k == TK_DOT
+            || k == TK_QUESTIONDOT || k == TK_QUESTIONLBRACKET
             || k == TK_AMP || k == TK_PIPE || k == TK_CARET
-            || k == TK_INC || k == TK_DEC || k == TK_QUESTION || k == TK_QUESTIONQUESTION
+            || k == TK_INC || k == TK_DEC || k == TK_QUESTION || k == TK_QUESTIONQUESTION || k == TK_COALESCE_ASSIGN
             || k == TK_FAT_ARROW;
     }
 
@@ -2339,7 +2340,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         }
         if (k == TK_ASSIGN || k == TK_PLUS_EQ || k == TK_MINUS_EQ || k == TK_STAR_EQ || k == TK_SLASH_EQ
             || k == TK_PERCENT_EQ || k == TK_AMP_EQ || k == TK_PIPE_EQ || k == TK_CARET_EQ || k == TK_SHL_EQ || k == TK_SHR_EQ) { return 1; }
-        if (k == TK_QUESTION || k == TK_QUESTIONQUESTION) { return 1; }
+        if (k == TK_QUESTION || k == TK_QUESTIONQUESTION || k == TK_COALESCE_ASSIGN) { return 1; }
         if (k == TK_OR) { return 2; }
         if (k == TK_AND) { return 3; }
         if (k == TK_EQ || k == TK_NEQ) { return 4; }
@@ -2352,6 +2353,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         if (k == TK_RANGE || k == TK_SPREAD) { return 11; }
         if (k == TK_LPAREN || k == TK_LBRACKET || k == TK_DOT) { return 12; }
         if (k == TK_INC || k == TK_DEC) { return 12; }
+        if (k == TK_QUESTIONDOT || k == TK_QUESTIONLBRACKET) { return 13; }
         if (k == TK_FAT_ARROW) { return 13; }
         return 0;
     }
@@ -2774,7 +2776,30 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             n.addChild(this.parseExpr(1));
             return n;
         }
+        if (k == TK_COALESCE_ASSIGN) {
+            // DOCS/273 assign-if-null `cache ??= rhs`: assigns (and
+            // evaluates RHS) only when LHS is null, yields the resulting
+            // value. Right-associative at `=` precedence. A safe access
+            // is never a target (`a?.b ??= c` is Invalid assignment).
+            if (lhs.kind == ND_SAFE) {
+                Token coalTok = this.peek();
+                this.recordError(coalTok.line.toString() + ":" + coalTok.col.toString() + ": Invalid assignment target");
+            }
+            this.advance();
+            Node coalRhs = this.parseExpr(1);
+            Node coalAssign = new Node(ND_BINARY, ln, c);
+            coalAssign.op = OP_COALESCE_ASSIGN;
+            coalAssign.addChild(lhs);
+            coalAssign.addChild(coalRhs);
+            return coalAssign;
+        }
         if (k == TK_ASSIGN) {
+            // DOCS/273: a safe access yields a value, not a place — it can
+            // never be an assignment target (`a?.b = c` is Invalid assignment).
+            if (lhs.kind == ND_SAFE) {
+                Token opTok = this.peek();
+                this.recordError(opTok.line.toString() + ":" + opTok.col.toString() + ": Invalid assignment target");
+            }
             this.advance();
             Node n = new Node(ND_BINARY, ln, c);
             n.op = OP_ASSIGN;
@@ -2793,6 +2818,11 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         if (k == TK_SHL_EQ) { this.advance(); return this.makeAssignOp(lhs, OP_SHL_ASSIGN, ln, c); }
         if (k == TK_SHR_EQ) { this.advance(); return this.makeAssignOp(lhs, OP_SHR_ASSIGN, ln, c); }
         if (k == TK_INC) {
+            // DOCS/273: a safe access is never an assignment target.
+            if (lhs.kind == ND_SAFE) {
+                Token opTok = this.peek();
+                this.recordError(opTok.line.toString() + ":" + opTok.col.toString() + ": Invalid assignment target");
+            }
             this.advance();
             Node n = new Node(ND_BINARY, ln, c);
             n.op = OP_ADD_ASSIGN;
@@ -2803,6 +2833,11 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             return n;
         }
         if (k == TK_DEC) {
+            // DOCS/273: a safe access is never an assignment target.
+            if (lhs.kind == ND_SAFE) {
+                Token opTok = this.peek();
+                this.recordError(opTok.line.toString() + ":" + opTok.col.toString() + ": Invalid assignment target");
+            }
             this.advance();
             Node n = new Node(ND_BINARY, ln, c);
             n.op = OP_SUB_ASSIGN;
@@ -2887,6 +2922,18 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
                 n.addChild(lhs);
                 return n;
             }
+            if (lhs.kind == ND_SAFE) {
+                // DOCS/273: a safe result called as `safe(args)` (e.g.
+                // `jobs?[0]()`) is the normal unsafe indirect call on the
+                // safe value — null throws, it does not yield null.
+                if (args.length > 0) {
+                    Token callOpen = this.tokens[this.pos - 1];
+                    this.recordError(callOpen.line.toString() + ":" + callOpen.col.toString() + ": Unexpected token '(: function-typed values support only zero-argument calls — the supported type is `void ()` (see DOCS/259)'");
+                }
+                Node n = new Node(ND_INDIRECT_CALL, lhs.line, lhs.col);
+                n.addChild(lhs);
+                return n;
+            }
             Node n = new Node(ND_CALL, ln, c);
             n.name = lhs.name;
             foreach (Node a in args) { n.addChild(a); }
@@ -2945,6 +2992,85 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             n.name = member;
             return n;
         }
+        if (k == TK_QUESTIONDOT) {
+            // DOCS/273: null-safe member/call chain (`a?.b`, `a?.m()`).
+            // Left-associative at `.` precedence; the receiver evaluates
+            // exactly once (eval spills it to a temp). Tuple positions work
+            // too (`tup?.0`).
+            this.advance();
+            string qmember = "";
+            if (this.check(TK_IDENT)) {
+                qmember = this.expectIdent();
+            } else if (this.check(TK_INT_LIT)) {
+                qmember = this.advance().text;
+            } else {
+                this.recordError("Parse error: expected identifier or integer literal after '?.' at " + this.peek().line.toString() + ":" + this.peek().col.toString());
+                qmember = "_err";
+            }
+            Node inner;
+            if (this.check(TK_LPAREN)) {
+                this.advance();
+                Token qopenTok = this.tokens[this.pos - 1];
+                Node[] qargs = [];
+                while (!this.check(TK_RPAREN) && !this.check(TK_EOF)) {
+                    if (this.check(TK_COMMA)) {
+                        this.advance();
+                    } else if (qargs.length > 0) {
+                        Token qprevT = this.tokens[this.pos - 1];
+                        this.recordError("you forgot a comma \",\" at line " + qprevT.line.toString() + ", column " + (qprevT.col + this.tokenSrcLen(qprevT)).toString());
+                    }
+                    qargs.add(this.parseExpr(0));
+                }
+                if (this.check(TK_RPAREN)) {
+                    this.advance();
+                } else {
+                    this.recordError("Missing close parenthesis at line " + qopenTok.line.toString() + ", column " + (qopenTok.col + 1).toString());
+                }
+                Node qcall = new Node(ND_METHOD_CALL, ln, c);
+                qcall.addChild(lhs);
+                qcall.name = qmember;
+                foreach (Node a in qargs) { qcall.addChild(a); }
+                if (lhs.kind == ND_IDENT && qargs.length == 1) {
+                    this.checkParseValueException(lhs.name, qmember, qargs[0]);
+                }
+                inner = qcall;
+            } else {
+                Node qmem = new Node(ND_MEMBER, ln, c);
+                qmem.addChild(lhs);
+                qmem.name = qmember;
+                inner = qmem;
+            }
+            Node safe = new Node(ND_SAFE, ln, c);
+            safe.addChild(inner);
+            return safe;
+        }
+        if (k == TK_QUESTIONLBRACKET) {
+            // DOCS/273 null-safe indexing `users?[i]`: element index only,
+            // chainable with `?.`/`?[]` at `.` precedence. A null receiver
+            // yields null without evaluating the index; a live receiver runs
+            // the normal bounds-checked index. `?..` slicing is rejected.
+            this.advance();
+            bool qoldBoundary = this.rangeIsSliceBoundary;
+            this.rangeIsSliceBoundary = true;
+            Node qidx = this.parseExpr(0);
+            bool qisSlice = this.check(TK_RANGE);
+            if (qisSlice) {
+                Token qsliceTok = this.peek();
+                this.recordError(qsliceTok.line.toString() + ":" + qsliceTok.col.toString() + ": ?[: null-safe slicing is not supported — write users?[i] for elements (see DOCS/273)");
+                this.advance();
+                if (!this.check(TK_RBRACKET)) {
+                    this.parseExpr(0);
+                }
+            }
+            this.rangeIsSliceBoundary = qoldBoundary;
+            this.expect(TK_RBRACKET);
+            Node qidxNode = new Node(ND_INDEX, ln, c);
+            qidxNode.addChild(lhs);
+            qidxNode.addChild(qidx);
+            Node qsaf = new Node(ND_SAFE, ln, c);
+            qsaf.addChild(qidxNode);
+            return qsaf;
+        }
         if (k == TK_FAT_ARROW) {
             this.advance();
             Node body = this.parseExpr(0);
@@ -3000,6 +3126,11 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
     }
 
     private Node makeAssignOp(Node lhs, int op, int ln, int c) {
+        // DOCS/273: a safe access is never an assignment target.
+        if (lhs.kind == ND_SAFE) {
+            Token opTok = this.peek();
+            this.recordError(opTok.line.toString() + ":" + opTok.col.toString() + ": Invalid assignment target");
+        }
         Node n = new Node(ND_BINARY, ln, c);
         n.op = op;
         n.addChild(lhs);

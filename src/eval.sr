@@ -1529,8 +1529,10 @@ class Evaluator {
         if (node.kind == ND_INDEX) { return this.evalIndex(node, env); }
         if (node.kind == ND_SLICE) { return this.evalSlice(node, env); }
         if (node.kind == ND_MEMBER) { return this.evalMember(node, env); }
+        if (node.kind == ND_SAFE) { return this.evalSafe(node, env); }
         if (node.kind == ND_TERNARY) {
             Value cond = this.evalExpr(node.child(0), env);
+            if (this.hasThrown) { return makeNull(); }
             if (cond.isTruthy()) { return this.evalExpr(node.child(1), env); }
             return this.evalExpr(node.child(2), env);
         }
@@ -1554,6 +1556,7 @@ class Evaluator {
         if (node.kind == ND_MATCH) { return this.evalMatch(node, env); }
         if (node.kind == ND_IF_EXPR) {
             Value cond = this.evalExpr(node.child(0), env);
+            if (this.hasThrown) { return makeNull(); }
             if (cond.isTruthy()) { return this.evalExpr(node.child(1), env); }
             if (node.childCount() >= 3) { return this.evalExpr(node.child(2), env); }
             return makeNull();
@@ -1593,10 +1596,14 @@ class Evaluator {
 
         if (op == OP_ASSIGN) {
             Value val = this.evalExpr(node.child(1), env);
+            if (this.hasThrown) { return makeNull(); }
             GC.pushRoot(val);
             Value assignResult = this.assignTo(node.child(0), val, env);
             GC.popRoot();
             return assignResult;
+        }
+        if (op == OP_COALESCE_ASSIGN) {
+            return this.evalCoalesceAssign(node, env);
         }
         if (op == OP_MOVE) {
             return this.evalExpr(node.child(1), env);
@@ -1605,8 +1612,10 @@ class Evaluator {
             || op == OP_MOD_ASSIGN || op == OP_BIT_AND_ASSIGN || op == OP_BIT_OR_ASSIGN || op == OP_BIT_XOR_ASSIGN
             || op == OP_SHL_ASSIGN || op == OP_SHR_ASSIGN) {
             Value current = this.evalExpr(node.child(0), env);
+            if (this.hasThrown) { return makeNull(); }
             GC.pushRoot(current);
             Value rhs = this.evalExpr(node.child(1), env);
+            if (this.hasThrown) { GC.popRoot(); return makeNull(); }
             int baseOp = op;
             if (op == OP_ADD_ASSIGN) { baseOp = OP_ADD; }
             else if (op == OP_SUB_ASSIGN) { baseOp = OP_SUB; }
@@ -1619,6 +1628,7 @@ class Evaluator {
             else if (op == OP_SHL_ASSIGN) { baseOp = OP_SHL; }
             else if (op == OP_SHR_ASSIGN) { baseOp = OP_SHR; }
             Value result = this.computeOp(current, baseOp, rhs, false);
+            if (this.hasThrown) { GC.popRoot(); return makeNull(); }
             GC.pushRoot(result);
             this.assignTo(node.child(0), result, env);
             GC.popRoot();
@@ -1627,6 +1637,7 @@ class Evaluator {
         }
 
         Value lhs = this.evalExpr(node.child(0), env);
+        if (this.hasThrown) { return makeNull(); }
 
         if (op == OP_COALESCE) {
             if (lhs.tag != VAL_NULL) { return lhs; }
@@ -1644,6 +1655,7 @@ class Evaluator {
 
         GC.pushRoot(lhs);
         Value rhs = this.evalExpr(node.child(1), env);
+        if (this.hasThrown) { GC.popRoot(); return makeNull(); }
         GC.popRoot();
 
         if (op == OP_RANGE) {
@@ -2228,6 +2240,10 @@ mirrorPut(obj, target.name, val);
         for (int i = 0; i < node.childCount(); i++) {
             Node argNode = node.child(i);
             Value a = this.evalExpr(argNode, env);
+            if (this.hasThrown) {
+                for (int j = 0; j < rooted; j++) { GC.popRoot(); }
+                return makeNull();
+            }
             args.add(a);
             if (argNode.kind == ND_UNARY && argNode.op == UOP_REF && argNode.childCount() > 0 && argNode.child(0).kind == ND_IDENT) {
                 refNames.add(argNode.child(0).name);
@@ -2455,28 +2471,11 @@ mirrorPut(obj, target.name, val);
         return makeNull();
     }
 
-    private Value evalMethodCall(Node node, Env env) {
-        Value receiver = this.evalExpr(node.child(0), env);
-        GC.pushRoot(receiver);
-        int rooted = 1;
-        Value[] args = [];
-        for (int i = 1; i < node.childCount(); i++) {
-            Value a = this.evalExpr(node.child(i), env);
-            args.add(a);
-            GC.pushRoot(a);
-            rooted++;
-        }
-        // VALUE_EXCEPTION.md — remember the first argument's source position
-        // so runtime diagnostics can point at the offending value.
-        if (node.childCount() > 1) {
-            Node a0 = node.child(1);
-            this.diagLine = a0.line;
-            this.diagCol = a0.col;
-            this.diagHasPos = true;
-        }
+    private Value methodDispatch(Value receiver, string method, Value[] args, Node where, Env env) {
         Value result = makeNull();
+        if (receiver == null) { return result; }
         if (receiver.tag == VAL_CLASS_INST) {
-            string methodKey = this.resolveMethodKey(receiver.typeName, node.name);
+            string methodKey = this.resolveMethodKey(receiver.typeName, method);
             if (methodKey.length > 0) {
                 // Overload dispatch by arity (7.4 #2): among the receiver
                 // class's same-named methods, the argument count picks the
@@ -2486,24 +2485,23 @@ mirrorPut(obj, target.name, val);
                 if (selected == null) {
                     selected = this.functions[methodKey];
                 }
-                this.checkInternalUse(methodKey, node.name, receiver.typeName, node);
+                this.checkInternalUse(methodKey, method, receiver.typeName, where);
                 Value[] methodArgs = [receiver];
                 foreach (Value a in args) { methodArgs.add(a); }
                 string savedClass = this.currentClassName;
-                this.currentClassName = this.methodDeclaringClass(receiver.typeName, node.name);
+                this.currentClassName = this.methodDeclaringClass(receiver.typeName, method);
                 result = this.callNode(selected, methodArgs, env);
                 this.currentClassName = savedClass;
-                for (int i = 0; i < rooted; i++) { GC.popRoot(); }
                 return result;
             }
             // DOCS/259 G2 -- a zero-arg member call on a receiver whose class
             // (or a parent) declares a fn-typed field of this name
             // (`this.cb()` / `obj.cb()`) invokes the stored callable. The
             // parent chain is walked so inherited fn fields dispatch too.
-            if (args.length == 0 && this.classHasFnField(receiver.typeName, node.name)) {
+            if (args.length == 0 && this.classHasFnField(receiver.typeName, method)) {
                 Value callable = null;
-                if (receiver.objVal.contains(node.name)) {
-                    callable = receiver.objVal[node.name];
+                if (receiver.objVal.contains(method)) {
+                    callable = receiver.objVal[method];
                 }
                 bool callableAnon = callable != null && callable.tag == VAL_FUNC
                     && this.anonBodies.contains(callable.funcName);
@@ -2514,7 +2512,6 @@ mirrorPut(obj, target.name, val);
                     printline("Runtime error: cannot invoke a null function value");
                     exit(1);
                 }
-                for (int i = 0; i < rooted; i++) { GC.popRoot(); }
                 return callResult;
             }
         }
@@ -2528,17 +2525,16 @@ mirrorPut(obj, target.name, val);
                     // when the (possibly user-defined) Value class does not
                     // define this static method itself; otherwise a user's
                     // `Value.makeBuiltin(...)` etc. would be hijacked.
-                    string factoryKey = className + "." + node.name;
+                    string factoryKey = className + "." + method;
                     if (!this.functions.contains(factoryKey)) {
-                        Value factory = this.makeValueFactory(node.name, args);
+                        Value factory = this.makeValueFactory(method, args);
                         if (factory != null) {
                             result = factory;
-                            for (int i = 0; i < rooted; i++) { GC.popRoot(); }
                             return result;
                         }
                     }
                 }
-                string staticKey = className + "." + node.name;
+                string staticKey = className + "." + method;
                 if (this.functions.contains(staticKey)) {
                     // Overload dispatch by arity (7.4 #2): args carry no
                     // receiver for statics, matching the compilers'
@@ -2549,7 +2545,7 @@ mirrorPut(obj, target.name, val);
                     if (selectedStatic == null) {
                         selectedStatic = this.functions[staticKey];
                     }
-                    this.checkInternalUse(staticKey, node.name, className, node);
+                    this.checkInternalUse(staticKey, method, className, where);
                     bool savedStatic = this.inStaticMethod;
                     this.inStaticMethod = true;
                     string savedStaticClass = this.currentClassName;
@@ -2557,39 +2553,76 @@ mirrorPut(obj, target.name, val);
                     result = this.callNode(selectedStatic, args, env);
                     this.currentClassName = savedStaticClass;
                     this.inStaticMethod = savedStatic;
-                    for (int i = 0; i < rooted; i++) { GC.popRoot(); }
                     return result;
                 }
             }
             if (cn.startsWith("module_")) {
                 string moduleName = "";
                 for (int mi = 7; mi < cn.length; mi++) { moduleName += cn[mi]; }
-                string modKey = moduleName + "." + node.name;
-                if (this.accessIsProject(node)) {
+                string modKey = moduleName + "." + method;
+                if (this.accessIsProject(where)) {
                     if (this.isInternalExportedModule(moduleName)) {
-                        this.internalAccessError(node.name, moduleName, node);
+                        this.internalAccessError(method, moduleName, where);
                     }
                 }
-                this.checkInternalUse(modKey, node.name, moduleName, node);
+                this.checkInternalUse(modKey, method, moduleName, where);
                 if (this.functions.contains(modKey)) {
                     // Overload dispatch by arity (7.4 #2): module-qualified
                     // calls dispatch over the module's own declarations
                     // (e.g. the two time.sleep shapes select the last one).
                     Node selectedMod = this.selectOverload(modKey, args.length);
                     if (selectedMod == null && this.overloadArityMismatch(modKey, args.length)) {
-                        printline("no overload of '" + node.name + "' takes " + args.length.toString() + " argument(s)");
+                        printline("no overload of '" + method + "' takes " + args.length.toString() + " argument(s)");
                         exit(1);
                     }
                     if (selectedMod == null) {
                         selectedMod = this.functions[modKey];
                     }
                     result = this.callNode(selectedMod, args, env);
-                    for (int i = 0; i < rooted; i++) { GC.popRoot(); }
                     return result;
                 }
             }
         }
-        result = this.callMethod(receiver, node.name, args);
+        result = this.callMethod(receiver, method, args);
+        this.diagHasPos = false;
+        return result;
+    }
+
+    private Value evalMethodCall(Node node, Env env) {
+        Value receiver = this.evalExpr(node.child(0), env);
+        if (this.hasThrown) { return makeNull(); }
+        if (receiver == null || receiver.tag == VAL_NULL) {
+            // DOCS/273: only a `?.`/`?[]` continuation short-circuits.
+            // A plain call after a safe step throws on null; a direct
+            // null call stays lenient (parity with the pre-safe
+            // interpreter: args run, then the builtin reports).
+            if (node.child(0).kind == ND_SAFE) {
+                this.throwException("NullReferenceException", "null dereference");
+                return makeNull();
+            }
+        }
+        GC.pushRoot(receiver);
+        int rooted = 1;
+        Value[] args = [];
+        for (int i = 1; i < node.childCount(); i++) {
+            Value a = this.evalExpr(node.child(i), env);
+            if (this.hasThrown) {
+                for (int j = 0; j < rooted; j++) { GC.popRoot(); }
+                return makeNull();
+            }
+            args.add(a);
+            GC.pushRoot(a);
+            rooted++;
+        }
+        // VALUE_EXCEPTION.md — remember the first argument's source position
+        // so runtime diagnostics can point at the offending value.
+        if (node.childCount() > 1) {
+            Node a0 = node.child(1);
+            this.diagLine = a0.line;
+            this.diagCol = a0.col;
+            this.diagHasPos = true;
+        }
+        Value result = this.methodDispatch(receiver, node.name, args, node, env);
         this.diagHasPos = false;
         for (int i = 0; i < rooted; i++) { GC.popRoot(); }
         return result;
@@ -2692,11 +2725,8 @@ mirrorPut(obj, target.name, val);
         return inst;
     }
 
-    private Value evalIndex(Node node, Env env) {
-        Value collection = this.evalExpr(node.child(0), env);
-        GC.pushRoot(collection);
-        Value idx = this.evalExpr(node.child(1), env);
-        GC.popRoot();
+    private Value indexLookup(Value collection, Value idx) {
+        if (collection == null) { return makeNull(); }
         if (collection.tag == VAL_ARRAY) {
             int i = idx.toInt();
             if (i >= 0 && i < collection.arrVal.length) {
@@ -2728,6 +2758,27 @@ mirrorPut(obj, target.name, val);
         return makeNull();
     }
 
+    private Value evalIndex(Node node, Env env) {
+        Value collection = this.evalExpr(node.child(0), env);
+        if (this.hasThrown) { return makeNull(); }
+        GC.pushRoot(collection);
+        Value idx = this.evalExpr(node.child(1), env);
+        if (this.hasThrown) { GC.popRoot(); return makeNull(); }
+        GC.popRoot();
+        if (collection == null || collection.tag == VAL_NULL) {
+            // DOCS/273: only a `?.`/`?[]` continuation short-circuits.
+            // A plain `[]` after a safe step is the normal unsafe access
+            // and throws on null; a direct null index stays lenient
+            // (parity with the pre-safe interpreter).
+            if (node.child(0).kind == ND_SAFE) {
+                this.throwException("NullReferenceException", "null dereference");
+                return makeNull();
+            }
+            return makeNull();
+        }
+        return this.indexLookup(collection, idx);
+    }
+
     private Value evalSlice(Node node, Env env) {
         Value collection = this.evalExpr(node.child(0), env);
         GC.pushRoot(collection);
@@ -2755,19 +2806,17 @@ mirrorPut(obj, target.name, val);
         return makeNull();
     }
 
-    private Value evalMember(Node node, Env env) {
-        Value obj = this.evalExpr(node.child(0), env);
-        string member = node.name;
-
+    private Value memberLookup(Value obj, string member, Node where) {
+        if (obj == null) { return makeNull(); }
         if (obj.tag == VAL_CLASS_INST || obj.tag == VAL_OBJECT || obj.tag == VAL_STRUCT) {
-            this.checkInternalUse(obj.typeName + "." + member, member, obj.typeName, node);
+            this.checkInternalUse(obj.typeName + "." + member, member, obj.typeName, where);
             if (obj.objVal.contains(member)) {
                 return obj.objVal[member];
             }
             if (obj.tag == VAL_CLASS_INST && this.classes.contains(obj.typeName)) {
                 string key = this.resolveMethodKey(obj.typeName, member);
                 if (key.length > 0) {
-                    this.checkInternalUse(key, member, obj.typeName, node);
+                    this.checkInternalUse(key, member, obj.typeName, where);
                     return makeFunc(key);
                 }
             }
@@ -2820,12 +2869,12 @@ mirrorPut(obj, target.name, val);
                 string moduleName = "";
                 for (int mi = 7; mi < obj.funcName.length; mi++) { moduleName += obj.funcName[mi]; }
                 string modKey = moduleName + "." + member;
-                if (this.accessIsProject(node)) {
+                if (this.accessIsProject(where)) {
                     if (this.isInternalExportedModule(moduleName)) {
-                        this.internalAccessError(member, moduleName, node);
+                        this.internalAccessError(member, moduleName, where);
                     }
                 }
-                this.checkInternalUse(modKey, member, moduleName, node);
+                this.checkInternalUse(modKey, member, moduleName, where);
                 if (this.functions.contains(modKey)) {
                     return makeFunc(modKey);
                 }
@@ -2848,6 +2897,196 @@ mirrorPut(obj, target.name, val);
             }
         }
         return BuiltinMethods.getProperty(obj, member);
+    }
+
+    private Value evalMember(Node node, Env env) {
+        Value obj = this.evalExpr(node.child(0), env);
+        if (this.hasThrown) { return makeNull(); }
+        if (obj == null || obj.tag == VAL_NULL) {
+            // DOCS/273: only a `?.`/`?[]` continuation short-circuits.
+            // A plain `.` after a safe step is the normal unsafe access
+            // and throws on null; a direct null member stays lenient.
+            if (node.child(0).kind == ND_SAFE) {
+                this.throwException("NullReferenceException", "null dereference");
+                return makeNull();
+            }
+            return makeNull();
+        }
+        return this.memberLookup(obj, node.name, node);
+    }
+
+    private Value storeMember(Value obj, string field, Value val, Node where) {
+        if (obj.tag == VAL_BUILTIN && obj.funcName == "console_module" && field == "title") {
+            obj.strVal = val.toString();
+            Value[] titleArgs = [val];
+            callBuiltin("console_set_title", titleArgs);
+            return val;
+        }
+        if (obj.tag == VAL_DICT) {
+            mirrorPut(obj, field, val);
+            return val;
+        }
+        if (obj.tag == VAL_OBJECT || obj.tag == VAL_CLASS_INST || obj.tag == VAL_STRUCT) {
+            this.checkInternalUse(obj.typeName + "." + field, field, obj.typeName, where);
+            if (this.inStaticMethod && obj.tag == VAL_CLASS_INST
+                && this.isStringField(obj.typeName, field)) {
+                return val;
+            }
+            if (this.isReadOnlyField(obj.typeName, field)) {
+                this.rejectReadOnlyAssign(obj.typeName, field, where);
+                return makeNull();
+            }
+            if (this.isVisibleField(obj.typeName, field)) {
+                string owner = this.visibleOwner(obj.typeName, field);
+                if (this.currentClassName != owner) {
+                    this.throwException("VisibleWriteException", "cannot write to visible prop '" + owner + "." + field + "' outside class '" + owner + "'");
+                    return makeNull();
+                }
+            }
+            mirrorPut(obj, field, val);
+            return val;
+        }
+        return val;
+    }
+
+    private Value storeIndex(Value collection, Value idx, Value val, Node where) {
+        if (collection.tag == VAL_ARRAY) {
+            int i = idx.toInt();
+            if (i >= 0 && i < collection.arrVal.length) {
+                collection.arrVal[i] = val;
+                GC.writeBarrier(collection, val);
+            } else {
+                this.throwException("IndexOutOfRangeException", "index out of range");
+            }
+            return val;
+        }
+        if (collection.tag == VAL_DICT || collection.tag == VAL_OBJECT || collection.tag == VAL_CLASS_INST || collection.tag == VAL_STRUCT) {
+            mirrorPut(collection, idx.strVal, val);
+            return val;
+        }
+        return val;
+    }
+
+    private Value evalSafe(Node node, Env env) {
+        if (node.childCount() == 0) { return makeNull(); }
+        Node inner = node.child(0);
+        if (inner.kind == ND_MEMBER) {
+            Value recv = this.evalExpr(inner.child(0), env);
+            if (this.hasThrown) { return makeNull(); }
+            if (recv == null || recv.tag == VAL_NULL) { return makeNull(); }
+            GC.pushRoot(recv);
+            Value r = this.memberLookup(recv, inner.name, inner);
+            GC.popRoot();
+            return r;
+        }
+        if (inner.kind == ND_METHOD_CALL) {
+            Value recv = this.evalExpr(inner.child(0), env);
+            if (this.hasThrown) { return makeNull(); }
+            if (recv == null || recv.tag == VAL_NULL) { return makeNull(); }
+            GC.pushRoot(recv);
+            int rooted = 1;
+            Value[] args = [];
+            for (int i = 1; i < inner.childCount(); i++) {
+                Value a = this.evalExpr(inner.child(i), env);
+                if (this.hasThrown) {
+                    for (int j = 0; j < rooted; j++) { GC.popRoot(); }
+                    return makeNull();
+                }
+                args.add(a);
+                GC.pushRoot(a);
+                rooted++;
+            }
+            if (inner.childCount() > 1) {
+                Node a0 = inner.child(1);
+                this.diagLine = a0.line;
+                this.diagCol = a0.col;
+                this.diagHasPos = true;
+            }
+            Value result = this.methodDispatch(recv, inner.name, args, inner, env);
+            this.diagHasPos = false;
+            for (int i = 0; i < rooted; i++) { GC.popRoot(); }
+            return result;
+        }
+        if (inner.kind == ND_INDEX) {
+            Value recv = this.evalExpr(inner.child(0), env);
+            if (this.hasThrown) { return makeNull(); }
+            if (recv == null || recv.tag == VAL_NULL) { return makeNull(); }
+            GC.pushRoot(recv);
+            Value idx = this.evalExpr(inner.child(1), env);
+            if (this.hasThrown) { GC.popRoot(); return makeNull(); }
+            GC.pushRoot(idx);
+            Value r = this.indexLookup(recv, idx);
+            GC.popRoot();
+            GC.popRoot();
+            return r;
+        }
+        return makeNull();
+    }
+
+    private Value evalCoalesceAssign(Node node, Env env) {
+        Node lhs = node.child(0);
+        Node rhs = node.child(1);
+        if (lhs.kind == ND_IDENT) {
+            Value cur = this.evalExpr(lhs, env);
+            if (this.hasThrown) { return makeNull(); }
+            if (cur != null && cur.tag != VAL_NULL) { return cur; }
+            Value r = this.evalExpr(rhs, env);
+            if (this.hasThrown) { return makeNull(); }
+            GC.pushRoot(r);
+            Value res = this.assignTo(lhs, r, env);
+            GC.popRoot();
+            return res;
+        }
+        if (lhs.kind == ND_MEMBER) {
+            Node objNode = lhs.child(0);
+            string field = lhs.name;
+            Value obj = this.evalExpr(objNode, env);
+            if (this.hasThrown) { return makeNull(); }
+            if (obj == null || obj.tag == VAL_NULL) {
+                this.throwException("NullReferenceException", "null dereference");
+                return makeNull();
+            }
+            GC.pushRoot(obj);
+            Value cur = this.memberLookup(obj, field, lhs);
+            if (this.hasThrown) { GC.popRoot(); return makeNull(); }
+            if (cur != null && cur.tag != VAL_NULL) { GC.popRoot(); return cur; }
+            Value r = this.evalExpr(rhs, env);
+            if (this.hasThrown) { GC.popRoot(); return makeNull(); }
+            GC.pushRoot(r);
+            Value stored = this.storeMember(obj, field, r, lhs);
+            GC.popRoot();
+            GC.popRoot();
+            if (this.hasThrown) { return makeNull(); }
+            return stored;
+        }
+        if (lhs.kind == ND_INDEX) {
+            Node arrNode = lhs.child(0);
+            Node idxNode = lhs.child(1);
+            Value coll = this.evalExpr(arrNode, env);
+            if (this.hasThrown) { return makeNull(); }
+            if (coll == null || coll.tag == VAL_NULL) {
+                this.throwException("NullReferenceException", "null dereference");
+                return makeNull();
+            }
+            GC.pushRoot(coll);
+            Value idx = this.evalExpr(idxNode, env);
+            if (this.hasThrown) { GC.popRoot(); return makeNull(); }
+            GC.pushRoot(idx);
+            Value cur = this.indexLookup(coll, idx);
+            if (this.hasThrown) { GC.popRoot(); GC.popRoot(); return makeNull(); }
+            if (cur != null && cur.tag != VAL_NULL) { GC.popRoot(); GC.popRoot(); return cur; }
+            Value r = this.evalExpr(rhs, env);
+            if (this.hasThrown) { GC.popRoot(); GC.popRoot(); return makeNull(); }
+            GC.pushRoot(r);
+            Value stored = this.storeIndex(coll, idx, r, lhs);
+            GC.popRoot();
+            GC.popRoot();
+            GC.popRoot();
+            if (this.hasThrown) { return makeNull(); }
+            return stored;
+        }
+        this.evalExpr(lhs, env);
+        return makeNull();
     }
 
     private Value evalNew(Node node, Env env) {

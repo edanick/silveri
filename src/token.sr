@@ -129,6 +129,12 @@ const int TK_ARROW = 145;
 const int TK_FAT_ARROW = 146;
 const int TK_SPREAD = 147;
 const int TK_QUESTIONQUESTION = 148;
+// DOCS/273: null-safe operators `?.` (163), `?[` (169) and `??=` (170).
+// Kind numbers match the self-hosted compiler so the three backends share
+// the same markers.
+const int TK_QUESTIONDOT = 163;
+const int TK_QUESTIONLBRACKET = 169;
+const int TK_COALESCE_ASSIGN = 170;
 const int TK_AT = 150;
 const int TK_PERCENT_EQ = 151;
 const int TK_AMP_EQ = 152;
@@ -267,6 +273,9 @@ string kindToString(int kind) {
     if (kind == TK_PIPE) { return "|"; }
     if (kind == TK_SPREAD) { return "..."; }
     if (kind == TK_QUESTIONQUESTION) { return "??"; }
+    if (kind == TK_QUESTIONDOT) { return "?."; }
+    if (kind == TK_QUESTIONLBRACKET) { return "?["; }
+    if (kind == TK_COALESCE_ASSIGN) { return "??="; }
     if (kind == TK_IN) { return "in"; }
     if (kind == TK_BREAK) { return "break"; }
     if (kind == TK_CONTINUE) { return "continue"; }

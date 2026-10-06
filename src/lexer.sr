@@ -560,7 +560,19 @@ class Lexer {
         if (c == '?') {
             if (this.peek() == '?') {
                 this.advance();
+                if (this.peek() == '=') {
+                    this.advance();
+                    return new Token(TK_COALESCE_ASSIGN, "??=", ln, cl);
+                }
                 return new Token(TK_QUESTIONQUESTION, "??", ln, cl);
+            }
+            if (this.peek() == '.') {
+                this.advance();
+                return new Token(TK_QUESTIONDOT, "?.", ln, cl);
+            }
+            if (this.peek() == '[') {
+                this.advance();
+                return new Token(TK_QUESTIONLBRACKET, "?[", ln, cl);
             }
             return new Token(TK_QUESTION, "?", ln, cl);
         }

@@ -37,6 +37,11 @@ const int ND_INDIRECT_CALL = 87;
 // [args..., initFields...] where each init field is an ND_VAR_DECL named
 // for the field holding the value expression.
 const int ND_NEW_INIT = 88;
+// DOCS/273 -- null-safe chain wrapper (`?.` / `?[]`): child(0) is the inner
+// ND_MEMBER / ND_METHOD_CALL / ND_INDEX whose receiver is child(0) of that
+// inner node. Same kind number (75) as the self-hosted compiler so the
+// three backends share the same marker.
+const int ND_SAFE = 75;
 
 const int ND_VAR_DECL = 50;
 const int ND_RETURN = 51;
@@ -112,6 +117,9 @@ const int OP_SHR_ASSIGN = 32;
 // level; `not in` must be parenthesized).
 const int OP_IN = 34;
 const int OP_NOT_IN = 35;
+// DOCS/273 -- assign-if-null `??=` (low precedence, right-associative,
+// value-yielding). Same op number (38) as the self-hosted compiler.
+const int OP_COALESCE_ASSIGN = 38;
 
 const int UOP_NEG = 0;
 const int UOP_NOT = 1;
@@ -244,6 +252,7 @@ string kindName(int k) {
     if (k == ND_AS_CAST) { return "AsCast"; }
     if (k == ND_INDIRECT_CALL) { return "IndirectCall"; }
     if (k == ND_NEW_INIT) { return "NewInit"; }
+    if (k == ND_SAFE) { return "Safe"; }
     if (k == ND_VAR_DECL) { return "VarDecl"; }
     if (k == ND_RETURN) { return "Return"; }
     if (k == ND_IF_STMT) { return "IfStmt"; }

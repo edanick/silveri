@@ -640,7 +640,7 @@ class MemoryGuard {
         }
         if (k == ND_BINARY) {
             int op = n.op;
-            if (op == OP_ASSIGN) { return this.checkAssign(n); }
+            if (op == OP_ASSIGN || op == OP_COALESCE_ASSIGN) { return this.checkAssign(n); }
             if (op == OP_MOVE) { this.checkMove(n); return 0; }
             if (op == OP_COALESCE) {
                 this.nullSafeDepth++;
@@ -692,6 +692,10 @@ class MemoryGuard {
             return 0;
         }
         if (k == ND_MEMBER) { this.checkExpr(n.child(0)); return 0; }
+        if (k == ND_SAFE) {
+            if (n.childCount() > 0) { this.checkExpr(n.child(0)); }
+            return 0;
+        }
         if (k == ND_INDEX || k == ND_SLICE) {
             for (int i = 0; i < n.childCount(); i++) { this.checkExpr(n.child(i)); }
             return 0;
