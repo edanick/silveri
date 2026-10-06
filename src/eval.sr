@@ -2042,6 +2042,105 @@ mirrorPut(obj, target.name, val);
         return nargs >= minArgs && nargs <= pc;
     }
 
+    // DOCS/272 -- one swap argument to its variable name: a bare
+    // identifier, or one `&`/`@` layer around an identifier (the tolerated
+    // `swap(&x, &y)` spelling), or a parenthesized wrapper of either.
+    // Anything else is not a variable.
+    private string swapArgName(Node n) {
+        if (n.kind == ND_IDENT) { return n.name; }
+        if (n.kind == ND_UNARY && n.childCount() > 0) { return this.swapArgName(n.child(0)); }
+        if (n.kind == ND_ADDRESS_OF && n.childCount() > 0) { return this.swapArgName(n.child(0)); }
+        if (n.kind == ND_PAREN && n.childCount() > 0) { return this.swapArgName(n.child(0)); }
+        return "";
+    }
+
+    // DOCS/272 -- storage-kind bucket for `swap(a, b)` same-type
+    // enforcement. Plain scalars (int/bool/byte and their widths, all
+    // carried as VAL_INT/VAL_BOOL/VAL_BYTE) share the `int` bucket;
+    // strings, floats, chars, arrays (by element), and structs (by type
+    // name) each get their own. Empty text ("") means no information and
+    // never triggers the mismatch throw.
+    private string swapValueKind(Value v) {
+        if (v == null) { return ""; }
+        if (v.tag == VAL_INT || v.tag == VAL_BOOL || v.tag == VAL_BYTE) { return "int"; }
+        if (v.tag == VAL_STRING) { return "string"; }
+        if (v.tag == VAL_FLOAT) { return "float"; }
+        if (v.tag == VAL_CHAR) { return "char"; }
+        if (v.tag == VAL_ARRAY) {
+            if (v.arrVal.length == 0) { return "array"; }
+            string elem = this.swapElemKind(v.arrVal[0]);
+            for (int i = 1; i < v.arrVal.length; i++) {
+                if (this.swapElemKind(v.arrVal[i]) != elem) { return "array"; }
+            }
+            if (elem == "") { return "array"; }
+            return elem + "[]";
+        }
+        if (v.tag == VAL_STRUCT || v.tag == VAL_OBJECT || v.tag == VAL_CLASS_INST) {
+            if (v.typeName.length > 0) { return v.typeName; }
+            return "struct";
+        }
+        if (v.tag == VAL_DICT) { return "dict"; }
+        if (v.tag == VAL_TUPLE) { return "tuple"; }
+        if (v.tag == VAL_NULL || v.tag == VAL_NULLABLE) { return ""; }
+        return v.typeString();
+    }
+
+    private string swapElemKind(Value v) {
+        if (v.tag == VAL_INT) { return "int"; }
+        if (v.tag == VAL_BOOL) { return "bool"; }
+        if (v.tag == VAL_BYTE) { return "byte"; }
+        if (v.tag == VAL_STRING) { return "string"; }
+        if (v.tag == VAL_FLOAT) { return "float"; }
+        if (v.tag == VAL_CHAR) { return "char"; }
+        if (v.tag == VAL_ARRAY) { return "array"; }
+        if (v.tag == VAL_STRUCT || v.tag == VAL_OBJECT || v.tag == VAL_CLASS_INST) {
+            if (v.typeName.length > 0) { return v.typeName; }
+            return "struct";
+        }
+        return "other";
+    }
+
+    // DOCS/272 -- free-function `swap(a, b)`: exchange the values of two
+    // variables of the same kind through their storage slots, so locals,
+    // globals, and by-ref params all mutate in place. Exact syntax needs
+    // no `&`; one `&` layer is tolerated. Same-name swap is a no-op.
+    // Same-kind mismatches throw a catchable value error and leave both
+    // variables unchanged; anything but two variables throws
+    // `swap requires two variables`. Returns void.
+    private Value evalSwapCall(Node node, Env env) {
+        if (this.hasThrown) { return makeNull(); }
+        if (node.childCount() != 2) {
+            this.throwException("ValueException", "swap requires two variables");
+            return makeNull();
+        }
+        string n1 = this.swapArgName(node.child(0));
+        string n2 = this.swapArgName(node.child(1));
+        if (n1.length == 0 || n2.length == 0) {
+            this.throwException("ValueException", "swap requires two variables");
+            return makeNull();
+        }
+        if (n1 == n2) { return makeNull(); }
+        if (!env.exists(n1) || !env.exists(n2)) {
+            this.throwException("ValueException", "swap requires two variables");
+            return makeNull();
+        }
+        Value v1 = env.get(n1);
+        Value v2 = env.get(n2);
+        if (v1 == null || v2 == null) {
+            this.throwException("ValueException", "swap requires two variables");
+            return makeNull();
+        }
+        string k1 = this.swapValueKind(v1);
+        string k2 = this.swapValueKind(v2);
+        if (k1.length > 0 && k2.length > 0 && k1 != k2 && k1 != "array" && k2 != "array") {
+            this.throwException("ValueException", "swap type mismatch: variables must have the same type");
+            return makeNull();
+        }
+        env.set(n1, v2);
+        env.set(n2, v1);
+        return makeNull();
+    }
+
     private Value evalCall(Node node, Env env) {
         Value[] args = [];
         string[] refNames = [];
@@ -2072,6 +2171,8 @@ mirrorPut(obj, target.name, val);
         } else if (node.name == "cargs") {
             if (this.sourceCargs != null) { result = this.sourceCargs; }
             else { result = makeArray([]); }
+        } else if (node.name == "swap") {
+            result = this.evalSwapCall(node, env);
         } else if ((node.name == "QueryPerformanceFrequency" || node.name == "QueryPerformanceCounter" || node.name == "GetLocalTime" || node.name == "GetSystemTime")
             && this.win32HasExport("kernel32.dll", node.name)) {
             // std/time.sr's folded WINDOWS now() body calls the QPC pair raw

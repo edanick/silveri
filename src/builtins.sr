@@ -731,6 +731,29 @@ class BuiltinMethods {
             }
             return makeArray(result);
         }
+        // DOCS/272 -- arr.swap(i, j) exchanges the elements at indexes i
+        // and j in place for every element type. Both indexes are
+        // bounds-checked like element reads: a negative index or an index
+        // past the end throws `index out of range` and leaves the array
+        // unchanged. A wrong arity throws `swap requires two indexes`.
+        // Swapping an index with itself is a checked no-op. Returns void.
+        if (method == "swap") {
+            if (args.length != 2) {
+                ev.throwException("ValueException", "swap requires two indexes");
+                return makeNull();
+            }
+            int si = args[0].toInt();
+            int sj = args[1].toInt();
+            if (si < 0 || si >= arr.arrVal.length || sj < 0 || sj >= arr.arrVal.length) {
+                ev.throwException("IndexOutOfRangeException", "index out of range");
+                return makeNull();
+            }
+            if (si == sj) { return makeNull(); }
+            Value tmp = arr.arrVal[si];
+            arr.arrVal[si] = arr.arrVal[sj];
+            arr.arrVal[sj] = tmp;
+            return makeNull();
+        }
         printline("Runtime error: unknown array method '" + method + "'");
         return makeNull();
     }
