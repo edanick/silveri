@@ -1146,6 +1146,7 @@ class Evaluator {
         }
         if (item.kind == ND_CONST && item.childCount() > 0) {
             Value val = this.evalExpr(item.child(0), this.globals);
+            this.stampStructType(val, item.typeHint);
             this.globals.define(item.name, val);
             this.uint64Vars[item.name] = item.typeHint == "uint64";
             this.markInternal(item.name, ext, item.isInternal);
@@ -1175,6 +1176,7 @@ class Evaluator {
                 this.uint64Vars[item.name] = item.typeHint == "uint64";
                 if (item.childCount() > 0) {
                     Value val = this.evalExpr(item.child(0), this.globals);
+                    this.stampStructType(val, item.typeHint);
                     this.globals.define(item.name, val);
                 } else if (item.typeHint == "FileOps") {
                     this.globals.define(item.name, makeBuiltin("file_module"));
@@ -1282,9 +1284,12 @@ class Evaluator {
         for (int i = 0; i < params.childCount(); i++) {
             Node param = params.child(i);
             if (i < args.length) {
+                this.stampStructType(args[i], param.typeHint);
                 fnEnv.define(param.name, args[i]);
             } else if (param.childCount() > 0) {
-                fnEnv.define(param.name, this.evalExpr(param.child(0), fnEnv));
+                Value defVal = this.evalExpr(param.child(0), fnEnv);
+                this.stampStructType(defVal, param.typeHint);
+                fnEnv.define(param.name, defVal);
             } else {
                 fnEnv.define(param.name, makeNull());
             }
@@ -1324,9 +1329,12 @@ class Evaluator {
         for (int i = 0; i < params.childCount(); i++) {
             Node param = params.child(i);
             if (i < args.length) {
+                this.stampStructType(args[i], param.typeHint);
                 fnEnv.define(param.name, args[i]);
             } else if (param.childCount() > 0) {
-                fnEnv.define(param.name, this.evalExpr(param.child(0), fnEnv));
+                Value defVal = this.evalExpr(param.child(0), fnEnv);
+                this.stampStructType(defVal, param.typeHint);
+                fnEnv.define(param.name, defVal);
             } else {
                 fnEnv.define(param.name, makeNull());
             }
@@ -1919,6 +1927,8 @@ class Evaluator {
                 }
             }
             if (env.exists(target.name)) {
+                Value oldVal = env.get(target.name);
+                this.preserveStructType(oldVal, val);
                 env.set(target.name, val);
             } else {
                 env.define(target.name, val);
@@ -2052,6 +2062,76 @@ mirrorPut(obj, target.name, val);
         if (n.kind == ND_ADDRESS_OF && n.childCount() > 0) { return this.swapArgName(n.child(0)); }
         if (n.kind == ND_PAREN && n.childCount() > 0) { return this.swapArgName(n.child(0)); }
         return "";
+    }
+
+    // DOCS/272 parity -- stamp a struct-typed declaration's runtime value
+    // with its declared struct name so `swap` sees declared types like the
+    // compilers (Point p = {...} yields typeName Point). Anonymous or
+    // inferred decls keep the generic empty typeless struct. Struct arrays
+    // (Point[]) stamp each generic element.
+    private void stampStructType(Value v, string typeHint) {
+        if (v == null) { return; }
+        if (typeHint.length == 0) { return; }
+        if (typeHint == "var") { return; }
+        string base = typeHint;
+        if (base.length > 0 && base[base.length - 1] == '?') {
+            base = base.substr(0, base.length - 1);
+        }
+        if (base.length >= 2 && base[base.length - 2] == '[' && base[base.length - 1] == ']') {
+            string elem = base.substr(0, base.length - 2);
+            if (elem.length > 0 && elem[elem.length - 1] == '?') {
+                elem = elem.substr(0, elem.length - 1);
+            }
+            if (!this.structs.contains(elem)) { return; }
+            if (v.tag != VAL_ARRAY) { return; }
+            for (int i = 0; i < v.arrVal.length; i++) {
+                Value e = v.arrVal[i];
+                if (e != null && (e.tag == VAL_OBJECT || e.tag == VAL_STRUCT) && valueTypeName(e).length == 0) {
+                    setTypeName(e, elem);
+                }
+            }
+            return;
+        }
+        if (!this.structs.contains(base)) { return; }
+        if (v.tag == VAL_OBJECT || v.tag == VAL_STRUCT) {
+            if (valueTypeName(v).length == 0) {
+                setTypeName(v, base);
+            }
+        }
+    }
+
+    private void preserveStructType(Value oldVal, Value newVal) {
+        if (oldVal == null) { return; }
+        if (newVal == null) { return; }
+        if (oldVal.tag == VAL_OBJECT || oldVal.tag == VAL_STRUCT) {
+            string oldName = valueTypeName(oldVal);
+            if (oldName.length > 0 && this.structs.contains(oldName)) {
+                if ((newVal.tag == VAL_OBJECT || newVal.tag == VAL_STRUCT) && valueTypeName(newVal).length == 0) {
+                    setTypeName(newVal, oldName);
+                }
+            }
+        }
+        if (oldVal.tag == VAL_ARRAY && newVal.tag == VAL_ARRAY) {
+            string elemName = "";
+            for (int i = 0; i < oldVal.arrVal.length; i++) {
+                Value oe = oldVal.arrVal[i];
+                if (oe != null && (oe.tag == VAL_OBJECT || oe.tag == VAL_STRUCT)) {
+                    string tn = valueTypeName(oe);
+                    if (tn.length > 0 && this.structs.contains(tn)) {
+                        elemName = tn;
+                        break;
+                    }
+                }
+            }
+            if (elemName.length > 0) {
+                for (int j = 0; j < newVal.arrVal.length; j++) {
+                    Value ne = newVal.arrVal[j];
+                    if (ne != null && (ne.tag == VAL_OBJECT || ne.tag == VAL_STRUCT) && valueTypeName(ne).length == 0) {
+                        setTypeName(ne, elemName);
+                    }
+                }
+            }
+        }
     }
 
     // DOCS/272 -- storage-kind bucket for `swap(a, b)` same-type
@@ -3316,6 +3396,7 @@ mirrorPut(obj, target.name, val);
                     val = this.checkedByteArray(val);
                 }
                 if (this.hasThrown) { return; }
+                this.stampStructType(val, stmt.typeHint);
                 env.define(stmt.name, val);
             } else {
                 if (stmt.typeHint == "byte") { env.define(stmt.name, makeByte(0)); }
@@ -3368,6 +3449,7 @@ mirrorPut(obj, target.name, val);
                     val = this.checkedByteArray(val);
                 }
                 if (this.hasThrown) { return; }
+                this.stampStructType(val, stmt.typeHint);
                 env.define(stmt.name, val);
             } else {
                 if (stmt.typeHint == "byte") { env.define(stmt.name, makeByte(0)); }

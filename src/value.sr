@@ -242,6 +242,10 @@ public string valueTypeName(Value v) {
     return v.typeName;
 }
 
+public void setTypeName(Value v, string name) {
+    v.typeName = name;
+}
+
 public string objKeysGet(Value v, int i) {
     return v.objKeys[i];
 }
