@@ -1602,6 +1602,72 @@ class Evaluator {
         return false;
     }
 
+    // DOCS/275: operator overload method name for a binary op. `None` for
+    // non-overloadable ops (`&& || & | ^ << >> in ..` etc. keep builtin
+    // lowering). Both `-` spellings share `operator-`; arity (1 vs 0
+    // explicit params) selects unary neg vs binary sub.
+    private string binaryOperatorName(int op) {
+        if (op == OP_ADD) { return "operator+"; }
+        if (op == OP_SUB) { return "operator-"; }
+        if (op == OP_MUL) { return "operator*"; }
+        if (op == OP_DIV) { return "operator/"; }
+        if (op == OP_MOD) { return "operator%"; }
+        if (op == OP_EQ) { return "operator=="; }
+        if (op == OP_NEQ) { return "operator!="; }
+        if (op == OP_LT) { return "operator<"; }
+        if (op == OP_LEQ) { return "operator<="; }
+        if (op == OP_GT) { return "operator>"; }
+        if (op == OP_GEQ) { return "operator>="; }
+        return "";
+    }
+
+    // DOCS/275: operator overload method name for a unary op. Only `!`
+    // and unary `-` are overloadable.
+    private string unaryOperatorName(int op) {
+        if (op == UOP_NOT) { return "operator!"; }
+        if (op == UOP_NEG) { return "operator-"; }
+        return "";
+    }
+
+    // True for a null literal (possibly parenthesized). `is null` desugars
+    // to `== null` before eval, so this also covers `is null` checks.
+    private bool isNullOperand(Node expr) {
+        if (expr.kind == ND_NULL_LIT) { return true; }
+        if (expr.kind == ND_PAREN && expr.childCount() > 0) { return this.isNullOperand(expr.child(0)); }
+        return false;
+    }
+
+    // DOCS/275: the class name an operator operand value belongs to, for
+    // left-first overload lookup. Only class instances (including
+    // struct-promoted-to-class) participate; primitives and null yield "".
+    private string operatorValueClass(Value v) {
+        if (v == null) { return ""; }
+        if (v.tag == VAL_CLASS_INST || v.tag == VAL_OBJECT || v.tag == VAL_STRUCT) {
+            string tn = valueTypeName(v);
+            if (tn.length > 0 && this.classes.contains(tn)) { return tn; }
+        }
+        return "";
+    }
+
+    // DOCS/275: resolve an operator overload on `cls` through the MRO.
+    // Returns the `Class.operator<op>` key, or "" when no ancestor declares
+    // it with an arity accepting `explicitArgs`.
+    private string findOperatorKey(string cls, string opName, int explicitArgs) {
+        string base = cls;
+        string[] order = this.ancestryPreOrder(base);
+        for (int i = 0; i < order.length; i++) {
+            string key = order[i] + "." + opName;
+            if (!this.functions.contains(key)) { continue; }
+            Node sel = this.selectOverload(key, explicitArgs);
+            if (sel != null) { return key; }
+            if (!this.functions.contains(key + "#0")) {
+                Node bare = this.functions[key];
+                if (bare.childCount() >= 1 && this.paramsAcceptArity(bare.child(0), explicitArgs)) { return key; }
+            }
+        }
+        return "";
+    }
+
     private Value evalBinary(Node node, Env env) {
         int op = node.op;
 
@@ -1638,6 +1704,49 @@ class Evaluator {
             else if (op == OP_BIT_XOR_ASSIGN) { baseOp = OP_BIT_XOR; }
             else if (op == OP_SHL_ASSIGN) { baseOp = OP_SHL; }
             else if (op == OP_SHR_ASSIGN) { baseOp = OP_SHR; }
+            // DOCS/275: `a += b` (and `-= *= /= %=`) on an overloaded
+            // type lowers to `a = a + b` so the `+`/`-`/`*`/`/`/`%`
+            // overload runs; other compounds keep builtin lowering.
+            if (baseOp == OP_ADD || baseOp == OP_SUB || baseOp == OP_MUL || baseOp == OP_DIV || baseOp == OP_MOD) {
+                string compOpName = this.binaryOperatorName(baseOp);
+                if (compOpName != "") {
+                    string compLhsCls = this.operatorValueClass(current);
+                    string compKey = "";
+                    bool compLeftIsThis = true;
+                    if (compLhsCls != "") {
+                        compKey = this.findOperatorKey(compLhsCls, compOpName, 1);
+                    }
+                    if (compKey == "") {
+                        string compRhsCls = this.operatorValueClass(rhs);
+                        if (compRhsCls != "") {
+                            compKey = this.findOperatorKey(compRhsCls, compOpName, 1);
+                            compLeftIsThis = false;
+                        }
+                    }
+                    if (compKey != "") {
+                        Node compSel = this.selectOverload(compKey, 1);
+                        if (compSel == null) { compSel = this.functions[compKey]; }
+                        string compDecl = compKey.split(".")[0];
+                        string compSaved = this.currentClassName;
+                        this.currentClassName = compDecl;
+                        this.checkInternalUse(compKey, compOpName, compDecl, node);
+                        Value compThis = current;
+                        Value compArg = rhs;
+                        if (!compLeftIsThis) { compThis = rhs; compArg = current; }
+                        GC.pushRoot(rhs);
+                        Value[] compArgs = [compThis, compArg];
+                        Value compRes = this.callNode(compSel, compArgs, env);
+                        GC.popRoot();
+                        this.currentClassName = compSaved;
+                        if (this.hasThrown) { GC.popRoot(); return makeNull(); }
+                        GC.pushRoot(compRes);
+                        this.assignTo(node.child(0), compRes, env);
+                        GC.popRoot();
+                        GC.popRoot();
+                        return compRes;
+                    }
+                }
+            }
             Value result = this.computeOp(current, baseOp, rhs, false);
             if (this.hasThrown) { GC.popRoot(); return makeNull(); }
             GC.pushRoot(result);
@@ -1668,6 +1777,52 @@ class Evaluator {
         Value rhs = this.evalExpr(node.child(1), env);
         if (this.hasThrown) { GC.popRoot(); return makeNull(); }
         GC.popRoot();
+
+        // DOCS/275: operator overloads win over every builtin numeric /
+        // string lowering, but only when at least one operand is the
+        // declaring type. Exact-op lookup (no `!=` to `==` fallback) and no
+        // dispatch for null-compared comparisons (builtin pointer
+        // equality, so `== null` / `is null` never recurse).
+        string binOpName = this.binaryOperatorName(op);
+        if (binOpName != "") {
+            bool isCmp = op == OP_EQ || op == OP_NEQ || op == OP_LT || op == OP_LEQ || op == OP_GT || op == OP_GEQ;
+            bool nullBypass = false;
+            if (isCmp && (this.isNullOperand(node.child(0)) || this.isNullOperand(node.child(1)))) { nullBypass = true; }
+            if (!nullBypass) {
+                string lhsCls = this.operatorValueClass(lhs);
+                string foundKey = "";
+                bool leftIsThis = true;
+                if (lhsCls != "") {
+                    foundKey = this.findOperatorKey(lhsCls, binOpName, 1);
+                }
+                if (foundKey == "") {
+                    string rhsCls = this.operatorValueClass(rhs);
+                    if (rhsCls != "") {
+                        foundKey = this.findOperatorKey(rhsCls, binOpName, 1);
+                        leftIsThis = false;
+                    }
+                }
+                if (foundKey != "") {
+                    Node sel = this.selectOverload(foundKey, 1);
+                    if (sel == null) { sel = this.functions[foundKey]; }
+                    string decl = foundKey.split(".")[0];
+                    string savedCls = this.currentClassName;
+                    this.currentClassName = decl;
+                    this.checkInternalUse(foundKey, binOpName, decl, node);
+                    Value thisVal = lhs;
+                    Value argVal = rhs;
+                    if (!leftIsThis) { thisVal = rhs; argVal = lhs; }
+                    GC.pushRoot(lhs);
+                    GC.pushRoot(rhs);
+                    Value[] margs = [thisVal, argVal];
+                    Value opRes = this.callNode(sel, margs, env);
+                    GC.popRoot();
+                    GC.popRoot();
+                    this.currentClassName = savedCls;
+                    return opRes;
+                }
+            }
+        }
 
         if (op == OP_RANGE) {
             int64 start = lhs.toInt();
@@ -2146,6 +2301,34 @@ mirrorPut(obj, target.name, val);
 
     private Value evalUnary(Node node, Env env) {
         Value operand = this.evalExpr(node.child(0), env);
+        if (this.hasThrown) { return makeNull(); }
+        // DOCS/275: unary overloads (`operator!` / unary `operator-`)
+        // win over builtin `!`/`-` when the operand is the declaring
+        // type; `!(bool)` keeps builtin lowering so `!(this == b)`
+        // inside `operator!=` terminates.
+        if (node.op == UOP_NEG || node.op == UOP_NOT) {
+            string uName = this.unaryOperatorName(node.op);
+            if (uName != "") {
+                string uCls = this.operatorValueClass(operand);
+                if (uCls != "") {
+                    string uKey = this.findOperatorKey(uCls, uName, 0);
+                    if (uKey != "") {
+                        Node uSel = this.selectOverload(uKey, 0);
+                        if (uSel == null) { uSel = this.functions[uKey]; }
+                        string uDecl = uKey.split(".")[0];
+                        string uSaved = this.currentClassName;
+                        this.currentClassName = uDecl;
+                        this.checkInternalUse(uKey, uName, uDecl, node);
+                        GC.pushRoot(operand);
+                        Value[] uargs = [operand];
+                        Value ures = this.callNode(uSel, uargs, env);
+                        GC.popRoot();
+                        this.currentClassName = uSaved;
+                        return ures;
+                    }
+                }
+            }
+        }
         if (node.op == UOP_NEG) {
             if (operand.tag == VAL_FLOAT) { return makeFloat(-valueToFloat(operand)); }
             return makeInt(-operand.toInt());

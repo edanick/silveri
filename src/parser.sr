@@ -674,6 +674,12 @@ private Node? parseItem() {
                 int nk = -1;
                 if (this.pos + 1 < this.tokens.length) { nk = this.tokens[this.pos + 1].kind; }
                 bool continuesExpr = this.tokenContinuesExpr(nk);
+                // DOCS/275: `is` lexes as IDENT but is an infix operator
+                // (`a is null`); a top-level `b is ...` continues as an
+                // expression, never an unknown keyword.
+                if (!continuesExpr && nk == TK_IDENT && this.pos + 1 < this.tokens.length && this.tokens[this.pos + 1].text == "is") {
+                    continuesExpr = true;
+                }
                 // `print"hello world");` — a call missing its open parenthesis.
                 if (!continuesExpr && nk == TK_STRING_LIT) {
                     Node stmt = this.parseCallMissingOpenParen();
@@ -691,7 +697,11 @@ private Node? parseItem() {
             string first = this.expectIdent();
             bool namedDecl = false;
             if (this.check(TK_IDENT) || this.check(TK_MUT)) {
-                namedDecl = true;
+                // DOCS/275: `is` is an infix operator, never a declared
+                // name (`p1 is null` is an expression, not a decl).
+                if (!(this.check(TK_IDENT) && this.peek().text == "is")) {
+                    namedDecl = true;
+                }
             } else if (this.check(TK_LBRACKET)) {
                 // Array-typed named declaration (`byte[] buf`, `byte[] f()`):
                 // an ident type followed by `[]` pairs and then the declared
@@ -915,20 +925,37 @@ private Node? parseItem() {
         this.advance();
         string name = this.expectIdent();
         this.expect(TK_LBRACE);
-        Node n = new Node(ND_STRUCT_DEF, ln, c);
-        n.name = name;
         this.registerDeclaredType(name);
-        while (!this.check(TK_RBRACE) && !this.check(TK_EOF)) {
-            string typ = this.parseTypeStr();
-            string fieldName = this.expectIdent();
-            this.expectSemi();
-            Node field = new Node(ND_VAR_DECL, ln, c);
-            field.name = fieldName;
-            field.typeHint = typ;
-            n.addChild(field);
-        }
+        // DOCS/275: structs share the class body parser so operator
+        // overloads (`public static T operator + (T b)`), `construct`,
+        // `prop` and methods parse inside `struct` too. A plain-data
+        // struct (no methods) stays an ND_STRUCT_DEF; any method
+        // (including an operator) promotes the definition to an
+        // ND_CLASS_DEF with the same name, layout and `this` semantics
+        // as a class.
+        Node tmp = new Node(ND_CLASS_DEF, ln, c);
+        tmp.name = name;
+        this.parseClassBodyInto(tmp, name, ln, c);
         this.expect(TK_RBRACE);
-        return n;
+        bool hasMethod = false;
+        for (int i = 0; i < tmp.childCount(); i++) {
+            if (tmp.child(i).kind == ND_FUNC) { hasMethod = true; break; }
+        }
+        if (!hasMethod) {
+            Node n = new Node(ND_STRUCT_DEF, ln, c);
+            n.name = name;
+            for (int j = 0; j < tmp.childCount(); j++) {
+                n.addChild(tmp.child(j));
+            }
+            return n;
+        }
+        Node cls = new Node(ND_CLASS_DEF, ln, c);
+        cls.name = name;
+        cls.parentClass = "";
+        for (int k = 0; k < tmp.childCount(); k++) {
+            cls.addChild(tmp.child(k));
+        }
+        return cls;
     }
 
     private Node parseClass() {
@@ -1178,6 +1205,17 @@ private Node? parseItem() {
                 n.addChild(field);
                 continue;
             }
+            // DOCS/275: C#-shaped static operator overloads
+            // (`public static Ret operator <op> (Own b) { ... }` with
+            // implicit `this` + one explicit param for binary ops,
+            // zero params for unary `!`/`-`). Runs before the normal
+            // method probe: `operator` lexes as an identifier, so the
+            // `Type name (` probe would misread the shape.
+            Node? opMethod = this.tryParseOperator(isStat, isInt, isExplicitPrivate, name);
+            if (opMethod != null) {
+                n.addChild(opMethod);
+                continue;
+            }
             if (this.checkType() || this.check(TK_IDENT)) {
                 string retType = this.parseTypeStr();
                 // DOCS/259 G2 -- bare fn-typed field: `void () cb;` (fn arrays
@@ -1214,6 +1252,176 @@ private Node? parseItem() {
             }
             break;
         }
+    }
+
+    // DOCS/275: `operator` symbol text for overload names and diagnostics.
+    private string operatorSymbol(int kind) {
+        if (kind == TK_PLUS) { return "+"; }
+        if (kind == TK_MINUS) { return "-"; }
+        if (kind == TK_STAR) { return "*"; }
+        if (kind == TK_SLASH) { return "/"; }
+        if (kind == TK_PERCENT) { return "%"; }
+        if (kind == TK_EQ) { return "=="; }
+        if (kind == TK_NEQ) { return "!="; }
+        if (kind == TK_LESS) { return "<"; }
+        if (kind == TK_LEQ) { return "<="; }
+        if (kind == TK_GREATER) { return ">"; }
+        if (kind == TK_GEQ) { return ">="; }
+        if (kind == TK_BANG) { return "!"; }
+        return "";
+    }
+
+    private bool isNonOverloadableOperator(int kind) {
+        return kind == TK_AMP || kind == TK_PIPE || kind == TK_CARET || kind == TK_TILDE || kind == TK_SHL || kind == TK_SHR || kind == TK_AND || kind == TK_OR || kind == TK_ASSIGN || kind == TK_PLUS_EQ || kind == TK_MINUS_EQ || kind == TK_STAR_EQ || kind == TK_SLASH_EQ || kind == TK_PERCENT_EQ || kind == TK_AMP_EQ || kind == TK_PIPE_EQ || kind == TK_CARET_EQ || kind == TK_SHL_EQ || kind == TK_SHR_EQ || kind == TK_INC || kind == TK_DEC || kind == TK_QUESTION || kind == TK_QUESTIONQUESTION;
+    }
+
+    // DOCS/275: parse a C#-shaped static operator overload inside a class
+    // (or struct-promoted-to-class) body. Returns null when the member is
+    // not an operator shape; records a clean error for malformed operator
+    // declarations with the bootstrap message.
+    private Node? tryParseOperator(bool memberStatic, bool memberInternal, bool memberExplicitPrivate, string className) {
+        if (this.check(TK_IDENT) && this.peek().text == "operator") {
+            if (this.pos + 1 < this.tokens.length) {
+                int nk = this.tokens[this.pos + 1].kind;
+                if (this.operatorSymbol(nk) != "") {
+                    Token errTok = this.peek();
+                    this.recordError(errTok.line.toString() + ":" + errTok.col.toString() + ": Unexpected token 'operator: operator overloads must declare a return type — write `public static Vec2 operator + (Vec2 b) { ... }` (see DOCS/275)'");
+                    return null;
+                }
+            }
+        }
+        bool canStart = this.checkType() || this.check(TK_IDENT);
+        if (!canStart) { return null; }
+        int saved = this.pos;
+        bool isVoid = false;
+        string retType = "";
+        if (this.check(TK_VOID)) {
+            this.advance();
+            isVoid = true;
+        } else {
+            Token rtTok = this.peek();
+            bool rtOk = rtTok.kind == TK_INT || rtTok.kind == TK_INT32 || rtTok.kind == TK_INT64 || rtTok.kind == TK_UINT || rtTok.kind == TK_UINT64 || rtTok.kind == TK_FLOAT || rtTok.kind == TK_FLOAT64 || rtTok.kind == TK_DOUBLE || rtTok.kind == TK_BOOL || rtTok.kind == TK_CHAR || rtTok.kind == TK_STRING || rtTok.kind == TK_IDENT || rtTok.kind == TK_LESS;
+            if (!rtOk) { this.pos = saved; return null; }
+            retType = this.parseTypeStr();
+        }
+        if (!(this.check(TK_IDENT) && this.peek().text == "operator")) { this.pos = saved; return null; }
+        int afterOpKind = -1;
+        if (this.pos + 1 < this.tokens.length) { afterOpKind = this.tokens[this.pos + 1].kind; }
+        if (afterOpKind == TK_SEMI || afterOpKind == TK_LPAREN || afterOpKind == TK_RBRACE || afterOpKind == TK_EOF || afterOpKind == TK_IDENT) { this.pos = saved; return null; }
+        Token opTok = this.peek();
+        int opLine = opTok.line;
+        int opCol = opTok.col;
+        this.advance();
+        int opKind = -1;
+        if (this.pos < this.tokens.length) { opKind = this.peek().kind; }
+        string sym = this.operatorSymbol(opKind);
+        if (sym == "") {
+            if (this.isNonOverloadableOperator(opKind)) {
+                Token badTok = this.peek();
+                this.recordError(badTok.line.toString() + ":" + badTok.col.toString() + ": Unexpected token 'operator: unsupported operator for overloading (supported: + - * / % == != < > <= >= ! and unary -; see DOCS/275)'");
+                this.pos = saved;
+                return null;
+            }
+            this.pos = saved;
+            return null;
+        }
+        this.advance();
+        if (isVoid) {
+            this.recordError(opLine.toString() + ":" + opCol.toString() + ": Unexpected token 'operator: operator overloads must declare a non-void return type (see DOCS/275)'");
+            this.pos = saved;
+            return null;
+        }
+        if (!memberStatic) {
+            this.recordError(opLine.toString() + ":" + opCol.toString() + ": Unexpected token 'operator: operator overloads must be static — write `public static Ret operator <op> (...)` (see DOCS/275)'");
+            this.pos = saved;
+            return null;
+        }
+        if (!this.check(TK_LPAREN)) { this.pos = saved; return null; }
+        this.advance();
+        Node params = new Node(ND_BLOCK, opLine, opCol);
+        while (!this.check(TK_RPAREN) && !this.check(TK_EOF)) {
+            if (this.check(TK_COMMA)) { this.advance(); continue; }
+            if (!this.tokenStartsParam(this.peekKind())) { break; }
+            string pt = this.parseTypeStr();
+            if (this.check(TK_LPAREN)) {
+                Token ftTok = this.peek();
+                this.recordError(ftTok.line.toString() + ":" + ftTok.col.toString() + ": Unexpected token 'operator: operator parameters cannot be function-typed (see DOCS/275)'");
+                this.pos = saved;
+                return null;
+            }
+            string pname = "";
+            if (this.check(TK_IDENT)) { pname = this.advance().text; } else { break; }
+            if (this.check(TK_ASSIGN)) {
+                Token defTok = this.peek();
+                this.recordError(defTok.line.toString() + ":" + defTok.col.toString() + ": Unexpected token 'operator: operator parameters take no default values (see DOCS/275)'");
+                this.pos = saved;
+                return null;
+            }
+            Node param = new Node(ND_VAR_DECL, opLine, opCol);
+            param.name = pname;
+            param.typeHint = pt;
+            params.addChild(param);
+            if (this.check(TK_COMMA)) { this.advance(); }
+        }
+        if (!this.check(TK_RPAREN)) { this.pos = saved; return null; }
+        this.advance();
+        int pcount = params.childCount();
+        bool arityOk = false;
+        if (sym == "!") {
+            if (pcount == 0) { arityOk = true; }
+        } else if (sym == "-") {
+            if (pcount == 0 || pcount == 1) { arityOk = true; }
+        } else {
+            if (pcount == 1) { arityOk = true; }
+        }
+        if (!arityOk) {
+            string expected = "exactly 1 parameter (binary overloads use implicit `this` + one explicit param)";
+            if (sym == "!") { expected = "exactly 0 parameters (unary `!` uses implicit `this` only)"; }
+            if (sym == "-") { expected = "0 parameters (unary neg) or 1 parameter (binary sub)"; }
+            this.recordError(opLine.toString() + ":" + opCol.toString() + ": Unexpected token 'operator: `operator " + sym + "` takes " + expected + "; got " + pcount.toString() + " (see DOCS/275)'");
+            this.pos = saved;
+            return null;
+        }
+        Node opNode = new Node(ND_FUNC, opLine, opCol);
+        opNode.typeHint = retType;
+        string opName = "operator" + sym;
+        opNode.name = opName;
+        opNode.isStatic = true;
+        opNode.isInternal = memberInternal;
+        if (memberExplicitPrivate) { opNode.isPublic = false; } else { opNode.isPublic = true; }
+        this.knownIdents.add(opName);
+        opNode.addChild(params);
+        string joinTypes = "";
+        string joinNames = "";
+        for (int spi = 0; spi < params.childCount(); spi++) {
+            Node sp = params.child(spi);
+            if (spi > 0) { joinTypes += ","; joinNames += ","; }
+            joinTypes += sp.typeHint;
+            joinNames += sp.name;
+        }
+        this.sigNames.add(opName);
+        this.sigTypes.add(joinTypes);
+        this.sigParams.add(joinNames);
+        this.sigVariadic.add(0);
+        if (this.check(TK_LBRACE)) {
+            opNode.addChild(this.parseBlock());
+        } else if (this.check(TK_SHL)) {
+            this.advance();
+            Node oneExpr = this.parseExpr(0);
+            this.expectSemi();
+            Node body = new Node(ND_BLOCK, opLine, opCol);
+            Node ret = new Node(ND_RETURN, opLine, opCol);
+            ret.addChild(oneExpr);
+            body.addChild(ret);
+            opNode.addChild(body);
+        } else {
+            Token bodyTok = this.peek();
+            this.recordError(bodyTok.line.toString() + ":" + bodyTok.col.toString() + ": Unexpected token 'operator: operator overloads must have a body `{ ... }` (see DOCS/275)'");
+            this.pos = saved;
+            return null;
+        }
+        this.prependThisParam(opNode, className);
+        return opNode;
     }
 
     // DOCS/274: `new class { ... }` anonymous class expression. Parses the
@@ -1843,6 +2051,12 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
                 int nk = -1;
                 if (this.pos + 1 < this.tokens.length) { nk = this.tokens[this.pos + 1].kind; }
                 bool continuesExpr = this.tokenContinuesExpr(nk);
+                // DOCS/275: `is` lexes as IDENT but is an infix operator
+                // (`a is null`); a statement starting `b is ...` continues
+                // as an expression, never an unknown keyword.
+                if (!continuesExpr && nk == TK_IDENT && this.pos + 1 < this.tokens.length && this.tokens[this.pos + 1].text == "is") {
+                    continuesExpr = true;
+                }
                 // `print"hello world");` — a call missing its open parenthesis.
                 if (!continuesExpr && nk == TK_STRING_LIT) {
                     return this.parseCallMissingOpenParen();
@@ -1876,6 +2090,11 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
                 // (DOCS/18), so a paren after a tuple generic is a type decl.
                 isTypeDecl = this.check(TK_IDENT) || this.check(TK_MUT)
                     || (typeName == "tuple" && this.check(TK_LPAREN));
+            }
+            // DOCS/275: `is` lexes as IDENT but is an infix operator, never
+            // a declared name (`p1 is null` is an expression, not a decl).
+            if (isTypeDecl && this.check(TK_IDENT) && this.peek().text == "is") {
+                isTypeDecl = false;
             }
             this.pos = saved;
             if (isTypeDecl) {
@@ -2512,6 +2731,12 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         if (this.membershipAhead()) {
             return true;
         }
+        // DOCS/275: `is null` / `is not null` sit at the comparison tier
+        // (same as `in`). `is` lexes as a plain identifier, so it is
+        // detected contextually here; `is <Type>` remains a clean error.
+        if (this.check(TK_IDENT) && this.peek().text == "is") {
+            return true;
+        }
         return k == TK_PLUS || k == TK_MINUS || k == TK_STAR || k == TK_SLASH || k == TK_PERCENT
             || k == TK_EQ || k == TK_NEQ || k == TK_LESS || k == TK_LEQ || k == TK_GREATER || k == TK_GEQ
             || k == TK_AND || k == TK_OR
@@ -2532,6 +2757,12 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         // DOCS/261: `in` / `not in` sit at the comparison tier (same as
         // `<`/`>`), so `a in b && c` parses as `(a in b) && c`.
         if (this.membershipAhead()) {
+            return 5;
+        }
+        // DOCS/275: `is null` / `is not null` sit at the comparison tier
+        // (same as `in`). `is` lexes as a plain identifier, so it is
+        // detected contextually here; `is <Type>` remains a clean error.
+        if (this.check(TK_IDENT) && this.peek().text == "is") {
             return 5;
         }
         if (k == TK_AS && this.isAsCastAhead()) {
@@ -2970,6 +3201,10 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             n.addChild(collection);
             return n;
         }
+        // DOCS/275: `is null` / `is not null` (comparison tier, prec 5).
+        if (this.check(TK_IDENT) && this.peek().text == "is") {
+            return this.parseIs(lhs);
+        }
         if (k == TK_QUESTION) {
             this.advance();
             Node thenExpr = this.parseExpr(1);
@@ -3380,6 +3615,43 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         if (k == TK_PIPE) { return OP_BIT_OR; }
         if (k == TK_CARET) { return OP_BIT_XOR; }
         return -1;
+    }
+
+    // DOCS/275: `is null` / `is not null` null checks. `is` lexes as
+    // Identifier("is"); the parser desugars `a is null` to `a == null`
+    // and `a is not null` to `a != null` (builtin pointer equality, so
+    // null operands never crash and never dispatch to an `==`/`!=`
+    // overload). `is <Type>` stays a clean error — only null checks are
+    // supported.
+    private Node parseIs(Node lhs) {
+        int isLine = this.peek().line;
+        int isCol = this.peek().col;
+        this.advance();
+        if (this.check(TK_IDENT) && this.peek().text == "not") {
+            this.advance();
+            if (this.check(TK_NULL_LIT)) {
+                Token nullTok = this.advance();
+                Node n = new Node(ND_NULL_LIT, nullTok.line, nullTok.col);
+                Node bin = new Node(ND_BINARY, isLine, isCol);
+                bin.op = OP_NEQ;
+                bin.addChild(lhs);
+                bin.addChild(n);
+                return bin;
+            }
+            this.recordError(isLine.toString() + ":" + isCol.toString() + ": Unexpected token 'is: only `is null` and `is not null` are supported — `is <Type>` is not Silver (see DOCS/275)'");
+            return lhs;
+        }
+        if (this.check(TK_NULL_LIT)) {
+            Token nullTok = this.advance();
+            Node n = new Node(ND_NULL_LIT, nullTok.line, nullTok.col);
+            Node bin = new Node(ND_BINARY, isLine, isCol);
+            bin.op = OP_EQ;
+            bin.addChild(lhs);
+            bin.addChild(n);
+            return bin;
+        }
+        this.recordError(isLine.toString() + ":" + isCol.toString() + ": Unexpected token 'is: only `is null` and `is not null` are supported — `is <Type>` is not Silver (see DOCS/275)'");
+        return lhs;
     }
 
     private int opToPrec(int op) {
