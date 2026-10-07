@@ -103,6 +103,10 @@ class Evaluator {
     // "Class.member") so each declaration registers a per-arity symbol
     // `key#k`; dispatch scans these symbols for the arity match.
     public prop dict<string, int> fnDeclSeen;
+    // Multiple inheritance (DOCS/207): class names in registration order
+    // (preludes first, then the entry program). Drives inheritance
+    // validation so cycles name deterministically in source order.
+    public prop string[] classOrder;
 
     construct {
         file.writeBytes("build/diag/TE0_ctor.txt", [49]);
@@ -146,6 +150,7 @@ class Evaluator {
         this.anonCounter = 0;
         this.uint64Vars = {};
         this.fnDeclSeen = {};
+        this.classOrder = [];
         this.registerBuiltins();
         file.writeBytes("build/diag/TE1_ctor_end.txt", [49]);
     }
@@ -1036,6 +1041,7 @@ class Evaluator {
     public void run(Node[] program) {
         if (this.diagCrumbs) { file.writeBytes("build/diag/TR0.txt", [49]); }
         this.registerItems(program);
+        this.validateInheritance();
         if (this.diagCrumbs) { file.writeBytes("build/diag/TR1.txt", [49]); }
         this.runMain(program);
         if (this.diagCrumbs) { file.writeBytes("build/diag/TR2.txt", [49]); }
@@ -1106,6 +1112,11 @@ class Evaluator {
         }
         if (item.kind == ND_CLASS_DEF) {
             this.classes[item.name] = item;
+            bool orderSeen = false;
+            for (int i = 0; i < this.classOrder.length; i++) {
+                if (this.classOrder[i] == item.name) { orderSeen = true; break; }
+            }
+            if (!orderSeen) { this.classOrder.add(item.name); }
             if (ext) {
                 this.markInternal(item.name, true, item.isInternal);
             } else {
@@ -1841,23 +1852,162 @@ class Evaluator {
         return makeNull();
     }
 
+    // Multiple inheritance (DOCS/207): ordered parent list for
+    // `className` (every listed parent; parentClass keeps the first for
+    // single-parent readers). Empty when the class has no parent or is
+    // unknown.
+    private string[] classParentsOf(string className) {
+        string[] out = [];
+        if (!this.classes.contains(className)) { return out; }
+        Node classDef = this.classes[className];
+        if (classDef.parentCount() > 0) {
+            for (int i = 0; i < classDef.parentCount(); i++) { out.add(classDef.parentAt(i)); }
+        } else if (classDef.parentClass != "") {
+            out.add(classDef.parentClass);
+        }
+        return out;
+    }
+
+    // Left-to-right depth-first MRO (DOCS/207): the class itself first,
+    // then transitive parents in listed order (duplicates skipped, so a
+    // diamond's shared ancestor appears once at its first-listed
+    // position). Own methods win; otherwise the first listed parent's
+    // method wins. Cycle-safe (validation rejects cycles first, but no
+    // walk may hang on them).
+    private string[] ancestryPreOrder(string className) {
+        string[] order = [];
+        this.collectAncestry(className, order);
+        return order;
+    }
+
+    private void collectAncestry(string className, string[] order) {
+        for (int i = 0; i < order.length; i++) {
+            if (order[i] == className) { return; }
+        }
+        order.add(className);
+        string[] parents = this.classParentsOf(className);
+        for (int i = 0; i < parents.length; i++) { this.collectAncestry(parents[i], order); }
+    }
+
+    // Expanded field layout in seed order (DOCS/207): every parent's full
+    // expansion concatenated in listed order, then the class's own fields
+    // (a same-named own field reuses the inherited slot, so it is not
+    // appended twice; a field arriving via two parents keeps its first
+    // occurrence — first-listed parent wins for direct reads).
+    private string[] expandedFieldOrder(string className) {
+        string[] out = [];
+        this.collectFieldOrder(className, out, 0);
+        return out;
+    }
+
+    private void collectFieldOrder(string className, string[] out, int depth) {
+        if (depth > 64) { return; }
+        if (!this.classes.contains(className)) { return; }
+        Node classDef = this.classes[className];
+        string[] parents = this.classParentsOf(className);
+        for (int i = 0; i < parents.length; i++) { this.collectFieldOrder(parents[i], out, depth + 1); }
+        for (int i = 0; i < classDef.childCount(); i++) {
+            Node child = classDef.child(i);
+            if (child.kind == ND_VAR_DECL) {
+                bool seen = false;
+                for (int k = 0; k < out.length; k++) {
+                    if (out[k] == child.name) { seen = true; break; }
+                }
+                if (!seen) { out.add(child.name); }
+            }
+        }
+    }
+
+    // Multiple inheritance validation (DOCS/207, parity with the bootstrap
+    // type checker and the self-host validateInheritance): every listed
+    // parent must be a known class, no parent may repeat, no class may
+    // list itself, and the parent graph must be acyclic. Runs after
+    // registration so forward references resolve; any violation aborts
+    // with the bootstrap message.
+    private void validateInheritance() {
+        for (int i = 0; i < this.classOrder.length; i++) {
+            string cname = this.classOrder[i];
+            if (!this.classes.contains(cname)) { continue; }
+            Node item = this.classes[cname];
+            string[] parents = this.classParentsOf(cname);
+            for (int a = 0; a < parents.length; a++) {
+                string pname = parents[a];
+                if (pname == cname) {
+                    printline(item.line.toString() + ":" + item.col.toString() + ": Cyclic inheritance: inheritance cycle detected involving '" + cname + " -> " + cname + "'");
+                    exit(1);
+                    return;
+                }
+                bool dup = false;
+                for (int b = 0; b < a; b++) {
+                    if (parents[b] == pname) { dup = true; break; }
+                }
+                if (dup) {
+                    printline(item.line.toString() + ":" + item.col.toString() + ": Duplicate definition '" + pname + "'");
+                    exit(1);
+                    return;
+                }
+                if (!this.classes.contains(pname)) {
+                    printline(item.line.toString() + ":" + item.col.toString() + ": Unknown type '" + pname + "'");
+                    exit(1);
+                    return;
+                }
+            }
+        }
+        string[] done = [];
+        for (int r = 0; r < this.classOrder.length; r++) {
+            string[] path = [];
+            string hit = this.findInheritanceCycle(this.classOrder[r], path, done);
+            if (hit != "") {
+                Node root = this.classes[this.classOrder[r]];
+                printline(root.line.toString() + ":" + root.col.toString() + ": Cyclic inheritance: inheritance cycle detected involving '" + hit + "'");
+                exit(1);
+                return;
+            }
+        }
+    }
+
+    // Depth-first cycle search from `node` over the parent graph: returns
+    // the chain naming the first cycle found (e.g. `A -> B -> A`), or ""
+    // when the reachable subgraph is acyclic. `path` is the current gray
+    // chain, `done` the finished set shared across roots.
+    private string findInheritanceCycle(string node, string[] path, string[] done) {
+        for (int i = 0; i < done.length; i++) {
+            if (done[i] == node) { return ""; }
+        }
+        for (int i = 0; i < path.length; i++) {
+            if (path[i] == node) {
+                string chain = path[i];
+                for (int j = i + 1; j < path.length; j++) { chain += " -> " + path[j]; }
+                chain += " -> " + node;
+                return chain;
+            }
+        }
+        path.add(node);
+        string[] parents = this.classParentsOf(node);
+        for (int i = 0; i < parents.length; i++) {
+            if (!this.classes.contains(parents[i])) { continue; }
+            string hit = this.findInheritanceCycle(parents[i], path, done);
+            if (hit != "") { return hit; }
+        }
+        path.pop();
+        done.add(node);
+        return "";
+    }
+
     // True when `fieldName` of class `className` (or any ancestor) is a
-    // read-only prop (DOCS/264). Walks the same leaf-to-root chain as
-    // constructClass.
+    // read-only prop (DOCS/264). Walks the MRO so multiply-inherited
+    // fields resolve first-listed-wins like constructClass.
     private bool isReadOnlyField(string className, string fieldName) {
-        string cur = className;
-        int guard = 0;
-        while (this.classes.contains(cur) && guard < 64) {
-            Node classDef = this.classes[cur];
+        string[] order = this.ancestryPreOrder(className);
+        for (int o = 0; o < order.length; o++) {
+            if (!this.classes.contains(order[o])) { continue; }
+            Node classDef = this.classes[order[o]];
             for (int i = 0; i < classDef.childCount(); i++) {
                 Node child = classDef.child(i);
                 if (child.kind == ND_VAR_DECL && child.name == fieldName) {
                     return child.isReadOnly;
                 }
             }
-            Node pn = this.classes[cur];
-            cur = pn.parentClass;
-            guard++;
         }
         return false;
     }
@@ -1867,23 +2017,21 @@ class Evaluator {
         exit(1);
     }
 
-    // DOCS/271: declaring class of `fieldName` for `className` (most-derived
-    // declarer wins walking leaf -> root; structs never declare visible, so
-    // only the class chain is walked).
+    // DOCS/271: declaring class of `fieldName` for `className` (MRO
+    // first declarer wins: own fields, then parents left-to-right
+    // depth-first; structs never declare visible, so only the class
+    // ancestry is walked).
     private string visibleOwner(string className, string fieldName) {
-        string cur = className;
-        int guard = 0;
-        while (this.classes.contains(cur) && guard < 64) {
-            Node classDef = this.classes[cur];
+        string[] order = this.ancestryPreOrder(className);
+        for (int o = 0; o < order.length; o++) {
+            if (!this.classes.contains(order[o])) { continue; }
+            Node classDef = this.classes[order[o]];
             for (int i = 0; i < classDef.childCount(); i++) {
                 Node child = classDef.child(i);
                 if (child.kind == ND_VAR_DECL && child.name == fieldName) {
-                    return cur;
+                    return order[o];
                 }
             }
-            Node pn = this.classes[cur];
-            cur = pn.parentClass;
-            guard++;
         }
         return className;
     }
@@ -1891,19 +2039,16 @@ class Evaluator {
     // DOCS/271: true when `fieldName` of class `className` (or any ancestor)
     // is a visible prop. Reads are unaffected; only stores check this.
     private bool isVisibleField(string className, string fieldName) {
-        string cur = className;
-        int guard = 0;
-        while (this.classes.contains(cur) && guard < 64) {
-            Node classDef = this.classes[cur];
+        string[] order = this.ancestryPreOrder(className);
+        for (int o = 0; o < order.length; o++) {
+            if (!this.classes.contains(order[o])) { continue; }
+            Node classDef = this.classes[order[o]];
             for (int i = 0; i < classDef.childCount(); i++) {
                 Node child = classDef.child(i);
                 if (child.kind == ND_VAR_DECL && child.name == fieldName) {
                     return child.isVisible;
                 }
             }
-            Node pn = this.classes[cur];
-            cur = pn.parentClass;
-            guard++;
         }
         return false;
     }
@@ -2443,28 +2588,33 @@ mirrorPut(obj, target.name, val);
         return result;
     }
 
-    // super(args...) - call the parent class constructor with the current
-    // `this` instance. Only valid inside a class `construct` method.
+    // super(args...) - call the FIRST listed parent class's constructor
+    // with the current `this` instance (DOCS/207: remaining parents'
+    // fields are initialized manually). The constructor resolves through
+    // the parent's MRO, so an inherited grandparent constructor is found
+    // too. Only valid inside a class `construct` method.
     private Value evalSuper(Value[] args, Env env) {
         if (this.currentClassName == "") { return makeNull(); }
         if (!this.classes.contains(this.currentClassName)) { return makeNull(); }
-        Node curDef = this.classes[this.currentClassName];
-        string parent = curDef.parentClass;
-        if (parent == "") { return makeNull(); }
-        if (!this.classes.contains(parent)) { return makeNull(); }
-        Node parentDef = this.classes[parent];
-        for (int i = 0; i < parentDef.childCount(); i++) {
-            Node child = parentDef.child(i);
-            if (child.name == "construct") {
-                Value thisVal = env.get("this");
-                if (thisVal != null) {
-                    Value[] methodArgs = [thisVal];
-                    foreach (Value a in args) { methodArgs.add(a); }
-                    string savedClass = this.currentClassName;
-                    this.currentClassName = parent;
-                    Value result = this.callNode(child, methodArgs, env);
-                    this.currentClassName = savedClass;
-                    return result;
+        string[] parents = this.classParentsOf(this.currentClassName);
+        if (parents.length == 0) { return makeNull(); }
+        string[] mro = this.ancestryPreOrder(parents[0]);
+        for (int i = 0; i < mro.length; i++) {
+            if (!this.classes.contains(mro[i])) { continue; }
+            Node parentDef = this.classes[mro[i]];
+            for (int j = 0; j < parentDef.childCount(); j++) {
+                Node child = parentDef.child(j);
+                if (child.name == "construct") {
+                    Value thisVal = env.get("this");
+                    if (thisVal != null) {
+                        Value[] methodArgs = [thisVal];
+                        foreach (Value a in args) { methodArgs.add(a); }
+                        string savedClass = this.currentClassName;
+                        this.currentClassName = mro[i];
+                        Value result = this.callNode(child, methodArgs, env);
+                        this.currentClassName = savedClass;
+                        return result;
+                    }
                 }
             }
         }
@@ -3216,16 +3366,14 @@ mirrorPut(obj, target.name, val);
     }
 
     private bool classHasField(string className, string fieldName) {
-        string cur = className;
-        int guard = 0;
-        while (this.classes.contains(cur) && guard < 64) {
-            Node classDef = this.classes[cur];
+        string[] order = this.ancestryPreOrder(className);
+        for (int o = 0; o < order.length; o++) {
+            if (!this.classes.contains(order[o])) { continue; }
+            Node classDef = this.classes[order[o]];
             for (int i = 0; i < classDef.childCount(); i++) {
                 Node child = classDef.child(i);
                 if (child.kind == ND_VAR_DECL && child.name == fieldName) { return true; }
             }
-            cur = classDef.parentClass;
-            guard++;
         }
         return false;
     }
@@ -3248,39 +3396,43 @@ mirrorPut(obj, target.name, val);
             GC.pushRoot(args[i]);
             rooted++;
         }
-        // Collect the inheritance chain leaf -> root (`class Foo : Parent`).
-        string[] chain = [];
-        string cur = name;
-        int guard = 0;
-        while (this.classes.contains(cur) && guard < 64) {
-            chain.add(cur);
-            Node pn = this.classes[cur];
-            cur = pn.parentClass;
-            guard++;
-        }
-        // Initialize fields root -> leaf so inherited fields exist before the
-        // constructor runs. A subclass field that redeclares a parent field
-        // simply overwrites it.
-        for (int ci = chain.length - 1; ci >= 0; ci--) {
-            Node classDef = this.classes[chain[ci]];
-            for (int i = 0; i < classDef.childCount(); i++) {
-                Node child = classDef.child(i);
-                if (child.kind == ND_VAR_DECL) {
-                    if (child.childCount() > 0) {
-                        Value fv = this.evalExpr(child.child(0), this.globals);
-                        mirrorPut(inst, child.name, fv);
-                    } else {
-                        Value fv = makeNull();
-                        mirrorPut(inst, child.name, fv);
+        // Multiple inheritance (DOCS/207): field layout concatenates every
+        // parent's expanded slots in listed order, then the class's own
+        // fields. Values are dicts, so per-path slots collapse to one entry:
+        // each name seeds from its MRO-first declarer (own wins, else the
+        // first-listed parent branch), matching the compilers' first-slot
+        // direct reads. Inherited methods read the same merged slots, so
+        // every parent's methods behave exactly as declared.
+        string[] mro = this.ancestryPreOrder(name);
+        string[] layout = this.expandedFieldOrder(name);
+        for (int li = 0; li < layout.length; li++) {
+            for (int mi = 0; mi < mro.length; mi++) {
+                if (!this.classes.contains(mro[mi])) { continue; }
+                Node cand = this.classes[mro[mi]];
+                bool seeded = false;
+                for (int i = 0; i < cand.childCount(); i++) {
+                    Node child = cand.child(i);
+                    if (child.kind == ND_VAR_DECL && child.name == layout[li]) {
+                        if (child.childCount() > 0) {
+                            Value fv = this.evalExpr(child.child(0), this.globals);
+                            mirrorPut(inst, child.name, fv);
+                        } else {
+                            mirrorPut(inst, child.name, makeNull());
+                        }
+                        seeded = true;
+                        break;
                     }
                 }
+                if (seeded) { break; }
             }
         }
-        // Call the nearest constructor walking leaf -> root. A subclass with
-        // no `construct` inherits the nearest ancestor's constructor, which
+        // Call the nearest constructor walking the MRO (own first, then
+        // parents left-to-right depth-first). A subclass with no
+        // `construct` inherits the nearest ancestor's constructor, which
         // writes inherited fields on the same instance (`this`).
-        for (int ci = 0; ci < chain.length; ci++) {
-            Node classDef = this.classes[chain[ci]];
+        for (int ci = 0; ci < mro.length; ci++) {
+            if (!this.classes.contains(mro[ci])) { continue; }
+            Node classDef = this.classes[mro[ci]];
             bool called = false;
             for (int i = 0; i < classDef.childCount(); i++) {
                 Node child = classDef.child(i);
@@ -3288,7 +3440,7 @@ mirrorPut(obj, target.name, val);
                     Value[] methodArgs = [inst];
                     foreach (Value a in args) { methodArgs.add(a); }
                     string savedClass = this.currentClassName;
-                    this.currentClassName = chain[ci];
+                    this.currentClassName = mro[ci];
                     this.callNode(child, methodArgs, this.globals);
                     this.currentClassName = savedClass;
                     called = true;
@@ -3367,72 +3519,62 @@ mirrorPut(obj, target.name, val);
     }
 
     // Whether `fieldName` is declared as a string field anywhere in the
-    // class chain of `typeName` (used to mirror the compilers' static-method
-    // string-field write quirk).
+    // class ancestry of `typeName` (used to mirror the compilers'
+    // static-method string-field write quirk).
     private bool isStringField(string typeName, string fieldName) {
-        string cur = typeName;
-        int guard = 0;
-        while (this.classes.contains(cur) && guard < 64) {
-            Node classDef = this.classes[cur];
+        string[] order = this.ancestryPreOrder(typeName);
+        for (int o = 0; o < order.length; o++) {
+            if (!this.classes.contains(order[o])) { continue; }
+            Node classDef = this.classes[order[o]];
             for (int i = 0; i < classDef.childCount(); i++) {
                 Node child = classDef.child(i);
                 if (child.kind == ND_VAR_DECL && child.name == fieldName) {
                     return child.typeHint == "string";
                 }
             }
-            cur = classDef.parentClass;
-            guard++;
         }
         return false;
     }
 
     // DOCS/259 G2 -- whether `fieldName` is declared as a fn-typed field
-    // (`void () name`) anywhere in the class chain of `typeName`. Fn-typed
-    // fields parse to the type hint "void ()".
+    // (`void () name`) anywhere in the class ancestry of `typeName`.
+    // Fn-typed fields parse to the type hint "void ()".
     private bool classHasFnField(string typeName, string fieldName) {
-        string cur = typeName;
-        int guard = 0;
-        while (this.classes.contains(cur) && guard < 64) {
-            Node classDef = this.classes[cur];
+        string[] order = this.ancestryPreOrder(typeName);
+        for (int o = 0; o < order.length; o++) {
+            if (!this.classes.contains(order[o])) { continue; }
+            Node classDef = this.classes[order[o]];
             for (int i = 0; i < classDef.childCount(); i++) {
                 Node child = classDef.child(i);
                 if (child.kind == ND_VAR_DECL && child.name == fieldName) {
                     return child.typeHint == "void ()";
                 }
             }
-            cur = classDef.parentClass;
-            guard++;
         }
         return false;
     }
 
-    // Resolve a method key ("Type.method") walking the class inheritance
-    // chain leaf -> root, so subclasses inherit and can override parent
-    // methods. Returns "" when no class in the chain defines the method.
-    private string resolveMethodKey(string typeName, string method) {        string cur = typeName;
-        int guard = 0;
-        while (this.classes.contains(cur) && guard < 64) {
-            string key = cur + "." + method;
+    // Resolve a method key ("Type.method") walking the MRO (own class
+    // first, then parents left-to-right depth-first), so subclasses
+    // inherit and can override parent methods. Returns "" when no class
+    // in the ancestry defines the method.
+    private string resolveMethodKey(string typeName, string method) {
+        string[] order = this.ancestryPreOrder(typeName);
+        for (int o = 0; o < order.length; o++) {
+            string key = order[o] + "." + method;
             if (this.functions.contains(key)) { return key; }
-            Node pc = this.classes[cur];
-            cur = pc.parentClass;
-            guard++;
         }
         return "";
     }
 
-    // DOCS/271: declaring class of `method` for `typeName` (leaf -> root, so
+    // DOCS/271: declaring class of `method` for `typeName` (MRO first, so
     // an override reports the subclass, an inherited method the ancestor).
     // Drives currentClassName during method bodies for visible-prop checks.
     private string methodDeclaringClass(string typeName, string method) {
-        string cur = typeName;
-        int guard = 0;
-        while (this.classes.contains(cur) && guard < 64) {
-            string key = cur + "." + method;
-            if (this.functions.contains(key)) { return cur; }
-            Node pc = this.classes[cur];
-            cur = pc.parentClass;
-            guard++;
+        string[] order = this.ancestryPreOrder(typeName);
+        for (int o = 0; o < order.length; o++) {
+            string key = order[o] + "." + method;
+            if (this.functions.contains(key)) { return order[o]; }
         }
         return typeName;
     }

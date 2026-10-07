@@ -163,6 +163,12 @@ class Node {
     public prop bool isVisible;
     public prop bool hasFinally;
     public prop string parentClass;
+    // Multiple inheritance (DOCS/207): every listed parent in order
+    // (`class Person : Creature, Human`). parentClass above stays the
+    // FIRST listed parent so single-parent readers keep working. Read
+    // through parentAt/parentCount below: Node array fields are only
+    // touched same-module (like children), never cross-module direct.
+    public prop string[] parentClasses;
     public prop Node[] children;
     public prop int line;
     public prop int col;
@@ -190,6 +196,7 @@ class Node {
         this.isVisible = false;
         this.hasFinally = false;
         this.parentClass = "";
+        this.parentClasses = [];
         this.children = [];
         this.line = line;
         this.col = col;
@@ -216,6 +223,21 @@ class Node {
 
     public int childCount() {
         return this.children.length;
+    }
+
+    public void addParent(string parent) {
+        this.parentClasses.add(parent);
+    }
+
+    public string parentAt(int i) {
+        if (i >= 0 && i < this.parentClasses.length) {
+            return this.parentClasses[i];
+        }
+        return "";
+    }
+
+    public int parentCount() {
+        return this.parentClasses.length;
     }
 
     public string toString() {

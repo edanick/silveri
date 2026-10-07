@@ -913,14 +913,24 @@ private Node? parseItem() {
         this.advance();
         string name = this.expectIdent();
         string parent = "";
+        string[] parents = [];
         if (this.check(TK_COLON) || this.check(TK_EXTENDS)) {
             this.advance();
             parent = this.expectIdent();
+            parents.add(parent);
+            // Multiple inheritance (DOCS/207): comma-separated parents for
+            // both `:` and `extends`. parentClass keeps the first listed
+            // parent; parentClasses holds the full ordered list.
+            while (this.check(TK_COMMA)) {
+                this.advance();
+                parents.add(this.expectIdent());
+            }
         }
         this.expect(TK_LBRACE);
         Node n = new Node(ND_CLASS_DEF, ln, c);
         n.name = name;
         n.parentClass = parent;
+        for (int i = 0; i < parents.length; i++) { n.addParent(parents[i]); }
         this.registerDeclaredType(name);
         bool sectionInternal = false;
         while (!this.check(TK_RBRACE) && !this.check(TK_EOF)) {
