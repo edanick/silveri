@@ -1,0 +1,116 @@
+// Struct swap parity (DOCS/272): same-struct variables exchange values,
+// different declared struct types throw `swap type mismatch` and keep values.
+// Exit code 0 = exact.
+
+struct Point {
+    int x;
+    int y;
+}
+
+struct Other {
+    int x;
+    int y;
+}
+
+class Box {
+    public prop int v;
+
+    construct (int v) {
+        this.v = v;
+    }
+}
+
+void check(bool ok, string label) {
+    if (!ok) {
+        printline("FAIL " + label);
+        exit(1);
+    }
+}
+
+void main() {
+    Point p1 = {x: 1, y: 2};
+    Point p2 = {x: 3, y: 4};
+    swap(p1, p2);
+    check(p1.x == 3, "same-p1-x");
+    check(p1.y == 4, "same-p1-y");
+    check(p2.x == 1, "same-p2-x");
+    check(p2.y == 2, "same-p2-y");
+
+    Point a = {x: 10, y: 20};
+    Other b = {x: 30, y: 40};
+    try {
+        swap(a, b);
+        printline("FAIL diff-struct silently swapped");
+        exit(1);
+    } catch (Exception e) {
+    }
+    check(a.x == 10, "diff-a-x");
+    check(a.y == 20, "diff-a-y");
+    check(b.x == 30, "diff-b-x");
+    check(b.y == 40, "diff-b-y");
+
+    Point sp = {x: 5, y: 6};
+    swap(sp, sp);
+    check(sp.x == 5, "self-x");
+    check(sp.y == 6, "self-y");
+
+    Point r1 = {x: 7, y: 8};
+    Point r2 = {x: 9, y: 10};
+    swap(&r1, &r2);
+    check(r1.x == 9, "ref-r1-x");
+    check(r2.x == 7, "ref-r2-x");
+
+    Point si = {x: 1, y: 1};
+    int iv = 42;
+    try {
+        swap(si, iv);
+        printline("FAIL struct-int silently swapped");
+        exit(1);
+    } catch (Exception e) {
+    }
+    check(si.x == 1, "struct-int-x");
+    check(iv == 42, "struct-int-iv");
+
+    Point ss = {x: 2, y: 2};
+    string st = "hi";
+    try {
+        swap(ss, st);
+        printline("FAIL struct-string silently swapped");
+        exit(1);
+    } catch (Exception e) {
+    }
+    check(ss.x == 2, "struct-string-x");
+    check(st == "hi", "struct-string-st");
+
+    Point cb = {x: 3, y: 3};
+    Box box = new Box(99);
+    try {
+        swap(cb, box);
+        printline("FAIL struct-class silently swapped");
+        exit(1);
+    } catch (Exception e) {
+    }
+    check(cb.x == 3, "struct-class-x");
+    check(box.v == 99, "struct-class-box");
+
+    Point[] arr1 = [{x: 1, y: 1}, {x: 2, y: 2}];
+    Point[] arr2 = [{x: 3, y: 3}];
+    swap(arr1, arr2);
+    check(arr1.length == 1, "struct-arr-len1");
+    check(arr2.length == 2, "struct-arr-len2");
+    check(arr1[0].x == 3, "struct-arr-0");
+    check(arr2[0].x == 1, "struct-arr-back-0");
+
+    Point[] sa = [{x: 1, y: 1}];
+    Other[] ob = [{x: 2, y: 2}];
+    try {
+        swap(sa, ob);
+        printline("FAIL struct-array-distinct silently swapped");
+        exit(1);
+    } catch (Exception e) {
+    }
+    check(sa[0].x == 1, "struct-arr-distinct-sa");
+    check(ob[0].x == 2, "struct-arr-distinct-ob");
+
+    printline("swap structs ok");
+}
