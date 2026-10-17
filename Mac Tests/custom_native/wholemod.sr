@@ -1,0 +1,7 @@
+// Negative fixture: whole-module grant on a custom name takes
+// single-export grants only.
+import { fakebridge } from win32;
+
+void main() {
+    printline("unreachable");
+}

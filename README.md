@@ -12,7 +12,19 @@ a native executable.
 - **Version:** 0.7.9.4
 - **Copyright:** © 2025 Edan M.
 
+## macOS Port
+
+- **Copyright:** © 2026 StavA
+- Enabling support for Silver on macOS
+- Enabling Silver interpreter support on macOS
+- Maintainer and QA of the macOS version (unit tests)
+- Programming language creator: Edan M.
+
 ## Quick start
+
+The Rust-built macOS interpreter is in [`executables/macos/`](executables/macos/).
+The macOS workspace's test fixtures and verification notes are in
+[`Mac Tests/`](Mac%20Tests/).
 
 ### Put `silveri` on your `PATH`
 

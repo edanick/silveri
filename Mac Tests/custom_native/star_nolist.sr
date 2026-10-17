@@ -1,0 +1,6 @@
+// Negative fixture: star import on a custom module with no export list.
+import * from gfx;
+
+void main() {
+    gfxCompute(1);
+}

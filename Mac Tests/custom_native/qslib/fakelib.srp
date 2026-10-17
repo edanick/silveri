@@ -1,0 +1,11 @@
+{
+    name: "fakelib",
+    version: "0.1.0",
+    type: "quicksilver",
+    entry: "fakelib.sr",
+    sources: ["fakelib.sr"],
+    nativeModules: [
+        { "module": "fakebridge", "windows": "fake-win.dll", "linux": "libfake.so.9" }
+    ],
+    output: "fakelib.qs"
+}

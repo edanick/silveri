@@ -379,6 +379,10 @@ class Evaluator {
         this.globals.define("console", makeBuiltin("console_module"));
         this.globals.define("math", makeBuiltin("math_module"));
         this.globals.define("notifications", makeBuiltin("notifications_module"));
+        // DOCS/66-67-96: json answers natively (parse/stringify/beautify/
+        // load over full-RTTI Values; source Silver cannot express runtime
+        // type dispatch — see DOCS/275). Mirrors the compiled backends.
+        this.globals.define("json", makeBuiltin("json_module"));
         // DOCS/247 — nativeToastShow: silverc-rs emits real Win32 DLL calls for
         // it; the interpreter simulates the side effect by returning null (the
         // notifications.sr `show` function already printed the NOTIFY: line).

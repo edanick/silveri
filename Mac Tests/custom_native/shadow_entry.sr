@@ -1,0 +1,7 @@
+// Precedence fixture: a project-local Silver module beats the same-named
+// custom native entry. `localhelp` resolves to localhelp.sr, never native.
+import { localAnswer } from localhelp;
+
+void main() {
+    if (localAnswer() == 42) { printline("shadow project OK"); }
+}

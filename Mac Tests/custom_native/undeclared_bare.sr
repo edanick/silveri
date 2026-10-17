@@ -1,0 +1,7 @@
+// Negative fixture: bare import of a module nobody declared, in a manifest
+// that opts into `nativeModules`.
+import { nosuchFn } from nosuchbare;
+
+void main() {
+    nosuchFn(1);
+}

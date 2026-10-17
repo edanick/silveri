@@ -1,0 +1,8 @@
+// Interpreted-run fixture: star import on a custom module, enabled by the
+// explicit `exports` list in its `nativeModules` entry.
+import * from starmod;
+
+void checkStar() {
+    if (starAlpha(1) == null) { printline("starAlpha stub OK"); }
+    if (starBeta(1) == null) { printline("starBeta stub OK"); }
+}

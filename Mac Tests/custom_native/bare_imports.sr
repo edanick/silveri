@@ -1,0 +1,14 @@
+// Interpreted-run fixture for `.srp` `nativeModules` (DOCS/261): one bare
+// import line per custom module, no `#on` regions. The interpreter resolves
+// each bare name against `nativeModules` for the TARGET OS (`--os` flag).
+import { gfxCompute } from gfx;
+import { sameCompute } from samefile;
+import { sharedAlpha } from sharea;
+import { sharedBeta } from shareb;
+
+void checkBare() {
+    if (gfxCompute(1) == null) { printline("gfx stub OK"); }
+    if (sameCompute(1) == null) { printline("samefile stub OK"); }
+    if (sharedAlpha(1) == null) { printline("sharea stub OK"); }
+    if (sharedBeta(1) == null) { printline("shareb stub OK"); }
+}

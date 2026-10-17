@@ -1,0 +1,5 @@
+import * from fakelib;
+
+void main() {
+    printline("qs consumer: " + fakeStatus(1));
+}

@@ -180,7 +180,7 @@ class BuiltinMethods {
         int modRcMc = stat(path, modStMc);
         if (modRcMc != 0) { return nowValueFromEpochMs(0); }
         return nowValueFromEpochMs(modStMc[6] * 1000 + modStMc[7] / 1000000);
-        #off
+        #on WINDOWS
         int[] modFd = new int[40];
         int modH = FindFirstFileA(path, modFd);
         if (modH == -1) { return nowValueFromEpochMs(0); }
@@ -189,6 +189,7 @@ class BuiltinMethods {
         int modHigh = modFd[3] & 0xFFFFFFFF;
         int64 modFt = modHigh * 4294967296 + modLow;
         return nowValueFromEpochMs(modFt / 10000 - 11644473600000);
+        #off
     }
 
     // Epoch-milliseconds to the 7-field `DateTime` CLASS_INST (typeName "DateTime" so
@@ -374,6 +375,18 @@ class BuiltinMethods {
             Value[] result = [];
             for (int i = 0; i < s.strVal.length; i++) {
                 result.add(makeChar(s.strVal[i]));
+            }
+            return makeArray(result);
+        }
+        if (method == "toBytes") {
+            // std/encoding.sr (base64/hex) lowers payloads through
+            // string.toBytes(); the compiled backends have a native arm,
+            // the interpreter serves it here (byte = char code & 0xFF,
+            // matching the bytewise Silver string contract).
+            Value[] result = [];
+            for (int i = 0; i < s.strVal.length; i++) {
+                int64 b = (s.strVal[i].toInt64()) & 0xFF;
+                result.add(makeInt(b));
             }
             return makeArray(result);
         }
@@ -925,6 +938,191 @@ class BuiltinMethods {
         if (method == "isUpper") { return makeBool(ch.isUpper()); }
         if (method == "isWhiteSpace" || method == "isWhitespace") { return makeBool(ch.isWhiteSpace()); }
         return makeNull();
+    }
+
+    // ---- native json module helpers (DOCS/66-67-96 parity) ----
+
+    private static void jsonSkipWs(string s, int[] pos) {
+        while (pos[0] < s.length) {
+            char c = s[pos[0]];
+            if (c == ' ' || c == '\t' || c == '\n' || c == '\r') { pos[0]++; }
+            else { break; }
+        }
+    }
+
+    private static Value jsonParseValue(string s, int[] pos) {
+        jsonSkipWs(s, pos);
+        if (pos[0] >= s.length) { return makeNull(); }
+        char c = s[pos[0]];
+        if (c == '{') { return jsonParseObject(s, pos); }
+        if (c == '[') { return jsonParseArray(s, pos); }
+        if (c == '"') { return makeString(jsonParseString(s, pos)); }
+        if (c == 't') {
+            if (s.substr(pos[0], 4) == "true") { pos[0] += 4; return makeBool(true); }
+            return makeNull();
+        }
+        if (c == 'f') {
+            if (s.substr(pos[0], 5) == "false") { pos[0] += 5; return makeBool(false); }
+            return makeNull();
+        }
+        if (c == 'n') {
+            if (s.substr(pos[0], 4) == "null") { pos[0] += 4; return makeNull(); }
+            return makeNull();
+        }
+        // number: [-]digits[.digits][eE[+-]digits]
+        int start = pos[0];
+        bool isFloat = false;
+        if (c == '-') { pos[0]++; }
+        while (pos[0] < s.length) {
+            char d = s[pos[0]];
+            if (d >= '0' && d <= '9') { pos[0]++; }
+            else if (d == '.' || d == 'e' || d == 'E' || d == '+' || d == '-') {
+                if (d == '.' || d == 'e' || d == 'E') { isFloat = true; }
+                if ((d == '+' || d == '-') && pos[0] > start && (s[pos[0] - 1] == 'e' || s[pos[0] - 1] == 'E')) {
+                    // exponent sign: legal
+                } else if (d == '+' || d == '-') { break; }
+                pos[0]++;
+            }
+            else { break; }
+        }
+        string num = s.substr(start, pos[0] - start);
+        if (num.length == 0 || num == "-") { return makeNull(); }
+        if (isFloat) { return makeFloat(floatStrToF64(num)); }
+        return makeInt(strToInt64Safe(num));
+    }
+
+    private static Value jsonParseObject(string s, int[] pos) {
+        pos[0]++; // '{'
+        dict<string, Value> fields = {};
+        jsonSkipWs(s, pos);
+        if (pos[0] < s.length && s[pos[0]] == '}') { pos[0]++; return makeDict(fields); }
+        while (pos[0] < s.length) {
+            jsonSkipWs(s, pos);
+            string key = jsonParseString(s, pos);
+            jsonSkipWs(s, pos);
+            if (pos[0] < s.length && s[pos[0]] == ':') { pos[0]++; }
+            Value v = jsonParseValue(s, pos);
+            fields[key] = v;
+            jsonSkipWs(s, pos);
+            if (pos[0] < s.length && s[pos[0]] == ',') { pos[0]++; continue; }
+            break;
+        }
+        jsonSkipWs(s, pos);
+        if (pos[0] < s.length && s[pos[0]] == '}') { pos[0]++; }
+        return makeDict(fields);
+    }
+
+    private static Value jsonParseArray(string s, int[] pos) {
+        pos[0]++; // '['
+        Value[] items = [];
+        jsonSkipWs(s, pos);
+        if (pos[0] < s.length && s[pos[0]] == ']') { pos[0]++; return makeArray(items); }
+        while (pos[0] < s.length) {
+            items.add(jsonParseValue(s, pos));
+            jsonSkipWs(s, pos);
+            if (pos[0] < s.length && s[pos[0]] == ',') { pos[0]++; continue; }
+            break;
+        }
+        jsonSkipWs(s, pos);
+        if (pos[0] < s.length && s[pos[0]] == ']') { pos[0]++; }
+        return makeArray(items);
+    }
+
+    private static string jsonParseString(string s, int[] pos) {
+        pos[0]++; // '"'
+        string r = "";
+        while (pos[0] < s.length) {
+            char c = s[pos[0]];
+            if (c == '"') { pos[0]++; break; }
+            if (c == '\\' && pos[0] + 1 < s.length) {
+                char e = s[pos[0] + 1];
+                if (e == 'n') { r += "\n"; pos[0] += 2; continue; }
+                if (e == 't') { r += "\t"; pos[0] += 2; continue; }
+                if (e == 'r') { r += "\r"; pos[0] += 2; continue; }
+                if (e == 'b') { r += "\b"; pos[0] += 2; continue; }
+                if (e == 'f') { r += "\f"; pos[0] += 2; continue; }
+                if (e == '"') { r += "\""; pos[0] += 2; continue; }
+                if (e == '\\') { r += "\\"; pos[0] += 2; continue; }
+                if (e == '/') { r += "/"; pos[0] += 2; continue; }
+                if (e == 'u' && pos[0] + 5 < s.length) {
+                    int code = 0;
+                    bool ok = true;
+                    for (int h = 0; h < 4; h++) {
+                        char hc = s[pos[0] + 2 + h];
+                        int dv = 0;
+                        if (hc >= '0' && hc <= '9') { dv = hc.toInt64() - '0'.toInt64(); }
+                        else if (hc >= 'a' && hc <= 'f') { dv = hc.toInt64() - 'a'.toInt64() + 10; }
+                        else if (hc >= 'A' && hc <= 'F') { dv = hc.toInt64() - 'A'.toInt64() + 10; }
+                        else { ok = false; break; }
+                        code = code * 16 + dv;
+                    }
+                    if (ok) { r += char(code); pos[0] += 6; continue; }
+                }
+                r += e;
+                pos[0] += 2;
+                continue;
+            }
+            r += c;
+            pos[0]++;
+        }
+        return r;
+    }
+
+    private static string jsonEscape(string s) {
+        string r = "";
+        for (int i = 0; i < s.length; i++) {
+            char c = s[i];
+            if (c == '"') { r += "\\\""; }
+            else if (c == '\\') { r += "\\\\"; }
+            else if (c == '\n') { r += "\\n"; }
+            else if (c == '\t') { r += "\\t"; }
+            else if (c == '\r') { r += "\\r"; }
+            else if (c < ' ') { r += c; }
+            else { r += c; }
+        }
+        return r;
+    }
+
+    private static string jsonIndentStr(int64 indent, int depth) {
+        string r = "";
+        for (int i = 0; i < indent * depth; i++) { r += " "; }
+        return r;
+    }
+
+    private static string jsonSerialize(Value v, int64 indent, int depth) {
+        if (v == null) { return "null"; }
+        if (v.tag == VAL_NULL) { return "null"; }
+        if (v.tag == VAL_STRING) { return "\"" + jsonEscape(v.strVal) + "\""; }
+        if (v.tag == VAL_BOOL) { return v.boolVal ? "true" : "false"; }
+        if (v.tag == VAL_INT || v.tag == VAL_FLOAT || v.tag == VAL_CHAR) { return v.toString(); }
+        if (v.tag == VAL_ARRAY) {
+            if (v.arrVal.length == 0) { return "[]"; }
+            string r = "[";
+            for (int i = 0; i < v.arrVal.length; i++) {
+                if (i > 0) { r += ","; }
+                if (indent > 0) { r += "\n" + jsonIndentStr(indent, depth + 1); }
+                r += jsonSerialize(v.arrVal[i], indent, depth + 1);
+            }
+            if (indent > 0) { r += "\n" + jsonIndentStr(indent, depth); }
+            r += "]";
+            return r;
+        }
+        if (v.tag == VAL_DICT || v.tag == VAL_OBJECT) {
+            string[] keys = v.objVal.keys();
+            if (keys.length == 0) { return "{}"; }
+            string r = "{";
+            for (int i = 0; i < keys.length; i++) {
+                if (i > 0) { r += ","; }
+                if (indent > 0) { r += "\n" + jsonIndentStr(indent, depth + 1); }
+                r += "\"" + jsonEscape(keys[i]) + "\":";
+                if (indent > 0) { r += " "; }
+                r += jsonSerialize(v.objVal[keys[i]], indent, depth + 1);
+            }
+            if (indent > 0) { r += "\n" + jsonIndentStr(indent, depth); }
+            r += "}";
+            return r;
+        }
+        return v.toString();
     }
 
     private static Value moduleMethod(Evaluator ev, Value receiver, string method, Value[] args) {
@@ -1858,6 +2056,85 @@ class BuiltinMethods {
                 return makeString(llmai.chat(args[0].strVal, args[1].strVal, args[2].strVal));
             }
             #off
+            return makeNull();
+        }
+        if (mod == "json_module") {
+            // DOCS/66-67-96: json is builtin-reserved, so the std source is
+            // never loaded — parse/stringify/beautify/load answer natively
+            // over interpreter Values (full runtime-type information, which
+            // source-level Silver cannot express: `is <Type>` is not Silver,
+            // see DOCS/275). Mirrors the compiled backends' native arms.
+            if (method == "parse") {
+                if (args.length < 1) { return makeNull(); }
+                int[] pos = [0];
+                Value v = jsonParseValue(args[0].strVal, pos);
+                return v;
+            }
+            if (method == "load") {
+                if (args.length < 1) { return makeNull(); }
+                string content = file.readString(args[0].strVal);
+                int[] pos = [0];
+                return jsonParseValue(content, pos);
+            }
+            if (method == "stringify" || method == "beautify") {
+                Value v = args.length > 0 ? args[0] : makeNull();
+                if (method == "beautify") {
+                    int[] pos = [0];
+                    v = jsonParseValue(v.tag == VAL_STRING ? v.strVal : v.toString(), pos);
+                }
+                int64 indent = 0;
+                if (method == "stringify" && args.length > 1) { indent = args[1].toInt(); }
+                if (method == "beautify") { indent = 2; }
+                // String input with an indent (json.beautify shape,
+                // DOCS/96): the argument is JSON TEXT, not a string value —
+                // parse it first so the pretty form matches the compiled
+                // backends. Compact stringify of a string stays quoted.
+                if (method == "stringify" && v.tag == VAL_STRING && indent > 0) {
+                    int[] pos = [0];
+                    v = jsonParseValue(v.strVal, pos);
+                }
+                return makeString(jsonSerialize(v, indent, 0));
+            }
+            // JsonValue helper surface (DOCS/66): mirrors the compiled
+            // backends' native stdlib json module.
+            if (method == "objectValue") { return makeDict({}); }
+            if (method == "stringValue") {
+                return args.length > 0 ? makeString(args[0].toString()) : makeString("");
+            }
+            if (method == "getString" && args.length > 1) {
+                // NOTE: `d[k].tag` (member read on a dict-index expression)
+                // miscompiles in the self-host backend (yields the cell
+                // address, not the field) — hoist the element into a local
+                // first, the established dodge.
+                if (args[0] == null || args[0].tag != VAL_DICT) { return makeString(""); }
+                string k = args[1].strVal;
+                dict<string, Value> d = args[0].objVal;
+                string[] ks = d.keys();
+                for (int i = 0; i < ks.length; i++) {
+                    Value fv = d[ks[i]];
+                    if (ks[i] == k && fv != null && fv.tag == VAL_STRING) {
+                        return makeString(fv.strVal);
+                    }
+                }
+                return makeString("");
+            }
+            if (method == "getNumber" && args.length > 1) {
+                if (args[0] == null || args[0].tag != VAL_DICT) { return makeInt(0); }
+                string k = args[1].strVal;
+                dict<string, Value> d = args[0].objVal;
+                string[] ks = d.keys();
+                for (int i = 0; i < ks.length; i++) {
+                    Value fv = d[ks[i]];
+                    if (ks[i] == k && fv != null) { return makeInt(fv.toInt()); }
+                }
+                return makeInt(0);
+            }
+            if (method == "set" && args.length > 2) {
+                if (args[0] != null && args[0].tag == VAL_DICT) {
+                    args[0].objVal[args[1].strVal] = args[2];
+                }
+                return args.length > 0 ? args[0] : makeNull();
+            }
             return makeNull();
         }
         if (mod == "keyboard_module") {

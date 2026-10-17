@@ -1,0 +1,11 @@
+{
+    name: "wrongside_native",
+    version: "0.1.0",
+    license: "test",
+    entry: "wrongside.sr",
+    sources: ["wrongside.sr"],
+    nativeModules: [
+        { "module": "winonly", "windows": "fake-winonly.dll" }
+    ],
+    output: "wrongside.exe"
+}
