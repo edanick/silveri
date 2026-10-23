@@ -1602,6 +1602,13 @@ void main() {
 
     MemoryGuard guard = new MemoryGuard();
     guard.checkProgram(program);
+    // Non-fatal flow diagnostics (warning-channel concept): unreachable
+    // code and other suspicious-but-legal shapes report to stderr after a
+    // successful check and never stop interpretation (mirrors the
+    // compilers' warning stream).
+    for (int gwI = 0; gwI < guard.warnings.length; gwI++) {
+        eprintln("warning: " + guard.warnings[gwI]);
+    }
 
     // Startup retention: drop every parse artifact before execution. All
     // diagnostics above already consumed messages(); register() copied what
