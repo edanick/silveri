@@ -2,6 +2,12 @@ mod export guard;
 
 import ast;
 
+// Null-state tri-state (null-state-flow concept): the null-state of
+// evaluating an expression — non-null, maybe-null, or no proof either way.
+const int GNN_MAYBE_NULL = 0;
+const int GNN_NON_NULL = 1;
+const int GNN_UNKNOWN = -1;
+
 class GuardVar {
     public prop string name;
     public prop string typeHint;
@@ -42,6 +48,39 @@ class MemoryGuard {
     private prop string[] nonNullNames;
     private prop string[] typeNames;
     private prop string currentReturnType;
+    // Enum variant tables (exhaustiveness coverage concept): parallel
+    // arrays — enumNames/enumStarts/enumCounts index into the flat
+    // enumVariantNames collected from the parsed ND_ENUM_DEF declarations
+    // (silveri stores the variants joined with '|' in strVal).
+    private prop string[] enumNames;
+    private prop int[] enumStarts;
+    private prop int[] enumCounts;
+    private prop string[] enumVariantNames;
+    // Free-function signature tables (argument-type analysis):
+    // funcSigNames/funcSigStarts/funcSigCounts index into the flat
+    // funcSigParamTypes/funcSigParamNames, collected from top-level ND_FUNC
+    // declarations before any body is checked. Member calls never resolve
+    // against it (their receiver types are not tracked here) and stay
+    // silent.
+    private prop string[] funcSigNames;
+    private prop int[] funcSigStarts;
+    private prop int[] funcSigCounts;
+    private prop string[] funcSigParamTypes;
+    private prop string[] funcSigParamNames;
+    // Assigned-but-never-used tracking (definite-assignment
+    // _usedVariables/_writtenVariables concept, warning grade): candidates
+    // hold locals declared in the function being checked (parallel
+    // name/line/col arrays), usedNames the names read anywhere in it,
+    // suppressedNames the excluded ones (redeclared, fixed, fn-typed,
+    // shadowing a global). False at module level: module-level
+    // declarations are globals and never become candidates.
+    private prop string[] candNames;
+    private prop int[] candLines;
+    private prop int[] candCols;
+    private prop string[] usedNames;
+    private prop string[] suppressedNames;
+    private prop bool unusedTracking;
+    private prop string[] globalNames;
     public prop string[] warnings;
 
     construct {
@@ -52,6 +91,22 @@ class MemoryGuard {
         this.nonNullNames = [];
         this.typeNames = [];
         this.currentReturnType = "";
+        this.enumNames = [];
+        this.enumStarts = [];
+        this.enumCounts = [];
+        this.enumVariantNames = [];
+        this.funcSigNames = [];
+        this.funcSigStarts = [];
+        this.funcSigCounts = [];
+        this.funcSigParamTypes = [];
+        this.funcSigParamNames = [];
+        this.candNames = [];
+        this.candLines = [];
+        this.candCols = [];
+        this.usedNames = [];
+        this.suppressedNames = [];
+        this.unusedTracking = false;
+        this.globalNames = [];
         this.warnings = [];
     }
 
@@ -132,6 +187,10 @@ class MemoryGuard {
         v.isAlias = aliasFlag;
         v.line = line;
         v.col = col;
+        // A fresh binding has no null-state proof yet; a stale fact for a
+        // shadowing outer name must not survive the declaration
+        // (null-state-flow re-initializes the slot on declaration).
+        this.dropNonNull(name);
         this.vars.add(v);
     }
 
@@ -230,6 +289,76 @@ class MemoryGuard {
 
     private void dropNarrowings(string[] names) {
         for (int i = 0; i < names.length; i++) { this.dropNonNull(names[i]); }
+    }
+
+    // Null-state snapshots (null-state-flow join-point concept): the
+    // fact set is copied per branch entry and merged at the convergence —
+    // a fact survives only when it holds on every path that completes the
+    // construct. Terminal branches never reach the join
+    // (Meet(Unreachable, X) = X).
+    private string[] snapshotNonNull() {
+        string[] out = [];
+        for (int i = 0; i < this.nonNullNames.length; i++) { out.add(this.nonNullNames[i]); }
+        return out;
+    }
+
+    private void addNonNullFact(string name) {
+        if (!this.isNonNullHere(name)) { this.nonNullNames.add(name); }
+    }
+
+    // Intersection of two fact sets: the Meet at a two-path join.
+    private string[] meetNonNull(string[] a, string[] b) {
+        string[] out = [];
+        for (int i = 0; i < a.length; i++) {
+            if (b.contains(a[i])) { out.add(a[i]); }
+        }
+        return out;
+    }
+
+    // A copy of `base` plus `facts` added: the implicit no-else path of an
+    // if carries the condition's false-facts on top of the pre-if state.
+    private string[] copyWithFacts(string[] base, string[] facts) {
+        string[] out = [];
+        for (int i = 0; i < base.length; i++) { out.add(base[i]); }
+        for (int i = 0; i < facts.length; i++) {
+            if (!out.contains(facts[i])) { out.add(facts[i]); }
+        }
+        return out;
+    }
+
+    // Null-state of evaluating `expr` (null-state-flow concept):
+    // GNN_NON_NULL — the value is definitely not null; GNN_MAYBE_NULL — it
+    // may be null; GNN_UNKNOWN — no proof either way (calls with unknown
+    // returns, class values, member reads). A nullable identifier narrowed
+    // by the flow proves non-null; a bare nullable does not. Value types
+    // (primitives, arrays, dicts) can never hold null. `l ?? r` and
+    // `l ??= r` are null only when both sides are, so a non-null right
+    // side makes the whole expression non-null.
+    private int exprProvesNonNull(Node e) {
+        int k = e.kind;
+        if (k == ND_NULL_LIT) { return GNN_MAYBE_NULL; }
+        if (k == ND_PAREN) { return this.exprProvesNonNull(e.child(0)); }
+        if (k == ND_INT_LIT || k == ND_FLOAT_LIT || k == ND_STRING_LIT || k == ND_CHAR_LIT || k == ND_BOOL_LIT) { return GNN_NON_NULL; }
+        // `new T(...)`: a fresh instance is never null.
+        if (k == ND_NEW || k == ND_NEW_INIT) { return GNN_NON_NULL; }
+        if (k == ND_IDENT) {
+            if (this.isNonNullHere(e.name)) { return GNN_NON_NULL; }
+            int idx = this.findVar(e.name);
+            if (idx < 0) { return GNN_UNKNOWN; }
+            string t = this.vars[idx].typeHint;
+            if (t.length == 0 || t == "var" || t == "void" || t == "void ()") { return GNN_UNKNOWN; }
+            if (t.endsWith("?")) { return GNN_MAYBE_NULL; }
+            if (t.endsWith("[]") || this.isPrimitiveSpelling(t) || this.dictKeyOf(t).length > 0) { return GNN_NON_NULL; }
+            return GNN_UNKNOWN;
+        }
+        if (k == ND_BINARY && (e.op == OP_COALESCE || e.op == OP_COALESCE_ASSIGN)) {
+            int l = this.exprProvesNonNull(e.child(0));
+            int r = this.exprProvesNonNull(e.child(1));
+            if (l == GNN_NON_NULL || r == GNN_NON_NULL) { return GNN_NON_NULL; }
+            if (l == GNN_MAYBE_NULL && r == GNN_MAYBE_NULL) { return GNN_MAYBE_NULL; }
+            return GNN_UNKNOWN;
+        }
+        return GNN_UNKNOWN;
     }
 
     // Substring by character loop (mirrors the self-host guard's gsSlice):
@@ -417,6 +546,10 @@ class MemoryGuard {
     private void checkRead(Node n) {
         string name = n.name;
         if (name == "this") { return; }
+        // Any value use marks the name read for the assigned-but-never-used
+        // report (the only appearance that does not is a plain assignment
+        // target).
+        this.markLocalUsed(name);
         int idx = this.findVar(name);
         if (idx < 0) { return; }
         GuardVar v = this.vars[idx];
@@ -441,6 +574,8 @@ class MemoryGuard {
     private void checkPeek(Node n) {
         string name = n.name;
         if (name == "this") { return; }
+        // An alias declaration reads its target: counts as a use.
+        this.markLocalUsed(name);
         int idx = this.findVar(name);
         if (idx < 0) { return; }
         GuardVar v = this.vars[idx];
@@ -457,6 +592,8 @@ class MemoryGuard {
         if (op.kind == ND_IDENT) {
             string name = op.name;
             if (name != "this") {
+                // Taking an address escapes the value: counts as a use.
+                this.markLocalUsed(name);
                 int idx = this.findVar(name);
                 if (idx >= 0) {
         GuardVar v = this.vars[idx];
@@ -484,6 +621,8 @@ class MemoryGuard {
 
     private void killMoveSource(Node src) {
         if (src.kind == ND_IDENT && src.name != "this") {
+            // A move reads its source before killing it: counts as a use.
+            this.markLocalUsed(src.name);
             int si = this.findVar(src.name);
             if (si >= 0) {
                 GuardVar sv = this.vars[si];
@@ -504,6 +643,10 @@ class MemoryGuard {
 
     private void checkMove(Node n) {
         Node dest = n.child(0);
+        // Null-state of the moved value (null-state-flow assignment
+        // propagation), sampled before the target's fact dies in the
+        // destination handling below: `x <- nonnull` proves `x` non-null.
+        int srcProof = this.exprProvesNonNull(n.child(1));
         if (dest.kind == ND_IDENT && dest.name != "this") {
             int di = this.findVar(dest.name);
             if (di >= 0) {
@@ -515,6 +658,9 @@ class MemoryGuard {
             this.checkExpr(dest);
         }
         this.killMoveSource(n.child(1));
+        if (srcProof == GNN_NON_NULL && dest.kind == ND_IDENT && dest.name != "this") {
+            this.addNonNullFact(dest.name);
+        }
     }
 
     private void checkPunning(GuardVar v, Node init, Node lhs) {
@@ -546,17 +692,30 @@ class MemoryGuard {
         Node lhs = n.child(0);
         Node rhs = n.child(1);
         bool isCompound = n.op != OP_ASSIGN && n.op != OP_COALESCE_ASSIGN;
+        // Null-state of the assigned value (null-state-flow assignment
+        // propagation), sampled before the target's fact dies below: a
+        // plain `=` carries the source value verbatim, so a non-null source
+        // proves the target non-null. Compound assignments read the old
+        // target first (`x += 1` is `x = x + 1`) and gain nothing; `??=`
+        // leaves the target non-null when its right side is.
+        int rhsProof = this.exprProvesNonNull(rhs);
         bool lhsNullable = false;
         if (lhs.kind == ND_IDENT && lhs.name != "this") {
             // Compound assignments read the target before writing
             // (`x += 1` is `x = x + 1`): an uninitialized target is an
             // unassigned read, not a fresh initialization. (`x++`/`x--`
-            // take the non-assign path and read the operand directly.)
+            // lower to `x += 1`/`x -= 1` and take this same path.)
             if (isCompound) {
+                this.markLocalUsed(lhs.name);
                 int ci = this.findVar(lhs.name);
                 if (ci >= 0 && !this.vars[ci].isInit) {
                     this.fail("UnassignedVariableCallException", lhs.line, lhs.col, lhs.name, "compound assignment reads '" + lhs.name + "' before it is assigned on all paths");
                 }
+            }
+            // `x ??= y` reads its target (the null state decides whether
+            // the right side runs): counts as a use too.
+            if (n.op == OP_COALESCE_ASSIGN) {
+                this.markLocalUsed(lhs.name);
             }
             if (this.isConstName(lhs.name)) {
                 this.fail("InvalidAssignment", lhs.line, lhs.col, lhs.name, "cannot write to a const");
@@ -585,6 +744,9 @@ class MemoryGuard {
                 v.isInit = true;
                 v.isAlive = true;
                 this.checkPunning(v, rhs, lhs);
+                if (rhsProof == GNN_NON_NULL && !isCompound) {
+                    this.addNonNullFact(lhs.name);
+                }
             }
         } else if (lhs.kind == ND_MEMBER) {
             this.checkExpr(lhs.child(0));
@@ -603,6 +765,16 @@ class MemoryGuard {
     private bool isConstName(string name) {
         for (int i = 0; i < this.constNames.length; i++) {
             if (this.constNames[i] == name) { return true; }
+        }
+        return false;
+    }
+
+    // Module-level names (globals): a local shadowing one is suppressed
+    // from the never-used report — the name is "used" by existing as a
+    // global, and a warning would be a false positive.
+    private bool isGlobalName(string name) {
+        for (int i = 0; i < this.globalNames.length; i++) {
+            if (this.globalNames[i] == name) { return true; }
         }
         return false;
     }
@@ -640,6 +812,7 @@ class MemoryGuard {
         bool nullable = this.endsWithQ(n.typeHint);
         bool onceFlag = n.isOnce;
         bool fixedFlag = n.isFixed;
+        this.trackLocalDecl(n);
         if (n.childCount() == 0) {
             bool autoInit = !this.isPrimitive(n.typeHint);
             this.declareVar(name, n.typeHint, autoInit, true, onceFlag, fixedFlag, nullable, false, n.line, n.col);
@@ -647,14 +820,22 @@ class MemoryGuard {
         }
         Node init = n.child(0);
         if (init.kind == ND_BINARY && init.op == OP_MOVE) {
+            // Null-state of the moved initializer: `int? x <- nonnull`
+            // starts non-null (null-state-flow declaration-state concept).
+            int srcProof = this.exprProvesNonNull(init.child(1));
             this.killMoveSource(init.child(1));
             this.declareVar(name, n.typeHint, true, true, onceFlag, fixedFlag, nullable, false, n.line, n.col);
+            if (srcProof == GNN_NON_NULL) { this.addNonNullFact(name); }
             return;
         }
         this.checkInitCompat(n, init);
         if (nullable) { this.nullSafeDepth++; }
         this.checkExpr(init);
         if (nullable) { this.nullSafeDepth--; }
+        // Null-state of the initializer, for the declaration fact below
+        // (sampled before the fresh binding clears the name's stale fact):
+        // `int? x = 5` starts non-null; `int? x = src()` starts maybe-null.
+        int initProof = this.exprProvesNonNull(init);
         // Assignability relations: the initializer's inferred type must
         // agree with the declared type's components (nullable inner,
         // array element, dict key/value); strings never interchange with
@@ -664,6 +845,7 @@ class MemoryGuard {
             this.checkTypesCompatible(n.typeHint, initType, n, name);
         }
         this.declareVar(name, n.typeHint, true, true, onceFlag, fixedFlag, nullable, false, n.line, n.col);
+        if (initProof == GNN_NON_NULL) { this.addNonNullFact(name); }
     }
 
     private void checkDestruct(Node n) {
@@ -692,6 +874,9 @@ class MemoryGuard {
                 v.aliasOf = tgt.name;
                 v.line = n.line;
                 v.col = n.col;
+                // A fresh alias binding clears a stale fact for a shadowing
+                // outer name (the other branches go through declareVar).
+                this.dropNonNull(aname);
                 this.vars.add(v);
             } else {
                 this.checkExpr(tgt);
@@ -858,6 +1043,67 @@ class MemoryGuard {
         }
     }
 
+    // Assigned-but-never-used tracking (unused-local analog,
+    // warning grade): every identifier read marks the name used — the only
+    // appearance that does not is a plain assignment target (compound
+    // assignments and `??=` read the target, so they count). The set is
+    // name-based: any read of the name anywhere in the function counts,
+    // even through shadowing scopes.
+    private void markLocalUsed(string name) {
+        if (!this.unusedTracking) { return; }
+        if (!this.usedNames.contains(name)) { this.usedNames.add(name); }
+    }
+
+    private void suppressUnusedLocal(string name) {
+        if (!this.suppressedNames.contains(name)) { this.suppressedNames.add(name); }
+    }
+
+    // Candidacy for the never-used report: plain locals only. Fixed vars,
+    // fn-typed (`void ()`) declarations, names shadowing a global, and
+    // redeclared names are suppressed; pattern/loop/catch binders go
+    // through declareVar and never become candidates.
+    private void trackLocalDecl(Node n) {
+        if (!this.unusedTracking) { return; }
+        if (this.candNames.contains(n.name) || this.suppressedNames.contains(n.name)) {
+            this.suppressUnusedLocal(n.name);
+            return;
+        }
+        if (n.isFixed || n.typeHint == "void" || n.typeHint == "void ()" || this.isGlobalName(n.name)) {
+            this.suppressUnusedLocal(n.name);
+            return;
+        }
+        this.candNames.add(n.name);
+        this.candLines.add(n.line);
+        this.candCols.add(n.col);
+    }
+
+    // End-of-function report (warning grade, never fatal): declaration
+    // candidates never read on any path of this function, position-sorted
+    // for deterministic output.
+    private void reportUnusedLocals() {
+        if (!this.unusedTracking) { return; }
+        int[] order = [];
+        for (int i = 0; i < this.candNames.length; i++) {
+            if (this.usedNames.contains(this.candNames[i])) { continue; }
+            if (this.suppressedNames.contains(this.candNames[i])) { continue; }
+            order.add(i);
+        }
+        for (int a = 0; a < order.length; a++) {
+            int best = a;
+            for (int b = a + 1; b < order.length; b++) {
+                if (this.candLines[order[b]] < this.candLines[order[best]]
+                    || (this.candLines[order[b]] == this.candLines[order[best]] && this.candCols[order[b]] < this.candCols[order[best]])) { best = b; }
+            }
+            int tmp = order[a];
+            order[a] = order[best];
+            order[best] = tmp;
+        }
+        for (int a = 0; a < order.length; a++) {
+            int i = order[a];
+            this.warnings.add("'" + this.candNames[i] + "' is assigned but its value is never used at line " + (string)this.candLines[i] + ", column " + (string)this.candCols[i]);
+        }
+    }
+
     private void checkBlock(Node n) {
         this.pushScope();
         this.checkStmtList(n);
@@ -867,29 +1113,55 @@ class MemoryGuard {
     private void checkIf(Node n) {
         Node cond = n.child(0);
         this.checkExpr(cond);
+        // Constant-condition reachability (constant-fold
+        // concept, warning grade): a literal-false condition makes the
+        // then-body dead code. Literal `true` stays silent — guaranteed-run
+        // blocks are an ordinary idiom.
+        if (cond.kind == ND_BOOL_LIT && !cond.boolVal) {
+            this.warnings.add("condition is always false: this body never executes at line " + (string)n.line + ", column " + (string)n.col);
+        }
         string[] thenNarrowed = [];
         string[] elseNarrowed = [];
         this.collectNarrowings(cond, true, thenNarrowed);
         this.collectNarrowings(cond, false, elseNarrowed);
         GuardVar[] before = this.snapshot();
+        string[] savedNN = this.snapshotNonNull();
         this.pushScope();
         this.addNarrowings(thenNarrowed);
         this.checkStmt(n.child(1));
-        this.dropNarrowings(thenNarrowed);
+        string[] thenNN = this.snapshotNonNull();
+        bool thenTerminal = this.stmtListIsTerminal(n.child(1));
         this.popScope();
+        this.nonNullNames = savedNN;
         GuardVar[] afterThen = this.snapshot();
         this.vars = before;
         GuardVar[] afterElse = [];
+        // Join-point merge (null-state-flow `Meet` at branch convergence):
+        // a fact survives the if only when it holds on every path that
+        // completes it. Terminal branches never reach the join
+        // (`Meet(Unreachable, X) = X`), so their states drop out; a missing
+        // else joins with the condition's false-facts on the pre-if state.
+        string[] joined = [];
+        bool haveJoin = false;
+        if (!thenTerminal) { joined = thenNN; haveJoin = true; }
         if (n.childCount() >= 3) {
             this.pushScope();
             this.addNarrowings(elseNarrowed);
             this.checkStmt(n.child(2));
-            this.dropNarrowings(elseNarrowed);
+            if (!this.stmtListIsTerminal(n.child(2))) {
+                string[] elseNN = this.snapshotNonNull();
+                if (!haveJoin) { joined = elseNN; haveJoin = true; } else { joined = this.meetNonNull(joined, elseNN); }
+            }
             this.popScope();
+            this.nonNullNames = savedNN;
             afterElse = this.snapshot();
         } else {
             afterElse = this.snapshot();
+            string[] implicitPath = this.copyWithFacts(savedNN, elseNarrowed);
+            if (!haveJoin) { joined = implicitPath; haveJoin = true; } else { joined = this.meetNonNull(joined, implicitPath); }
         }
+        if (!haveJoin) { joined = savedNN; }
+        this.nonNullNames = joined;
         for (int i = 0; i < this.vars.length; i++) {
             GuardVar v = this.vars[i];
             v.isInit = afterThen[i].isInit && afterElse[i].isInit;
@@ -900,16 +1172,36 @@ class MemoryGuard {
 
     private void checkWhile(Node n) {
         this.checkExpr(n.child(0));
+        // Constant-condition reachability: `while (false)` never runs its
+        // body — `while (true)` is the intentional-infinite-loop idiom and
+        // stays silent.
+        if (n.child(0).kind == ND_BOOL_LIT && !n.child(0).boolVal) {
+            this.warnings.add("condition is always false: this body never executes at line " + (string)n.line + ", column " + (string)n.col);
+        }
         GuardVar[] before = this.snapshot();
-        this.pushScope();
+        string[] savedNN = this.snapshotNonNull();
         // While the loop runs, the condition holds: nullable conditions
         // like `while (x != null)` narrow `x` inside the body.
         string[] narrowed = [];
         this.collectNarrowings(n.child(0), true, narrowed);
+        // Exit facts (null-state-flow loop back-edge concept): every normal
+        // exit re-tests the condition and finds it false, so the
+        // condition's false-facts (`while (x == null)` -> x non-null after
+        // the loop) hold at the join. A `break` exits mid-body without
+        // re-testing, so a body containing one forgoes the exit facts.
+        string[] exitNarrowed = [];
+        if (!this.stmtListContainsBreak(n.child(1))) {
+            this.collectNarrowings(n.child(0), false, exitNarrowed);
+        }
+        this.pushScope();
         this.addNarrowings(narrowed);
         this.checkStmt(n.child(1));
-        this.dropNarrowings(narrowed);
+        string[] bodyNN = this.snapshotNonNull();
         this.popScope();
+        // Join: the zero-iteration path contributes the pre-loop state, the
+        // >=1-iteration path the body's exit state; both then gain the exit
+        // facts (they hold at every condition re-test).
+        this.nonNullNames = this.copyWithFacts(this.meetNonNull(savedNN, bodyNN), exitNarrowed);
         this.vars = before;
     }
 
@@ -928,8 +1220,14 @@ class MemoryGuard {
         this.checkExpr(n.child(1));
         this.pushScope();
         this.checkStmt(n.child(3));
+        string[] bodyNN = this.snapshotNonNull();
         this.popScope();
         this.vars = before;
+        // Historical outflow kept deliberately: loop-body null-state flows
+        // out of for loops (a guaranteed-run loop's body facts hold after
+        // it; joining with the entry state would drop facts such programs
+        // rely on).
+        this.nonNullNames = bodyNN;
         this.checkExpr(n.child(2));
         this.popScope();
     }
@@ -941,7 +1239,10 @@ class MemoryGuard {
         string vn = n.name;
         this.declareVar(vn, n.typeHint, true, true, false, false, this.endsWithQ(n.typeHint), false, n.line, n.col);
         this.checkStmt(n.child(2));
+        string[] bodyNN = this.snapshotNonNull();
         this.popScope();
+        // Like the C-style for: the body's exit state flows out.
+        this.nonNullNames = bodyNN;
     }
 
     private void checkForeach(Node n) {
@@ -950,13 +1251,20 @@ class MemoryGuard {
         string vn = n.name;
         this.declareVar(vn, n.typeHint, true, true, false, false, this.endsWithQ(n.typeHint), false, n.line, n.col);
         this.checkStmt(n.child(1));
+        string[] bodyNN = this.snapshotNonNull();
         this.popScope();
+        // Like the C-style for: the body's exit state flows out.
+        this.nonNullNames = bodyNN;
     }
 
     private void checkTryCatch(Node n) {
+        string[] savedNN = this.snapshotNonNull();
         this.pushScope();
         this.checkStmt(n.child(0));
+        bool bodyTerminal = this.stmtListIsTerminal(n.child(0));
+        string[] tryNN = this.snapshotNonNull();
         this.popScope();
+        this.nonNullNames = savedNN;
         GuardVar[] afterTry = this.snapshot();
         this.vars = afterTry;
         this.pushScope();
@@ -965,6 +1273,8 @@ class MemoryGuard {
             this.declareVar(cv, n.typeHint, true, true, false, false, this.endsWithQ(n.typeHint), false, n.line, n.col);
         }
         this.checkStmt(n.child(1));
+        string[] catchNN = this.snapshotNonNull();
+        bool catchTerminal = this.stmtListIsTerminal(n.child(1));
         this.popScope();
         GuardVar[] afterCatch = this.snapshot();
         for (int i = 0; i < this.vars.length; i++) {
@@ -973,10 +1283,31 @@ class MemoryGuard {
             v.isAlive = afterTry[i].isAlive || afterCatch[i].isAlive;
             v.holdsAddress = afterTry[i].holdsAddress || afterCatch[i].holdsAddress;
         }
+        // Join (null-state-flow try/catch convergence): the statement
+        // completes via the body's end or the catch's end; a fact must hold
+        // on both. Terminal paths never reach the join.
+        if (cv.length > 0) {
+            string[] joined = [];
+            bool haveJoin = false;
+            if (!bodyTerminal) { joined = tryNN; haveJoin = true; }
+            if (!catchTerminal) {
+                if (!haveJoin) { joined = catchNN; haveJoin = true; } else { joined = this.meetNonNull(joined, catchNN); }
+            }
+            if (!haveJoin) { joined = savedNN; }
+            this.nonNullNames = joined;
+        } else {
+            // try/finally (no catch): normal completion is the body's end
+            // state; an exception leaves the function.
+            if (bodyTerminal) { this.nonNullNames = savedNN; } else { this.nonNullNames = tryNN; }
+        }
         if (n.hasFinally && n.childCount() >= 3) {
+            // Facts set inside the finally body die with it (the join above
+            // already decided the statement's exit state).
+            string[] preFinally = this.snapshotNonNull();
             this.pushScope();
             this.checkStmt(n.child(2));
             this.popScope();
+            this.nonNullNames = preFinally;
         }
     }
 
@@ -992,16 +1323,30 @@ class MemoryGuard {
 
     private void checkMatchStmt(Node n) {
         this.checkExpr(n.child(0));
+        this.checkEnumExhaustiveMatch(n);
         GuardVar[] before = this.snapshot();
+        string[] savedNN = this.snapshotNonNull();
         GuardVar[] merged = this.snapshot();
         for (int j = 0; j < merged.length; j++) { merged[j].isInit = true; }
         bool hasDefault = false;
+        // Join-point merge (null-state-flow Meet): every non-terminal arm's
+        // exit state must agree; without a wildcard arm the no-match
+        // fall-through joins with the pre-match state. Each arm is isolated
+        // to the pre-match facts so arm-local facts do not leak into a
+        // sibling.
+        string[] joined = [];
+        bool haveJoin = false;
         for (int i = 1; i < n.childCount(); i++) {
             Node arm = n.child(i);
             if (arm.childCount() < 2) { continue; }
             Node pat = arm.child(0);
             if (pat.name == "_") { hasDefault = true; }
+            this.nonNullNames = savedNN;
             this.checkMatchBody(arm.child(1));
+            if (!(arm.child(1).kind == ND_BLOCK && this.stmtListIsTerminal(arm.child(1)))) {
+                string[] armNN = this.snapshotNonNull();
+                if (!haveJoin) { joined = armNN; haveJoin = true; } else { joined = this.meetNonNull(joined, armNN); }
+            }
             GuardVar[] after = this.snapshot();
             for (int j = 0; j < this.vars.length; j++) {
                 merged[j].isInit = merged[j].isInit && after[j].isInit;
@@ -1016,8 +1361,10 @@ class MemoryGuard {
                 merged[i].isAlive = merged[i].isAlive || before[i].isAlive;
                 merged[i].holdsAddress = merged[i].holdsAddress || before[i].holdsAddress;
             }
+            if (!haveJoin) { joined = savedNN; haveJoin = true; } else { joined = this.meetNonNull(joined, savedNN); }
         }
         this.vars = merged;
+        if (haveJoin) { this.nonNullNames = joined; }
     }
 
     // Switch node shape: child(0) = subject, then arm children each
@@ -1030,7 +1377,9 @@ class MemoryGuard {
     // branches plus the pre-switch state, like if-without-else.
     private void checkSwitch(Node n) {
         this.checkExpr(n.child(0));
+        this.checkEnumExhaustiveSwitch(n);
         GuardVar[] before = this.snapshot();
+        string[] savedNN = this.snapshotNonNull();
         int total = n.childCount();
         int elseArm = -1;
         for (int i = 1; i < total; i++) {
@@ -1045,11 +1394,22 @@ class MemoryGuard {
             aliveAny.add(false);
             addrAny.add(false);
         }
+        // Join-point merge (null-state-flow Meet): every non-terminal case
+        // and else exit state must agree; without an else the no-match
+        // path joins with the pre-switch state. Terminal branches never
+        // reach the join.
+        string[] joined = [];
+        bool haveJoin = false;
         if (hasElse) {
             this.vars = before;
             this.pushScope();
             this.checkMatchBody(n.child(elseArm).child(1));
+            if (!this.stmtListIsTerminal(n.child(elseArm).child(1))) {
+                joined = this.snapshotNonNull();
+                haveJoin = true;
+            }
             this.popScope();
+            this.nonNullNames = savedNN;
             for (int b = 0; b < this.vars.length; b++) {
                 initOk[b] = this.vars[b].isInit;
                 aliveAny[b] = this.vars[b].isAlive;
@@ -1061,9 +1421,14 @@ class MemoryGuard {
             Node arm = n.child(ci);
             if (arm.childCount() < 2) { continue; }
             this.vars = before;
+            this.nonNullNames = savedNN;
             this.checkExpr(arm.child(0));
             this.pushScope();
             this.checkMatchBody(arm.child(1));
+            if (!this.stmtListIsTerminal(arm.child(1))) {
+                string[] caseNN = this.snapshotNonNull();
+                if (!haveJoin) { joined = caseNN; haveJoin = true; } else { joined = this.meetNonNull(joined, caseNN); }
+            }
             this.popScope();
             for (int b = 0; b < this.vars.length; b++) {
                 initOk[b] = initOk[b] && this.vars[b].isInit;
@@ -1075,6 +1440,7 @@ class MemoryGuard {
             // No-match path: control falls past the switch with the
             // pre-switch state (liveness only; initialization stays
             // unassigned on that path by the merge above).
+            if (!haveJoin) { joined = savedNN; haveJoin = true; } else { joined = this.meetNonNull(joined, savedNN); }
             for (int b = 0; b < this.vars.length; b++) {
                 if (before[b].isAlive) { aliveAny[b] = true; }
                 if (before[b].holdsAddress) { addrAny[b] = true; }
@@ -1086,10 +1452,168 @@ class MemoryGuard {
             this.vars[b].isAlive = aliveAny[b];
             this.vars[b].holdsAddress = addrAny[b];
         }
+        if (!haveJoin) { joined = savedNN; }
+        this.nonNullNames = joined;
     }
 
     private bool isArithOp(int op) {
         return op == OP_ADD || op == OP_SUB || op == OP_MUL || op == OP_DIV || op == OP_MOD || op == OP_ADD_ASSIGN || op == OP_SUB_ASSIGN || op == OP_MUL_ASSIGN || op == OP_DIV_ASSIGN || op == OP_SHL || op == OP_SHR || op == OP_BIT_AND || op == OP_BIT_OR || op == OP_BIT_XOR;
+    }
+
+    private int enumIndexOf(string name) {
+        for (int i = 0; i < this.enumNames.length; i++) {
+            if (this.enumNames[i] == name) { return i; }
+        }
+        return -1;
+    }
+
+    // The enum type name of a switch/match subject, or "" when the subject
+    // is not a known-enum-typed identifier (unknown subjects are never
+    // judged — no guessing, no false warnings).
+    private string enumTypeOfSubject(Node e) {
+        while (e.kind == ND_PAREN) { e = e.child(0); }
+        if (e.kind != ND_IDENT) { return ""; }
+        int idx = this.findVar(e.name);
+        if (idx < 0) { return ""; }
+        string t = this.vars[idx].typeHint;
+        if (this.enumIndexOf(t) >= 0) { return t; }
+        return "";
+    }
+
+    // Exhaustiveness warning (coverage check, warning grade) over the
+    // collected variant table: only a provably partial enumeration warns —
+    // the callers silence the check for wildcards and undecodable covers.
+    private void warnEnumNotExhaustive(string en, string[] covered, int line, int col) {
+        int ei = this.enumIndexOf(en);
+        if (ei < 0) { return; }
+        string[] missing = [];
+        for (int v = 0; v < this.enumCounts[ei]; v++) {
+            string variant = this.enumVariantNames[this.enumStarts[ei] + v];
+            if (!covered.contains(variant)) { missing.add(variant); }
+        }
+        if (missing.length == 0) { return; }
+        string list = "";
+        for (int m = 0; m < missing.length; m++) {
+            if (m > 0) { list += ", "; }
+            list += "'" + missing[m] + "'";
+        }
+        this.warnings.add("switch on enum '" + en + "' does not cover " + list + " at line " + (string)line + ", column " + (string)col);
+    }
+
+    // Switch statement exhaustiveness (coverage check): coverage is counted
+    // only from dotted `EnumName.Variant` case values; an else/default body
+    // covers everything; any undecodable case value silences the check.
+    private void checkEnumExhaustiveSwitch(Node n) {
+        string en = this.enumTypeOfSubject(n.child(0));
+        if (en.length == 0) { return; }
+        int total = n.childCount();
+        string[] covered = [];
+        for (int ci = 1; ci < total; ci++) {
+            Node arm = n.child(ci);
+            if (arm.name == "else") { return; }
+            if (arm.childCount() < 1) { return; }
+            Node v = arm.child(0);
+            if (v.kind == ND_MEMBER && v.childCount() > 0 && v.child(0).kind == ND_IDENT && v.child(0).name == en) {
+                if (!covered.contains(v.name)) { covered.add(v.name); }
+                continue;
+            }
+            return;
+        }
+        this.warnEnumNotExhaustive(en, covered, n.line, n.col);
+    }
+
+    // Match (statement or expression) exhaustiveness (coverage check):
+    // dotted `EnumName.Variant` patterns count; a `_` wildcard covers
+    // everything; any undecodable pattern silences the check.
+    private void checkEnumExhaustiveMatch(Node m) {
+        string en = this.enumTypeOfSubject(m.child(0));
+        if (en.length == 0) { return; }
+        string[] covered = [];
+        for (int i = 1; i < m.childCount(); i++) {
+            Node arm = m.child(i);
+            if (arm.childCount() < 2) { return; }
+            Node pat = arm.child(0);
+            if (pat.kind == ND_NULL_LIT && pat.name == "_") { return; }
+            if (pat.kind == ND_IDENT && pat.name.startsWith(en + ".") && pat.name.length > en.length + 1) {
+                string variant = this.gSlice(pat.name, en.length + 1, pat.name.length);
+                if (!covered.contains(variant)) { covered.add(variant); }
+                continue;
+            }
+            return;
+        }
+        this.warnEnumNotExhaustive(en, covered, m.line, m.col);
+    }
+
+    // A fundamental (primitive) parameter spelling — the only targets of
+    // the nullable-argument check (class-typed, array and dict parameters
+    // are not judged).
+    private bool isFundamentalParamType(string t) {
+        return this.isNumericTypeName(t) || t == "bool" || t == "char" || t == "string";
+    }
+
+    // "an int" / "a string" — the parser owns the same spelling for its
+    // literal-argument diagnostics; the guard cannot import across module
+    // boundaries, so the twin lives here (gSlice precedent).
+    private string gArticle(string typeName) {
+        if (typeName.length == 0) { return "a " + typeName; }
+        char fc = typeName[0];
+        if (fc == 'a' || fc == 'e' || fc == 'i' || fc == 'o') { return "an " + typeName; }
+        return "a " + typeName;
+    }
+
+    // Argument-level nullable checking on calls (nullable-argument check,
+    // error grade): a nullable argument may not flow into a non-nullable
+    // primitive parameter of a known user function without a null check.
+    // It passes when the flow proved the identifier non-null
+    // (`if (x != null) f(x)`), when `??` unwrapped it (the inferred type
+    // is the inner, non-nullable one), or when another overload's
+    // nullable/untyped parameter accepts it. Only free calls to functions
+    // whose signatures were collected are judged — member calls and
+    // unknown callees stay silent.
+    private void checkCallArgs(Node n) {
+        int argc = n.childCount();
+        if (argc == 0) { return; }
+        bool anyNullable = false;
+        for (int j = 0; j < argc; j++) {
+            if (this.inferStaticType(n.child(j)).endsWith("?")) { anyNullable = true; break; }
+        }
+        if (!anyNullable) { return; }
+        bool anyArityMatch = false;
+        bool anyAccepts = false;
+        int badArgIdx = -1;
+        string badParamName = "";
+        string badParamType = "";
+        string badActual = "";
+        for (int s = 0; s < this.funcSigNames.length; s++) {
+            if (this.funcSigNames[s] != n.name) { continue; }
+            if (this.funcSigCounts[s] != argc) { continue; }
+            anyArityMatch = true;
+            bool ok = true;
+            for (int j = 0; j < argc; j++) {
+                Node arg = n.child(j);
+                string actual = this.inferStaticType(arg);
+                if (!actual.endsWith("?")) { continue; }
+                string pt = this.funcSigParamTypes[this.funcSigStarts[s] + j];
+                if (pt.length == 0 || pt == "var" || pt.endsWith("?")) { continue; }
+                if (!this.isFundamentalParamType(pt)) { continue; }
+                bool narrowed = arg.kind == ND_IDENT && this.isNonNullHere(arg.name);
+                if (!narrowed) {
+                    ok = false;
+                    if (badArgIdx < 0) {
+                        badArgIdx = j;
+                        badParamName = this.funcSigParamNames[this.funcSigStarts[s] + j];
+                        badParamType = pt;
+                        badActual = actual;
+                    }
+                    break;
+                }
+            }
+            if (ok) { anyAccepts = true; break; }
+        }
+        if (!anyArityMatch || anyAccepts) { return; }
+        Node arg = n.child(badArgIdx);
+        string inner = this.gSlice(badActual, 0, badActual.length - 1);
+        this.fail("ParamTypeMismatch", arg.line, arg.col, badParamName, "expected " + this.gArticle(badParamType) + ", got " + this.gArticle("nullable " + inner) + " — nullable value for \"" + badParamName + "\" parameter of '" + n.name + "' used without a null check (use ??)");
     }
 
     private int checkExpr(Node n) {
@@ -1150,6 +1674,10 @@ class MemoryGuard {
         if (k == ND_UNARY) { this.checkExpr(n.child(0)); return 0; }
         if (k == ND_CALL) {
             for (int i = 0; i < n.childCount(); i++) { this.checkExpr(n.child(i)); }
+            // Argument-level nullable checking (nullable-argument check): free
+            // calls only — member calls (ND_METHOD_CALL) stay silent
+            // (their receiver types are not tracked).
+            this.checkCallArgs(n);
             return 0;
         }
         if (k == ND_METHOD_CALL) {
@@ -1202,39 +1730,81 @@ class MemoryGuard {
         if (k == ND_ADDRESS_OF) { return this.checkAddr(n); }
         if (k == ND_MATCH) {
             this.checkExpr(n.child(0));
+            this.checkEnumExhaustiveMatch(n);
+            // Join-point merge (null-state-flow Meet): every non-terminal
+            // arm's exit state must agree; without a wildcard arm the
+            // no-match fall-through joins with the pre-match state. Each
+            // arm is isolated to the pre-match facts so arm-local facts do
+            // not leak into a sibling.
+            string[] savedNN = this.snapshotNonNull();
+            string[] joined = [];
+            bool haveJoin = false;
+            bool hasWildcard = false;
             for (int i = 1; i < n.childCount(); i++) {
                 Node arm = n.child(i);
-                if (arm.childCount() >= 2) { this.checkMatchBody(arm.child(1)); }
+                if (arm.childCount() < 2) { continue; }
+                Node pat = arm.child(0);
+                if (pat.kind == ND_NULL_LIT && pat.name == "_") { hasWildcard = true; }
+                this.nonNullNames = savedNN;
+                this.checkMatchBody(arm.child(1));
+                if (!(arm.child(1).kind == ND_BLOCK && this.stmtListIsTerminal(arm.child(1)))) {
+                    string[] armNN = this.snapshotNonNull();
+                    if (!haveJoin) { joined = armNN; haveJoin = true; } else { joined = this.meetNonNull(joined, armNN); }
+                }
             }
+            if (!hasWildcard) {
+                if (!haveJoin) { joined = savedNN; haveJoin = true; } else { joined = this.meetNonNull(joined, savedNN); }
+            }
+            if (haveJoin) { this.nonNullNames = joined; }
             return 0;
         }
         if (k == ND_TERNARY || k == ND_IF_EXPR) {
             // `x != null ? x + 1 : 0` narrows the branches like an if/else:
             // the true branch sees the condition's true-facts, the false
-            // branch its false-facts.
+            // branch its false-facts. Join: the ternary completes via
+            // either branch, so a fact survives only when both branch
+            // exits hold it.
             this.checkExpr(n.child(0));
+            string[] savedNN = this.snapshotNonNull();
             string[] thenNarrowed = [];
             string[] elseNarrowed = [];
             this.collectNarrowings(n.child(0), true, thenNarrowed);
             this.collectNarrowings(n.child(0), false, elseNarrowed);
             this.addNarrowings(thenNarrowed);
             this.checkExpr(n.child(1));
-            this.dropNarrowings(thenNarrowed);
+            string[] thenNN = this.snapshotNonNull();
+            this.nonNullNames = savedNN;
             this.addNarrowings(elseNarrowed);
             this.checkExpr(n.child(2));
-            this.dropNarrowings(elseNarrowed);
+            string[] elseNN = this.snapshotNonNull();
+            this.nonNullNames = this.meetNonNull(thenNN, elseNN);
             return 0;
         }
         if (k == ND_ANON_FN) {
             // An anonymous function body belongs to its own function: a
             // `return` inside it must not validate against the enclosing
             // function's return type (mirrors the lambda rule).
+            // Null-state isolation: outer facts stay visible (the
+            // anonymous function may capture outer names), but facts set
+            // inside its body die with it.
+            string[] savedNN = this.snapshotNonNull();
             string savedReturnType = this.currentReturnType;
             this.currentReturnType = "";
             if (n.childCount() > 0) { this.checkStmt(n.child(0)); }
+            this.nonNullNames = savedNN;
             this.currentReturnType = savedReturnType;
             return 0;
         }
+        if (k == ND_BLOCK) {
+            // A block reached in expression position still carries
+            // statements: check them as a scope like everywhere else.
+            this.checkBlock(n);
+            return 0;
+        }
+        // Unhandled shapes (casts, indirect `fn[i]()` calls, ...): still
+        // walk the children so every identifier read is seen — the
+        // never-used report must not miss a use and false-warn.
+        for (int i = 0; i < n.childCount(); i++) { this.checkExpr(n.child(i)); }
         return 0;
     }
 
@@ -1278,6 +1848,16 @@ class MemoryGuard {
         this.vars = [];
         this.scopeEnds = [];
         this.nonNullNames = [];
+        // Assigned-but-never-used tracking is fresh per function (
+        // per-method definite-assignment state): candidates and uses from
+        // one body must not bleed into the next.
+        this.candNames = [];
+        this.candLines = [];
+        this.candCols = [];
+        this.usedNames = [];
+        this.suppressedNames = [];
+        bool savedTracking = this.unusedTracking;
+        this.unusedTracking = true;
         string savedReturnType = this.currentReturnType;
         this.currentReturnType = n.typeHint;
         Node params = n.child(0);
@@ -1297,6 +1877,11 @@ class MemoryGuard {
             }
         }
         this.currentReturnType = savedReturnType;
+        // Assigned-but-never-used report (unused-local analog):
+        // declaration candidates never read on any path of this function.
+        // Warning grade — it never fails the check.
+        this.reportUnusedLocals();
+        this.unusedTracking = savedTracking;
         // Missing-return analysis ("not all code paths return a value"
         // concept, MEMORY_GUARD totality check): a function declaring a
         // value return type must return on every path; falling off the end
@@ -1351,30 +1936,81 @@ class MemoryGuard {
         this.warnings = [];
         this.typeNames = [];
         this.currentReturnType = "";
+        this.enumNames = [];
+        this.enumStarts = [];
+        this.enumCounts = [];
+        this.enumVariantNames = [];
+        this.funcSigNames = [];
+        this.funcSigStarts = [];
+        this.funcSigCounts = [];
+        this.funcSigParamTypes = [];
+        this.funcSigParamNames = [];
         file.writeBytes("build/diag/TG0_guard_start.txt", [49]);
         for (int i = 0; i < program.length; i++) {
             Node n = program[i];
             if (n.kind == ND_CONST) {
                 this.constNames.add(n.name);
+                this.globalNames.add(n.name);
             } else if (n.kind == ND_CLASS_DEF) {
                 this.typeNames.add(n.name);
                 for (int j = 0; j < n.childCount(); j++) {
                     Node m = n.child(j);
-                    if (m.kind == ND_CONST) { this.constNames.add(m.name); }
+                    if (m.kind == ND_CONST) { this.constNames.add(m.name); this.globalNames.add(m.name); }
                 }
             } else if (n.kind == ND_MODULE) {
                 for (int j = 0; j < n.childCount(); j++) {
                     Node m = n.child(j);
-                    if (m.kind == ND_CONST) { this.constNames.add(m.name); }
+                    if (m.kind == ND_CONST) { this.constNames.add(m.name); this.globalNames.add(m.name); }
+                    else if (m.kind == ND_VAR_DECL) { this.globalNames.add(m.name); }
                     else if (m.kind == ND_CLASS_DEF || m.kind == ND_STRUCT_DEF || m.kind == ND_ENUM_DEF
                         || m.kind == ND_TYPE_ALIAS || m.kind == ND_DEF_UNIT) { this.typeNames.add(m.name); }
                 }
+            } else if (n.kind == ND_VAR_DECL) {
+                this.globalNames.add(n.name);
             } else if (n.kind == ND_STRUCT_DEF || n.kind == ND_ENUM_DEF
                 || n.kind == ND_TYPE_ALIAS || n.kind == ND_DEF_UNIT) {
                 // Known user type names: class/struct/enum/def/typealias
                 // declarations. A bare unknown return-type spelling is not a
                 // Silver value type, so missing-return does not judge it.
                 this.typeNames.add(n.name);
+            }
+            // Enum variant table (exhaustiveness coverage): silveri stores
+            // the variants joined with '|' in the declaration's strVal.
+            if (n.kind == ND_ENUM_DEF) {
+                this.enumNames.add(n.name);
+                this.enumStarts.add(this.enumVariantNames.length);
+                int cnt = 0;
+                string joined = n.strVal;
+                int vstart = 0;
+                while (vstart <= joined.length) {
+                    int bar = -1;
+                    for (int vi = vstart; vi < joined.length; vi++) {
+                        if (joined[vi] == '|') { bar = vi; break; }
+                    }
+                    if (bar < 0) {
+                        string vname = this.gSlice(joined, vstart, joined.length);
+                        if (vname.length > 0) { this.enumVariantNames.add(vname); cnt++; }
+                        break;
+                    }
+                    string vname = this.gSlice(joined, vstart, bar);
+                    if (vname.length > 0) { this.enumVariantNames.add(vname); cnt++; }
+                    vstart = bar + 1;
+                }
+                this.enumCounts.add(cnt);
+            }
+            // Free-function signature table (argument-type
+            // analysis): top-level functions only — member calls never
+            // resolve against it and stay silent.
+            if (n.kind == ND_FUNC) {
+                this.funcSigNames.add(n.name);
+                this.funcSigStarts.add(this.funcSigParamTypes.length);
+                Node ps = n.child(0);
+                for (int j = 0; j < ps.childCount(); j++) {
+                    Node p = ps.child(j);
+                    this.funcSigParamTypes.add(p.typeHint);
+                    this.funcSigParamNames.add(p.name);
+                }
+                this.funcSigCounts.add(ps.childCount());
             }
         }
         for (int i = 0; i < program.length; i++) {
