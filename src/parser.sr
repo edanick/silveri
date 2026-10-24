@@ -1937,6 +1937,11 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         // A stray `;` is an empty statement (also the recovery anchor used
         // after an unknown-keyword error).
         if (this.check(TK_SEMI)) { this.advance(); return this.noopNode(); }
+        // A bare `{ ... }` at statement position is a block statement
+        // (mirrors the compilers' block expressions in statement position):
+        // its statements run in their own scope, so inner declarations
+        // shadow outer names instead of the block being dropped silently.
+        if (this.check(TK_LBRACE)) { return this.parseBlock(); }
         if (this.check(TK_FOR)) { return this.parseFor(); }
         if (this.check(TK_FOREACH)) { return this.parseForeach(); }
         if (this.check(TK_WHILE)) { return this.parseWhile(); }

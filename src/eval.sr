@@ -3954,6 +3954,14 @@ mirrorPut(obj, target.name, val);
             return;
         }
 
+        // A bare `{ ... }` block statement runs its statements in a fresh
+        // scope (shadowing outer names like the compilers' block
+        // expressions in statement position).
+        if (stmt.kind == ND_BLOCK) {
+            this.execBlock(stmt, env);
+            return;
+        }
+
         if (stmt.kind == ND_VAR_DECL) {
             this.uint64Vars[stmt.name] = stmt.typeHint == "uint64";
             if (stmt.childCount() > 0) {
