@@ -30,6 +30,11 @@ const int TK_FLOAT = 22;
 const int TK_FLOAT64 = 23;
 const int TK_DOUBLE = 24;
 const int TK_BOOL = 25;
+// `byte` lexes as a plain identifier in this lexer (it is a type keyword
+// only by position), so no token ever carries this kind; the cast
+// lookups spell it through the constant and the identifier arm covers
+// the real spellings.
+const int TK_BYTE = 171;
 const int TK_CHAR = 26;
 const int TK_STRING = 27;
 const int TK_VAR = 28;
