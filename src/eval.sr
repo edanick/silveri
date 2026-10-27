@@ -1708,6 +1708,17 @@ class Evaluator {
             else if (op == OP_BIT_XOR_ASSIGN) { baseOp = OP_BIT_XOR; }
             else if (op == OP_SHL_ASSIGN) { baseOp = OP_SHL; }
             else if (op == OP_SHR_ASSIGN) { baseOp = OP_SHR; }
+            // Array-target `+=`: pushes (grows the buffer and appends the
+            // right side) instead of computing on the pointer bits — the
+            // same push meaning the compilers lower it to; the guard's
+            // operand-kind check exempts `+=` on array targets for exactly
+            // this shape.
+            if (op == OP_ADD_ASSIGN && current.tag == VAL_ARRAY) {
+                current.arrVal.add(rhs);
+                this.assignTo(node.child(0), current, env);
+                GC.popRoot();
+                return current;
+            }
             // DOCS/275: `a += b` (and `-= *= /= %=`) on an overloaded
             // type lowers to `a = a + b` so the `+`/`-`/`*`/`/`/`%`
             // overload runs; other compounds keep builtin lowering.
