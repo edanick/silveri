@@ -2751,18 +2751,37 @@ mirrorPut(obj, target.name, val);
         // Split the null check from the field access: the self-hosted backend
         // does not always short-circuit `x != null && x.tag == ...`, and the
         // compiled interpreter would dereference a null value and crash.
+        // A bare call inside a class method that names an instance method of
+        // the live `this` (own or inherited) dispatches on this (parity with
+        // the compilers' implicit-this sibling dispatch); free functions
+        // resolve first above, and statics — whose signatures carry no
+        // `this` parameter — keep their zero-receiver call shape.
+        bool invokedSibling = false;
+        Value thisVal = env.get("this");
+        if (thisVal != null && thisVal.tag == VAL_CLASS_INST) {
+            string siblingKey = this.resolveMethodKey(thisVal.typeName, node.name);
+            if (siblingKey.length > 0) {
+                Node siblingDecl = this.functions[siblingKey];
+                Node siblingParams = siblingDecl.child(0);
+                bool siblingIsInstance = siblingParams.childCount() > 0 && siblingParams.child(0).name == "this";
+                if (siblingIsInstance) {
+                    result = this.methodDispatch(thisVal, node.name, args, node, env);
+                    invokedSibling = true;
+                }
+            }
+        }
         // DOCS/259 -- a callable value bound to an anonymous body (a
         // fn-typed parameter or a forwarded argument) resolves before the
         // global fallbacks; zero-arg calls only, mirroring the compilers.
         bool invokedAnon = false;
-        if (node.childCount() == 0) {
+        if (node.childCount() == 0 && !invokedSibling) {
             Value localFn = env.get(node.name);
             if (localFn != null && localFn.tag == VAL_FUNC && this.anonBodies.contains(localFn.funcName)) {
                 result = this.callAnonBody(localFn.funcName);
                 invokedAnon = true;
             }
         }
-        if (!invokedAnon) {
+        if (!invokedAnon && !invokedSibling) {
         Value globalFn = this.globals.get(node.name);
         if (globalFn != null) {
             if (globalFn.tag == VAL_BUILTIN) {
