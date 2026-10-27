@@ -772,9 +772,8 @@ private Node? parseItem() {
         }
             string name = this.expectIdent();
             this.expectSemi();
-            Node n = new Node(ND_MODULE, ln, c);
+        Node n = new Node(ND_MODULE, ln, c);
         n.name = name;
-        n.children = items;
         return n;
     }
 
