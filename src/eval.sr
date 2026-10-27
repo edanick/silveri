@@ -3824,16 +3824,36 @@ mirrorPut(obj, target.name, val);
         return result;
     }
 
+    // A dict-literal key node the compilers can fold (a plain literal,
+    // possibly parenthesized): duplicate folded keys are deduplicated at
+    // compile time — the earlier entry survives — so the interpreter
+    // keeps the same first-literal-wins rule. Computed keys always store.
+    private bool isLiteralKeyNode(Node k) {
+        if (k.kind == ND_PAREN) { return this.isLiteralKeyNode(k.child(0)); }
+        return k.kind == ND_INT_LIT || k.kind == ND_FLOAT_LIT || k.kind == ND_STRING_LIT
+            || k.kind == ND_CHAR_LIT || k.kind == ND_BOOL_LIT;
+    }
+
     private Value evalDictLit(Node node, Env env) {
         dict<string, Value> entries = {};
         Value[] evals = [];
         string[] ekeys = [];
+        string[] seenLitKeys = [];
         int rooted = 0;
         for (int i = 0; i < node.childCount(); i++) {
             Node pair = node.child(i);
             if (pair.childCount() >= 2) {
-                Value key = this.evalExpr(pair.child(0), env);
+                Node keyNode = pair.child(0);
+                Value key = this.evalExpr(keyNode, env);
                 Value val = this.evalExpr(pair.child(1), env);
+                bool litKey = this.isLiteralKeyNode(keyNode);
+                string litTag = (string)keyNode.kind + ":" + key.toString();
+                if (litKey && seenLitKeys.contains(litTag)) {
+                    // Duplicate literal key: the earlier entry survives
+                    // (the guard already warned about it).
+                    continue;
+                }
+                if (litKey) { seenLitKeys.add(litTag); }
                 dictSet(entries, evals, ekeys, key.toString(), val);
                 GC.pushRoot(val);
                 rooted++;
