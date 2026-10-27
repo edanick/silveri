@@ -1382,7 +1382,7 @@ class BuiltinMethods {
                 dictSet(fields, values, fieldKeys, "id", makeInt(pid));
                 dictSet(fields, values, fieldKeys, "window", window);
                 Value result = makeObject(fields, "Process");
-                setObjVals(result, values);
+                setObjVals(result, values, fieldKeys);
                 return result;
             }
             return makeNull();
