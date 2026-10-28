@@ -4162,6 +4162,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             this.checkFreePathValueException(n);
         }
         if (n.kind == ND_METHOD_CALL && n.line > 0) {
+            this.checkBuiltinPredicateArity(n);
             this.checkMemberPathValueException(n);
         }
         if (n.kind == ND_NEW_INIT) {
@@ -4204,6 +4205,13 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         if (this.anonWalkDepth == 0 && call.childCount() == 0 && this.fnPtrCallScopeHas(name)) { return; }
         if (!this.identStartsLower(name)) { return; }
         if (name.startsWith("make") && name.length > 4 && name[4] >= 'A' && name[4] <= 'Z') { return; }
+        if (this.anonWalkDepth > 0) {
+            // DOCS/259 -- inside an isolated anonymous body an unresolved
+            // call is reported with the reference checker's wording.
+            if (this.isKnownCallableName(name)) { return; }
+            this.recordError(call.line.toString() + ":" + call.col.toString() + ": Undefined function '" + name + "'");
+            return;
+        }
         if (this.isKnownCallableName(name)) { return; }
         string sugg = diagClosestMatch(name, this.callableCandidates());
         if (sugg.length > 0) {
@@ -4324,8 +4332,11 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         for (int m = 0; m < this.modExportNames.length; m++) {
             if (this.modExportNames[m] == name) { return true; }
         }
-        // Value factories and compiler-intrinsic calls stay callable.
-        return (name.length > 4 && name.startsWith("make") && name[4] >= 'A' && name[4] <= 'Z') || this.win32Resolvable(name) || this.linuxResolvable(name) || this.macResolvable(name) || this.customResolvable(name) || this.isAllCapsName(name);
+        // Value factories and compiler-intrinsic calls stay callable, and
+        // the fixed builtin set resolves everywhere — including the native
+        // module singletons (`math.pi`'s receiver), mirroring the
+        // compilers' dotted module receivers.
+        return (name.length > 4 && name.startsWith("make") && name[4] >= 'A' && name[4] <= 'Z') || this.win32Resolvable(name) || this.linuxResolvable(name) || this.macResolvable(name) || this.customResolvable(name) || this.isAllCapsName(name) || this.builtinCallableName(name);
     }
 
     private bool fnPtrCallScopeHas(string name) {
@@ -4700,6 +4711,25 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         if (call.name == "rename" || call.name == "copy") {
             this.checkPathLiteralArg(call, 1);
         }
+    }
+
+    // `startsWith(prefix)` / `endsWith(suffix)` take exactly ONE argument —
+    // that is the whole signature, in SPEC, in the docs, and in the
+    // compilers. There is no offset overload. The evaluator reads only the
+    // first argument, so an extra one used to be dropped silently and the
+    // call answered as if it had never been written — a wrong-but-plausible
+    // answer. A user-declared function or method of the same name is not
+    // the built-in and is left alone (the signature table covers both
+    // declaration shapes).
+    private void checkBuiltinPredicateArity(Node call) {
+        string m = call.name;
+        if (m != "startsWith" && m != "endsWith") { return; }
+        int argc = call.childCount() - 1;
+        if (argc <= 1) { return; }
+        for (int i = 0; i < this.sigNames.length; i++) {
+            if (this.sigNames[i] == m) { return; }
+        }
+        this.recordError((string)call.line + ":" + (string)call.col + ": no overload of '" + m + "' takes " + (string)argc + " argument(s)");
     }
 
     private void checkMemberPathValueException(Node call) {
