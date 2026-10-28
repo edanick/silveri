@@ -372,28 +372,42 @@ class Lexer {
             if (next == 'x' || next == 'X') {
                 s += (string)next;
                 this.advance();
+                // `_` separators ride anywhere among the digits (the
+                // compilers' scanners consume them inside radix literals
+                // too), but the literal must carry at least one value
+                // digit for its base: `0x` / `0x_` name nothing.
+                bool anyValueDigit = false;
                 while (this.pos < this.src.length) {
                     char ch = this.src[this.pos];
-                    if (isHexDigit(ch)) {
+                    if (isHexDigit(ch) || ch == '_') {
+                        if (ch != '_') { anyValueDigit = true; }
                         s += (string)ch;
                         this.advance();
                     } else {
                         break;
                     }
                 }
+                if (!anyValueDigit) {
+                    this.recordLexError("Invalid number literal '" + s + "' at line " + (string)ln + ", column " + (string)c);
+                }
                 return this.makeIntToken(s, 16, ln, c);
             }
             if (next == 'b' || next == 'B') {
                 s += (string)next;
                 this.advance();
+                bool anyValueDigit = false;
                 while (this.pos < this.src.length) {
                     char ch = this.src[this.pos];
-                    if (ch == '0' || ch == '1') {
+                    if (ch == '0' || ch == '1' || ch == '_') {
+                        if (ch != '_') { anyValueDigit = true; }
                         s += (string)ch;
                         this.advance();
                     } else {
                         break;
                     }
+                }
+                if (!anyValueDigit) {
+                    this.recordLexError("Invalid number literal '" + s + "' at line " + (string)ln + ", column " + (string)c);
                 }
                 return this.makeIntToken(s, 2, ln, c);
             }
@@ -427,6 +441,14 @@ class Lexer {
         }
         string clean = s.replaceAll("_", "");
         if (isFloat) {
+            // SYNTAX_EXCEPTIONS.md — a float spelling the scanner can
+            // produce must still name a value: an exponent with no digits
+            // (`1e`, `1e+`) or a bare dot before one (`1.e5`) is invalid.
+            // `1.` stays the value 1.0. Range overflow is deliberately NOT
+            // judged: wide decimal literals wrap by design.
+            if (!this.floatSpellingValid(s)) {
+                this.recordLexError("Invalid number literal '" + s + "' at line " + (string)ln + ", column " + (string)c);
+            }
             Token tok = new Token(TK_FLOAT_LIT, clean, ln, c);
             tok.strVal = clean;
             return tok;
@@ -434,6 +456,30 @@ class Lexer {
         Token tok = new Token(TK_INT_LIT, clean, ln, c);
         tok.intVal = clean.toInt64();
         return tok;
+    }
+
+    // Decimal float spelling the scanner can produce:
+    // DIGITS [. DIGITS] [(e|E) [sign] DIGITS]. The dot's fraction may be
+    // empty only without an exponent (`1.` is a value; `1.e5` is not), and
+    // the exponent must end in at least one digit. `_` separators ride
+    // anywhere among the digits and are skipped.
+    private bool floatSpellingValid(string s) {
+        int i = 0;
+        int n = s.length;
+        while (i < n && ((s[i] >= '0' && s[i] <= '9') || s[i] == '_')) { i++; }
+        if (i < n && s[i] == '.') {
+            i++;
+            int fracStart = i;
+            while (i < n && ((s[i] >= '0' && s[i] <= '9') || s[i] == '_')) { i++; }
+            if (i < n && (s[i] == 'e' || s[i] == 'E') && i == fracStart) { return false; }
+        }
+        if (i < n && (s[i] == 'e' || s[i] == 'E')) {
+            i++;
+            if (i < n && (s[i] == '+' || s[i] == '-')) { i++; }
+            if (i >= n) { return false; }
+            while (i < n && ((s[i] >= '0' && s[i] <= '9') || s[i] == '_')) { i++; }
+        }
+        return i == n;
     }
 
     private Token makeIntToken(string s, int base, int ln, int c) {
@@ -520,7 +566,12 @@ class Lexer {
             if (next == '*') {
                 this.advance();
                 this.advance();
-                this.skipBlockComment();
+                // SYNTAX_EXCEPTIONS.md — a block comment left open at end of
+                // file reports its opening position instead of silently
+                // ending the token stream early.
+                if (!this.skipBlockComment()) {
+                    this.recordLexError("Unterminated block comment at line " + (string)ln + ", column " + (string)cl);
+                }
                 return null;
             }
         }
@@ -668,7 +719,10 @@ class Lexer {
         if (c == '@') { return new Token(TK_AT, "@", ln, cl); }
         if (c == '_') { return new Token(TK_UNDERSCORE, "_", ln, cl); }
 
-        printline("Warning: unexpected character '" + (string)c + "' at " + (string)ln + ":" + (string)cl);
+        // Every other byte has no token meaning: name it instead of
+        // silently dropping it (a dropped character shifts every later
+        // diagnostic and the parse invents shapes around the hole).
+        this.recordLexError("Unexpected character '" + (string)c + "' at line " + (string)ln + ", column " + (string)cl);
         return null;
     }
 }
