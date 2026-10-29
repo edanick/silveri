@@ -613,9 +613,12 @@ class Evaluator {
         // Wide numeric cast spellings (rs parity): int64/uint dispatch to the
         // int conversion and float64 to the double conversion — the same
         // folding parser.rs applies to the Int/Uint/Float token arms.
+        this.globals.define("int32", makeBuiltin("int"));
         this.globals.define("int64", makeBuiltin("int"));
+        this.globals.define("uint64", makeBuiltin("uint64"));
         this.globals.define("uint", makeBuiltin("int"));
         this.globals.define("float64", makeBuiltin("float"));
+        this.globals.define("double", makeBuiltin("float"));
         this.globals.define("byte", makeBuiltin("byte"));
         this.globals.define("char", makeBuiltin("char"));
         this.globals.define("bool", makeBuiltin("bool"));
@@ -1430,8 +1433,10 @@ class Evaluator {
         }
         if (item.kind == ND_CONST && item.childCount() > 0) {
             Value val = this.evalExpr(item.child(0), this.globals);
+            val = this.coerceDeclaredValue(item.typeHint, val);
             this.stampStructType(val, item.typeHint);
             this.globals.define(item.name, val);
+            this.globals.recordDeclaredType(item.name, item.typeHint);
             this.uint64Vars[item.name] = item.typeHint == "uint64";
             this.markInternal(item.name, ext, item.isInternal);
             if (!ext) {
@@ -1526,7 +1531,7 @@ class Evaluator {
                     if (nativeFn.tag == VAL_BUILTIN) { nativeFallback = true; }
                 }
                 if (nativeFallback) {
-                    return callBuiltin(nativeFn.funcName, args);
+                    return this.callPrimitive(nativeFn.funcName, args);
                 }
                 printline("no overload of '" + name + "' takes " + args.length.toString() + " argument(s)");
                 exit(1);
@@ -1547,7 +1552,7 @@ class Evaluator {
         Value globalFn = this.globals.get(name);
         if (globalFn != null) {
             if (globalFn.tag == VAL_BUILTIN) {
-                return callBuiltin(globalFn.funcName, args);
+                return this.callPrimitive(globalFn.funcName, args);
             }
         }
         printline("Runtime error: undefined function '" + name + "'");
@@ -1569,14 +1574,15 @@ class Evaluator {
             Node param = params.child(i);
             if (i < args.length) {
                 this.stampStructType(args[i], param.typeHint);
-                fnEnv.define(param.name, args[i]);
+                fnEnv.define(param.name, this.coerceDeclaredValue(param.typeHint, args[i]));
             } else if (param.childCount() > 0) {
                 Value defVal = this.evalExpr(param.child(0), fnEnv);
                 this.stampStructType(defVal, param.typeHint);
-                fnEnv.define(param.name, defVal);
+                fnEnv.define(param.name, this.coerceDeclaredValue(param.typeHint, defVal));
             } else {
                 fnEnv.define(param.name, makeNull());
             }
+            fnEnv.recordDeclaredType(param.name, param.typeHint);
             this.uint64Vars[param.name] = param.typeHint == "uint64";
         }
         Value result = makeNull();
@@ -1591,7 +1597,7 @@ class Evaluator {
                 Value ret = this.returnValue;
                 this.hasReturned = false;
                 this.returnValue = null;
-                result = ret;
+                result = this.coerceDeclaredValue(fn.typeHint, ret);
             }
         }
         for (int i = 0; i < rooted; i++) {
@@ -1614,14 +1620,15 @@ class Evaluator {
             Node param = params.child(i);
             if (i < args.length) {
                 this.stampStructType(args[i], param.typeHint);
-                fnEnv.define(param.name, args[i]);
+                fnEnv.define(param.name, this.coerceDeclaredValue(param.typeHint, args[i]));
             } else if (param.childCount() > 0) {
                 Value defVal = this.evalExpr(param.child(0), fnEnv);
                 this.stampStructType(defVal, param.typeHint);
-                fnEnv.define(param.name, defVal);
+                fnEnv.define(param.name, this.coerceDeclaredValue(param.typeHint, defVal));
             } else {
                 fnEnv.define(param.name, makeNull());
             }
+            fnEnv.recordDeclaredType(param.name, param.typeHint);
             this.uint64Vars[param.name] = param.typeHint == "uint64";
         }
         Value result = makeNull();
@@ -1636,7 +1643,7 @@ class Evaluator {
                 Value ret = this.returnValue;
                 this.hasReturned = false;
                 this.returnValue = null;
-                result = ret;
+                result = this.coerceDeclaredValue(fn.typeHint, ret);
             }
         }
         // A reference argument aliases the caller's binding, not merely the
@@ -1704,22 +1711,23 @@ class Evaluator {
             castArgs.add(operand);
             if (node.typeHint == "int" || node.typeHint == "int32" || node.typeHint == "int64"
                 || node.typeHint == "uint") {
-                return callBuiltin("int", castArgs);
+                return this.callPrimitive("int", castArgs);
             }
+            if (node.typeHint == "uint64") { return this.callPrimitive("uint64", castArgs); }
             if (node.typeHint == "float" || node.typeHint == "float64" || node.typeHint == "double") {
-                return callBuiltin("float", castArgs);
+                return this.callPrimitive("float", castArgs);
             }
             if (node.typeHint == "byte") {
-                return callBuiltin("byte", castArgs);
+                return this.callPrimitive("byte", castArgs);
             }
             if (node.typeHint == "char") {
-                return callBuiltin("char", castArgs);
+                return this.callPrimitive("char", castArgs);
             }
             if (node.typeHint == "string") {
-                return callBuiltin("string_cast", castArgs);
+                return this.callPrimitive("string_cast", castArgs);
             }
             if (node.typeHint == "bool") {
-                return callBuiltin("bool", castArgs);
+                return this.callPrimitive("bool", castArgs);
             }
             return operand;
         }
@@ -2153,7 +2161,7 @@ class Evaluator {
         // != are bit-identity either way and keep the shared arms below).
         bool uu = false;
         if (op == OP_LT || op == OP_LEQ || op == OP_GT || op == OP_GEQ) {
-            uu = this.operandIsUint64(node.child(0)) || this.operandIsUint64(node.child(1));
+            uu = lhs.typeName == "uint64" || rhs.typeName == "uint64";
         }
         return this.computeOp(lhs, op, rhs, uu);
     }
@@ -2518,11 +2526,14 @@ class Evaluator {
                             return makeNull();
                         }
                     }
+                    val = this.coerceDeclaredValue(this.declaredFieldType(thisVal.typeName, target.name), val);
                     mirrorPut(thisVal, target.name, val);
                     return val;
                 }
             }
             if (env.exists(target.name)) {
+                val = this.coerceDeclaredValue(env.declaredType(target.name), val);
+                if (this.hasThrown) { return makeNull(); }
                 Value oldVal = env.get(target.name);
                 this.preserveStructType(oldVal, val);
                 env.set(target.name, val);
@@ -2556,7 +2567,8 @@ class Evaluator {
                         return makeNull();
                     }
                 }
-mirrorPut(obj, target.name, val);
+val = this.coerceDeclaredValue(this.declaredFieldType(obj.typeName, target.name), val);
+                mirrorPut(obj, target.name, val);
                 return val;
             }
         }
@@ -2568,6 +2580,7 @@ mirrorPut(obj, target.name, val);
             if (collection.tag == VAL_ARRAY) {
                 int i = idx.toInt();
                 if (i >= 0 && i < collection.arrVal.length) {
+                    if (collection.typeName.endsWith("[]")) { val = this.coerceDeclaredValue(collection.typeName.substr(0, collection.typeName.length - 2), val); }
                     collection.arrVal[i] = val;
                     GC.writeBarrier(collection, val);
                 } else {
@@ -3003,7 +3016,7 @@ mirrorPut(obj, target.name, val);
                     if (nativeFn.tag == VAL_BUILTIN) { nativeFallback = true; }
                 }
                 if (nativeFallback) {
-                    result = callBuiltin(nativeFn.funcName, args);
+                    result = this.callPrimitive(nativeFn.funcName, args);
                 } else {
                     printline("no overload of '" + node.name + "' takes " + node.childCount().toString() + " argument(s)");
                     exit(1);
@@ -3054,7 +3067,7 @@ mirrorPut(obj, target.name, val);
         Value globalFn = this.globals.get(node.name);
         if (globalFn != null) {
             if (globalFn.tag == VAL_BUILTIN) {
-                result = callBuiltin(globalFn.funcName, args);
+                result = this.callPrimitive(globalFn.funcName, args);
             }
         } else if (this.classes.contains(node.name)) {
             this.checkInternalClassUse(node.name, node);
@@ -3836,6 +3849,7 @@ mirrorPut(obj, target.name, val);
                     return;
                 }
             }
+            val = this.coerceDeclaredValue(this.declaredFieldType(inst.typeName, fieldName), val);
             mirrorPut(inst, fieldName, val);
             return;
         }
@@ -3844,6 +3858,7 @@ mirrorPut(obj, target.name, val);
                 printline("Runtime error: unknown field '" + fieldName + "' for type '" + inst.typeName + "'");
                 exit(1);
             }
+            val = this.coerceDeclaredValue(this.declaredFieldType(inst.typeName, fieldName), val);
             mirrorPut(inst, fieldName, val);
             return;
         }
@@ -3901,6 +3916,7 @@ mirrorPut(obj, target.name, val);
                     if (child.kind == ND_VAR_DECL && child.name == layout[li]) {
                         if (child.childCount() > 0) {
                             Value fv = this.evalExpr(child.child(0), this.globals);
+                            fv = this.coerceDeclaredValue(child.typeHint, fv);
                             mirrorPut(inst, child.name, fv);
                         } else {
                             mirrorPut(inst, child.name, makeNull());
@@ -3960,16 +3976,78 @@ mirrorPut(obj, target.name, val);
     // embedded exceptionSource text, never in the interpreter's own compile
     // scope, so `throw new` cannot name them here. Callers must check hasThrown
     // before defining the variable.
-    public Value checkedByte(Value value) {
-        if (value.tag == VAL_INT || value.tag == VAL_BYTE) {
-            if (value.intVal < 0 || value.intVal > 255) {
-                this.throwException("OverflowException", "byte value out of range: " + value.intVal.toString());
-                return makeByte(0);
+    public Value callPrimitive(string name, Value[] arguments) {
+        try {
+            if (name == "byte") {
+                if (arguments.length == 0) { return makeByte(0); }
+                return this.checkedByte(arguments[0]);
             }
-            return makeByte(value.intVal);
+            return callBuiltin(name, arguments);
+        } catch (int error) {
+            this.throwException("ValueException", "numeric conversion is out of range");
+            return makeNull();
         }
-        this.throwException("ValueException", "byte conversion requires an integer value");
-        return makeByte(0);
+    }
+
+    public Value coerceDeclaredValue(string typeName, Value value) {
+        GC.pushRoot(value);
+        Value result = this.coerceStoredValue(typeName, value);
+        GC.popRoot(); return result;
+    }
+
+    private Value coerceStoredValue(string typeName, Value value) {
+        if (value == null) { return makeNull(); }
+        if (typeName.endsWith("?") && value.tag == VAL_NULL) { return value; }
+        if (typeName.endsWith("?")) { typeName = typeName.substr(0, typeName.length - 1); }
+        if (typeName.endsWith("[]") && value.tag == VAL_ARRAY) {
+            if (value.typeName == typeName) { return value; }
+            string elementType = typeName.substr(0, typeName.length - 2);
+            Value[] elements = []; Value result = makeArray(elements); GC.pushRoot(result);
+            for (int i = 0; i < value.arrVal.length; i++) {
+                elements.add(this.coerceDeclaredValue(elementType, value.arrVal[i]));
+                if (this.hasThrown) { break; }
+            }
+            result.typeName = typeName; GC.popRoot(); return result;
+        }
+        string conversion = "";
+        if (typeName == "int" || typeName == "int32" || typeName == "int64" || typeName == "uint") {
+            if (value.tag == VAL_INT && value.typeName != "uint64") { return value; }
+            conversion = "int";
+        }
+        if (typeName == "uint64") {
+            if (value.tag == VAL_INT && value.typeName == "uint64") { return value; }
+            conversion = "uint64";
+        }
+        if (typeName == "float" || typeName == "float64" || typeName == "double") {
+            if (value.tag == VAL_FLOAT) { return value; }
+            conversion = "float";
+        }
+        if (typeName == "byte") { if (value.tag == VAL_BYTE) { return value; } conversion = "byte"; }
+        if (typeName == "char") { if (value.tag == VAL_CHAR) { return value; } conversion = "char"; }
+        if (typeName == "string" && value.tag == VAL_CHAR) { conversion = "string_cast"; }
+        if (conversion != "") { Value[] arguments = [value]; return this.callPrimitive(conversion, arguments); }
+        return value;
+    }
+
+    private string declaredFieldType(string className, string fieldName) {
+        string[] order = this.ancestryPreOrder(className);
+        for (int i = 0; i < order.length; i++) {
+            if (!this.classes.contains(order[i])) { continue; }
+            Node declaration = this.classes[order[i]];
+            for (int j = 0; j < declaration.childCount(); j++) {
+                Node field = declaration.child(j);
+                if (field.kind == ND_VAR_DECL && field.name == fieldName) { return field.typeHint; }
+            }
+        }
+        return "";
+    }
+
+    public Value checkedByte(Value value) {
+        int64 number = value.toInt();
+        if (number < 0 || number > 255) {
+            this.throwException("OverflowException", "byte value out of range"); return makeByte(0);
+        }
+        return makeByte(number);
     }
 
     public Value checkedByteArray(Value value) {
@@ -4285,11 +4363,7 @@ mirrorPut(obj, target.name, val);
             this.uint64Vars[stmt.name] = stmt.typeHint == "uint64";
             if (stmt.childCount() > 0) {
                 Value val = this.evalExpr(stmt.child(0), env);
-                if (stmt.typeHint == "byte") {
-                    val = this.checkedByte(val);
-                } else if (stmt.typeHint == "byte[]") {
-                    val = this.checkedByteArray(val);
-                }
+                val = this.coerceDeclaredValue(stmt.typeHint, val);
                 if (this.hasThrown) { return; }
                 this.stampStructType(val, stmt.typeHint);
                 env.define(stmt.name, val);
@@ -4309,6 +4383,7 @@ mirrorPut(obj, target.name, val);
                 else if (stmt.typeHint == "FolderOps") { env.define(stmt.name, makeBuiltin("folder_module")); }
                 else { env.define(stmt.name, makeNull()); }
             }
+            env.recordDeclaredType(stmt.name, stmt.typeHint);
             return;
         }
 

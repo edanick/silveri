@@ -24,12 +24,25 @@ import * from mac.libsystem;
 class BuiltinMethods {
 
     public static Value callMethod(Evaluator ev, Value receiver, string method, Value[] args) {
+        bool scalar = receiver.tag == VAL_INT || receiver.tag == VAL_BYTE || receiver.tag == VAL_FLOAT
+            || receiver.tag == VAL_BOOL || receiver.tag == VAL_CHAR || receiver.tag == VAL_STRING;
+        if (scalar) {
+            string conversion = "";
+            if (method == "toInt" || method == "toInt64") { conversion = "int"; }
+            if (method == "toFloat" || method == "toFloat64") { conversion = "float"; }
+            if (method == "toString" && args.length == 0) { conversion = "string_cast"; }
+            if (conversion != "") {
+                Value[] operands = [receiver];
+                foreach (Value argument in args) { operands.add(argument); }
+                return ev.callPrimitive(conversion, operands);
+            }
+        }
         if (receiver.tag == VAL_STRING) { return stringMethod(ev, receiver, method, args); }
         if (receiver.tag == VAL_ARRAY) { return arrayMethod(ev, receiver, method, args); }
         if (receiver.tag == VAL_DICT || receiver.tag == VAL_OBJECT || receiver.tag == VAL_CLASS_INST) {
             return dictMethod(receiver, method, args);
         }
-        if (receiver.tag == VAL_INT || receiver.tag == VAL_FLOAT || receiver.tag == VAL_BOOL) { return numberMethod(receiver, method, args); }
+        if (receiver.tag == VAL_INT || receiver.tag == VAL_BYTE || receiver.tag == VAL_FLOAT || receiver.tag == VAL_BOOL) { return numberMethod(receiver, method, args); }
         if (receiver.tag == VAL_CHAR) { return charMethod(receiver, method, args); }
         if (receiver.tag == VAL_BUILTIN) { return moduleMethod(ev, receiver, method, args); }
         printline("Runtime error: no method '" + method + "' on " + receiver.typeString());
@@ -2830,6 +2843,10 @@ Value callBuiltin(string name, Value[] args) {
         exit(code);
         return makeNull();
     }
+    if (name == "uint64") {
+        if (args.length == 0) { return makeUnsignedInteger(0); }
+        return convertUnsignedInteger(args[0]);
+    }
     if (name == "int") {
         // DOCS/113 — `int(s, base)` parses in radix 2..36 (else 0) with the
         // compilers' prefix/wrap/negate-last contract; `int(c, base)` on a
@@ -2842,7 +2859,7 @@ Value callBuiltin(string name, Value[] args) {
             return makeInt(args[0].toInt());
         }
         if (args.length > 0) {
-            if (args[0].tag == VAL_STRING) { return makeInt(strToInt64Safe(args[0].strVal)); }
+            if (args[0].tag == VAL_STRING) { return makeInt(strToIntRadix(args[0].strVal, 10)); }
             return makeInt(args[0].toInt());
         }
         return makeInt(0);

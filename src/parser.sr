@@ -3070,7 +3070,8 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
                 bool callShape = this.pos + 2 < this.tokens.length && this.tokens[this.pos + 2].kind == TK_LPAREN;
                 if (!callShape && (k2 == TK_INT || k2 == TK_INT32 || k2 == TK_INT64 || k2 == TK_UINT || k2 == TK_UINT64
                     || k2 == TK_FLOAT || k2 == TK_FLOAT64 || k2 == TK_DOUBLE
-                    || k2 == TK_BOOL || k2 == TK_CHAR || k2 == TK_BYTE || k2 == TK_STRING)) {
+                    || k2 == TK_BOOL || k2 == TK_CHAR || k2 == TK_BYTE || k2 == TK_STRING
+                    || (k2 == TK_IDENT && this.tokens[this.pos + 1].text == "byte"))) {
                     this.advance();
                     string castType = this.parseTypeStr();
                     this.expect(TK_RPAREN);
@@ -3171,7 +3172,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
         // ordinary calls so they dispatch to the matching builtin (e.g.
         // `string` -> string_cast). Mirroring the compiler, keep the keyword's
         // source text as the callee name.
-        if (this.check(TK_INT) || this.check(TK_INT32) || this.check(TK_INT64) || this.check(TK_UINT)
+        if (this.check(TK_INT) || this.check(TK_INT32) || this.check(TK_INT64) || this.check(TK_UINT) || this.check(TK_UINT64)
             || this.check(TK_FLOAT) || this.check(TK_FLOAT64) || this.check(TK_DOUBLE)
             || this.check(TK_BOOL) || this.check(TK_CHAR) || this.check(TK_STRING) || this.check(TK_VOID)) {
             // DOCS/259: an anonymous function argument must be wrapped in
@@ -4383,7 +4384,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             // float64(x) onto the double conversion (parser.rs
             // Int/Uint/Float token arms), so all four must be callable
             // in expression position here.
-            || name == "int64" || name == "uint" || name == "uint64"
+            || name == "int32" || name == "int64" || name == "uint" || name == "uint64"
             || name == "float64"
             || name == "byte" || name == "string"
             || name == "bool" || name == "void"

@@ -118,7 +118,10 @@ class Value {
     }
 
     public string toString() {
-        if (this.tag == VAL_INT || this.tag == VAL_BYTE) { return this.intVal.toString(); }
+        if (this.tag == VAL_INT || this.tag == VAL_BYTE) {
+            if (this.typeName == "uint64") { return unsignedIntegerString(this.intVal); }
+            return this.intVal.toString();
+        }
         if (this.tag == VAL_FLOAT) { return this.strVal; }
         if (this.tag == VAL_BOOL) { return this.boolVal.toString(); }
         if (this.tag == VAL_STRING) { return this.strVal; }
@@ -171,17 +174,13 @@ class Value {
         if (this.tag == VAL_INT || this.tag == VAL_BYTE) { return this.intVal; }
         if (this.tag == VAL_FLOAT) { return int64(this.floatVal); }
         if (this.tag == VAL_BOOL) { return this.boolVal ? 1 : 0; }
-        if (this.tag == VAL_STRING) { return strToInt64Safe(this.strVal); }
+        if (this.tag == VAL_STRING) { return strToIntRadix(this.strVal, 10); }
         if (this.tag == VAL_CHAR) { return this.charVal.toInt64(); }
         return 0;
     }
 
-    public float64 toFloat() {
-        if (this.tag == VAL_FLOAT) { return this.floatVal; }
-        if (this.tag == VAL_STRING) { return floatStrToF64(this.strVal); }
-        if (this.tag == VAL_INT || this.tag == VAL_BYTE) { return this.intVal.toFloat64(); }
-        return 0.0;
-    }
+    public float64 toFloat() { return valueToFloat(this); }
+
 }
 
 string arrayToString(Value[] arr) {
@@ -546,14 +545,38 @@ float64 floatStrToF64(string spelling) {
 // int/byte Values convert numerically, string Values parse as a number.
 float64 valueToFloat(Value v) {
     if (v.tag == VAL_FLOAT) { return v.floatVal; }
-    if (v.tag == VAL_STRING) {
-        float64 r = floatStrToF64(v.strVal);
-        return r;
-    }
+    if (v.tag == VAL_STRING) { return floatStrToF64(v.strVal); }
+    if (v.tag == VAL_BOOL) { return v.boolVal ? 1.0 : 0.0; }
+    if (v.tag == VAL_CHAR) { return float64(v.charVal.toInt64()); }
     if (v.tag == VAL_INT || v.tag == VAL_BYTE) {
-        int64 iv = v.intVal;
-        float64 r = iv.toFloat64();
-        return r;
+        int64 number = v.intVal;
+        if (v.typeName == "uint64" && number < 0) {
+            int64 half = ((number >> 1) & 9223372036854775807) | (number & 1);
+            return float64(half) * 2.0;
+        }
+        return float64(number);
     }
     return 0.0;
+}
+
+string unsignedIntegerString(int64 number) {
+    if (number >= 0) { return number.toString(); }
+    int64 half = (number >> 1) & 9223372036854775807;
+    int64 quotient = half / 5;
+    int64 remainder = (half % 5) * 2 + (number & 1);
+    return quotient.toString() + char(48 + remainder).toString();
+}
+
+Value makeUnsignedInteger(int64 number) {
+    Value result = makeInt(number); result.typeName = "uint64"; return result;
+}
+
+Value convertUnsignedInteger(Value value) {
+    if (value.tag != VAL_FLOAT) { return makeUnsignedInteger(value.toInt()); }
+    float64 number = valueToFloat(value);
+    if (!(number > -1.0 && number < 18446744073709551616.0)) { throw 1; }
+    if (number >= 9223372036854775808.0) {
+        return makeUnsignedInteger(int64(number - 9223372036854775808.0) | (-9223372036854775807 - 1));
+    }
+    return makeUnsignedInteger(int64(number));
 }
