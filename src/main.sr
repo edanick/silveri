@@ -1493,6 +1493,15 @@ void main() {
         exit(1);
     }
 
+    // The entry file is the one thing the tool cannot infer: when the path
+    // the user entered does not exist, say so plainly (echoing the exact
+    // spelling they typed) instead of dying with an unhandled read
+    // exception.
+    if (!fs.exists(filename)) {
+        eprintln("the file you entered does not exist: \"" + filename + "\"");
+        exit(1);
+    }
+
     string inputSource = "";
     // Region-filter target: the host OS the interpreter itself was built
     // for (interpHostOs). There is no --os flag (OVERHAUL.md).
