@@ -3278,6 +3278,11 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             this.advance();
             Node n = new Node(ND_BINARY, ln, c);
             n.op = OP_ADD_ASSIGN;
+            // The lowered `++` marker: the compilers' inc/dec path does not
+            // route through the assignment-target check, so a store-check
+            // exemption rides on the node (boolVal is otherwise unread on
+            // binary nodes).
+            n.boolVal = true;
             n.addChild(lhs);
             Node one = new Node(ND_INT_LIT, ln, c);
             one.intVal = 1;
@@ -3293,6 +3298,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             this.advance();
             Node n = new Node(ND_BINARY, ln, c);
             n.op = OP_SUB_ASSIGN;
+            n.boolVal = true;
             n.addChild(lhs);
             Node one = new Node(ND_INT_LIT, ln, c);
             one.intVal = 1;

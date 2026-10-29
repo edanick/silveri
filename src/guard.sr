@@ -910,10 +910,14 @@ class MemoryGuard {
             int idx = this.findVar(lhs.name);
             // An in-scope binding — a local, a parameter, or an in-scope
             // class field (this-less member idiom) — shadows a same-named
-            // const: the assignment targets the inner binding. Only a
-            // const with no inner shadow is an invalid target.
-            if (this.isConstName(lhs.name) && idx < 0) {
-                this.fail("InvalidAssignment", lhs.line, lhs.col, lhs.name, "cannot write to a const");
+            // global or const: the assignment targets the inner binding.
+            // Only a global or const with no inner shadow is an invalid
+            // target (module-level bindings are read-only after their
+            // initialization, like the compilers). The lowered `++`/`--`
+            // spelling is exempt — the compilers' inc/dec path does not
+            // route through the assignment-target check.
+            if ((this.isConstName(lhs.name) || this.isGlobalName(lhs.name)) && idx < 0 && !n.boolVal) {
+                this.fail("InvalidAssignment", lhs.line, lhs.col, lhs.name, "cannot write to a global or const");
             }
             if (idx >= 0) {
                 GuardVar v = this.vars[idx];
