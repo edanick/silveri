@@ -2,6 +2,7 @@ import math;
 
 void bounded(int low, int high) {
     int first = math.randomInt(low, high);
+    if (first < low || first > high) { exit(1); }
     bool varied = false;
     for (int i = 0; i < 32; i++) {
         int value = math.randomInt(low, high);

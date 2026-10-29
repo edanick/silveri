@@ -3106,8 +3106,10 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             while (!this.check(TK_RBRACKET) && !this.check(TK_EOF)) {
                 if (this.check(TK_SPREAD)) {
                     this.advance();
-                    Node spread = this.parseExpr(0);
+                    // Mark a wrapper without overwriting the source identifier.
+                    Node spread = new Node(ND_PAREN, ln, c);
                     spread.name = "spread";
+                    spread.addChild(this.parseExpr(0));
                     n.addChild(spread);
                 } else {
                     n.addChild(this.parseExpr(0));
