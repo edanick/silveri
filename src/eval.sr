@@ -4002,9 +4002,9 @@ val = this.coerceDeclaredValue(this.declaredFieldType(obj.typeName, target.name)
         if (typeName.endsWith("[]") && value.tag == VAL_ARRAY) {
             if (value.typeName == typeName) { return value; }
             string elementType = typeName.substr(0, typeName.length - 2);
-            Value[] elements = []; Value result = makeArray(elements); GC.pushRoot(result);
+            Value result = makeArray([]); GC.pushRoot(result);
             for (int i = 0; i < value.arrVal.length; i++) {
-                elements.add(this.coerceDeclaredValue(elementType, value.arrVal[i]));
+                result.arrVal.add(this.coerceDeclaredValue(elementType, value.arrVal[i]));
                 if (this.hasThrown) { break; }
             }
             result.typeName = typeName; GC.popRoot(); return result;

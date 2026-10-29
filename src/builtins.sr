@@ -580,7 +580,14 @@ class BuiltinMethods {
             return makeNull();
         }
         if (method == "add" || method == "push") {
-            if (args.length > 0) { arr.arrVal.add(args[0]); }
+            if (args.length > 0) {
+                Value item = args[0];
+                if (arr.typeName.endsWith("[]")) {
+                    item = ev.coerceDeclaredValue(arr.typeName.substr(0, arr.typeName.length - 2), item);
+                    if (ev.hasThrown) { return makeNull(); }
+                }
+                arr.arrVal.add(item); GC.writeBarrier(arr, item);
+            }
             return arr;
         }
         if (method == "outlast") {
