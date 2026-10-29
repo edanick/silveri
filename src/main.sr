@@ -1175,9 +1175,12 @@ string resolveImports(string source, string inputFile, int[] prependLen, string 
     // is unchanged (aggregate == source while prepend is empty).
     string seenMods = ";";
     bool changed = true;
+    // The aggregate (prepend + source) is re-joined every fixpoint pass;
+    // hoisted so the plain-import walk below reads the final aggregate too.
+    string aggregate = source;
     while (changed) {
         changed = false;
-        string aggregate = prependPieces.join("") + source;
+        aggregate = prependPieces.join("") + source;
         int[] aggSpans = qsBundleSpans(aggregate);
     int cursor = 0;
     while (cursor < aggregate.length) {
@@ -1292,9 +1295,13 @@ string resolveImports(string source, string inputFile, int[] prependLen, string 
     // Plain source-module imports (`import helper_suite;`) load the module's
     // source too when it can be found, mirroring the compiler driver. Star/
     // list forms with a `from <target>` clause were handled above; bare-name
-    // imports name the source module directly. Resolution stays best-effort:
-    // an unfound plain module is skipped silently (historical behavior).
+    // imports name the source module directly. An unresolvable name fails
+    // with the shared unknown-module diagnostic (with a did-you-mean
+    // suggestion when one is close) — the compilers reject the same shape.
     string[] plainPieces = [];
+    string[] plainUnknownMsgs = [];
+    bool plainBad = false;
+    string seenBadMods = ";";
     int cursor2 = 0;
     while (cursor2 < source.length) {
         int importPos2 = findCI(source, "import ", cursor2);
@@ -1324,16 +1331,44 @@ string resolveImports(string source, string inputFile, int[] prependLen, string 
         }
         // Comma-separated bare module names.
         string[] parts = trimmed.split(",");
+        int segSearch = 0;
         for (int pi = 0; pi < parts.length; pi++) {
             string modName = parts[pi].trim();
+            // First word character of this segment (for the diagnostic
+            // position), then advance past the segment's comma.
+            int relName = segSearch;
+            while (relName < stmtText.length && !isNatWordChar(stmtText[relName])) { relName++; }
+            while (segSearch < stmtText.length && stmtText[segSearch] != ',') { segSearch++; }
+            segSearch++;
             if (modName.length == 0) { continue; }
-            if (nativeModule(modName) || moduleAlwaysResolvable(modName)) { continue; }
+            if (nativeModule(modName) || moduleAlwaysResolvable(modName)
+                || fixedWin32Module(modName) || fixedLinuxModule(modName)
+                || fixedMacModule(modName)) { continue; }
             string modSrc = readStdModule(modName, inputFile, source, target);
             if (modSrc.length > 0) {
                 plainPieces.add(modSrc + "\n");
+            } else if (aggregateDeclaresModule(aggregate, modName)) {
+                // Satisfied by a project-local or `.qs` bundle module
+                // already in the aggregate.
+            } else if (customNativeDeclared(natEffCustom(modName))) {
+                // Declared custom native: the grant itself registers later.
+            } else if (!seenBadMods.contains(";" + modName + ";")) {
+                seenBadMods += modName + ";";
+                plainBad = true;
+                int[] loc = diagSourceLoc(aggregate, importPos2 + 7 + relName);
+                string sugg = diagClosestMatch(modName, knownModuleNames);
+                if (sugg.length > 0) {
+                    plainUnknownMsgs.add("did you mean to import the module \"" + sugg + "\"?, unknown module \"" + modName + "\" was found at line " + (string)loc[0] + " column " + (string)loc[1]);
+                } else {
+                    plainUnknownMsgs.add("unknown module \"" + modName + "\" was found at line " + (string)loc[0] + ", column " + (string)loc[1] + ". module either doesn't exist or not installed.");
+                }
             }
         }
         cursor2 = semi2 + 1;
+    }
+    if (plainBad) {
+        printGroupedDiagnostics(plainUnknownMsgs, inputFile);
+        exit(1);
     }
     string prepend = prependPieces.join("");
     string plainPrepend = plainPieces.join("");
