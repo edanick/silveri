@@ -4196,12 +4196,12 @@ float64 mathArg(Value[] args, int i) {
 Value mathAbsV(Value[] args) {
     Value a = args.length > 0 ? args[0] : makeInt(0);
     if (a.tag == VAL_FLOAT) {
-        float64 x = valueToFloat(a);
-        if (x < 0.0) { return makeFloat(-x); }
-        return makeFloat(x);
+        float64 floatValue = valueToFloat(a);
+        if (floatValue < 0.0) { return makeFloat(-floatValue); }
+        return makeFloat(floatValue);
     }
-    int64 x = a.toInt();
-    if (x < 0) { return makeInt(-x); }
+    int64 integerValue = a.toInt();
+    if (integerValue < 0) { return makeInt(-integerValue); }
     return a;
 }
 
