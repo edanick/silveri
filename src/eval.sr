@@ -247,6 +247,272 @@ class Evaluator {
         exit(1);
     }
 
+    // The static pre-run form of the same boundary diagnostic: the
+    // compilers' visibility pass prints the message bare and aborts before
+    // anything runs; the runtime backstop above keeps its prefix for the
+    // value-dependent shapes only the evaluator can judge.
+    private void staticInternalError(string name, string owner, Node at) {
+        if (owner.length == 0) { owner = "module"; }
+        printline("`" + name + "` is internal to project `" + owner + "` and cannot be used here, at line " + at.line.toString() + ", column " + at.col.toString());
+        exit(1);
+    }
+
+    // Locals visible to the static visibility walk of one function body
+    // (parameters plus every binder shape — a name bound anywhere in the
+    // body suppresses the global/module interpretation of that name, the
+    // conservative single-context model the compilers' walk uses).
+    private string[] visLocals;
+
+    private void visAddLocal(string name) {
+        if (name.length == 0 || name == "_") { return; }
+        for (int i = 0; i < this.visLocals.length; i++) {
+            if (this.visLocals[i] == name) { return; }
+        }
+        this.visLocals.add(name);
+    }
+
+    private bool visIsLocal(string name) {
+        for (int i = 0; i < this.visLocals.length; i++) {
+            if (this.visLocals[i] == name) { return true; }
+        }
+        return false;
+    }
+
+    private void visCollectLocals(Node n) {
+        int k = n.kind;
+        if (k == ND_VAR_DECL || k == ND_LIVE_DECL || k == ND_ONCE_DECL) {
+            this.visAddLocal(n.name);
+        } else if (k == ND_DESTRUCT) {
+            for (int i = 0; i + 1 < n.childCount(); i++) { this.visAddLocal(n.child(i).name); }
+        } else if (k == ND_FOREACH || k == ND_FOR_RANGE) {
+            this.visAddLocal(n.name);
+        } else if (k == ND_TRY_CATCH) {
+            this.visAddLocal(n.name);
+        } else if ((k == ND_MATCH || k == ND_MATCH_STMT) && n.childCount() > 0) {
+            // Match-arm patterns bind, they do not use.
+            for (int a = 1; a < n.childCount(); a++) {
+                Node arm = n.child(a);
+                if (arm.childCount() > 0 && arm.child(0).kind == ND_IDENT) {
+                    this.visAddLocal(arm.child(0).name);
+                }
+            }
+        }
+        for (int i = 0; i < n.childCount(); i++) {
+            this.visCollectLocals(n.child(i));
+        }
+    }
+
+    // One node of the static visibility walk: identifier reads, free
+    // calls, `new` targets, and identifier receivers (`mod.fn()` /
+    // `mod.CONST` / `Class.static()`) are judged against the registry's
+    // internal-owner tables with the same shadow rules the runtime
+    // backstop uses. Receiver-typed instance members stay to the backstop
+    // (the static pass cannot know a local's class).
+    private void visWalk(Node n) {
+        int k = n.kind;
+        if (k == ND_IDENT) {
+            string name = n.name;
+            if (name.length == 0 || name == "this" || name == "null") { return; }
+            if (this.visIsLocal(name)) { return; }
+            if (this.projectGlobalNames.contains(name)) { return; }
+            if (this.internalOwner.contains(name)) {
+                string owner = this.internalOwner[name];
+                if (owner.length > 0) { this.staticInternalError(name, owner, n); }
+            }
+            return;
+        }
+        if (k == ND_CALL) {
+            // Plain-name call: the project-shadow rule applies (a project
+            // declaration of the same name wins the flat namespace).
+            string name = n.name;
+            if (name.length > 0 && !this.visIsLocal(name)
+                && !this.projectFnNames.contains(name) && this.internalOwner.contains(name)) {
+                string owner = this.internalOwner[name];
+                if (owner.length > 0) { this.staticInternalError(name, owner, n); }
+            }
+        } else if (k == ND_METHOD_CALL || k == ND_MEMBER) {
+            if (n.childCount() > 0 && n.child(0).kind == ND_IDENT) {
+                string recv = n.child(0).name;
+                if (!this.visIsLocal(recv)) {
+                    // An internal-exported module namespace: every member
+                    // is off limits to project code.
+                    if (this.isInternalExportedModule(recv)) {
+                        this.staticInternalError(n.name, recv, n);
+                    }
+                    // Module members and class statics share the registry's
+                    // dotted-key table ("mod.fn", "Class.member").
+                    string key = recv + "." + n.name;
+                    if (this.internalOwner.contains(key)) {
+                        string owner = this.internalOwner[key];
+                        if (owner.length > 0) { this.staticInternalError(n.name, owner, n); }
+                    }
+                }
+            }
+        } else if (k == ND_NEW || k == ND_NEW_INIT) {
+            if (this.internalOwner.contains(n.name)) {
+                string owner = this.internalOwner[n.name];
+                if (owner.length > 0) { this.staticInternalError(n.name, owner, n); }
+            }
+        } else if (k == ND_STRUCT_LIT) {
+            // Struct literal keys are field names, not identifier uses.
+            for (int i = 0; i < n.childCount(); i++) {
+                Node pair = n.child(i);
+                if (pair.childCount() > 1) { this.visWalk(pair.child(1)); }
+            }
+            return;
+        }
+        for (int i = 0; i < n.childCount(); i++) {
+            this.visWalk(n.child(i));
+        }
+    }
+
+    // Static pre-run `internal` visibility pass over the project's own
+    // sources (everything at or past the boundary line): mirrors the
+    // compilers' file walk — import statements are judged first (a star
+    // import of a module with internal declarations, a named import of an
+    // internal declaration, and a bare import of a self-declared internal
+    // module are all errors at the import site), then free functions,
+    // class methods, and top-level statements are walked with a locals
+    // context; external module bodies keep full access to their own
+    // internals and are never entered.
+    private void staticInternalCheck(Node[] program) {
+        if (this.projectBoundaryLine <= 0) { return; }
+        this.staticInternalCheckImports(program);
+        for (int i = 0; i < program.length; i++) {
+            Node item = program[i];
+            if (item.line < this.projectBoundaryLine) { continue; }
+            if (item.kind == ND_FUNC) {
+                this.visLocals = [];
+                if (item.childCount() > 0) {
+                    Node ps = item.child(0);
+                    for (int p = 0; p < ps.childCount(); p++) { this.visAddLocal(ps.child(p).name); }
+                }
+                if (item.childCount() > 1) {
+                    this.visCollectLocals(item.child(1));
+                    this.visWalk(item.child(1));
+                }
+                continue;
+            }
+            if (item.kind == ND_CLASS_DEF || item.kind == ND_STRUCT_DEF) {
+                for (int m = 0; m < item.childCount(); m++) {
+                    Node mem = item.child(m);
+                    if (mem.kind != ND_FUNC) { continue; }
+                    this.visLocals = [];
+                    if (mem.childCount() > 0) {
+                        Node mps = mem.child(0);
+                        for (int mp = 0; mp < mps.childCount(); mp++) { this.visAddLocal(mps.child(mp).name); }
+                    }
+                    if (mem.childCount() > 1) {
+                        this.visCollectLocals(mem.child(1));
+                        this.visWalk(mem.child(1));
+                    }
+                }
+                continue;
+            }
+            if (item.kind == ND_MODULE) {
+                for (int c = 0; c < item.childCount(); c++) {
+                    Node sub = item.child(c);
+                    this.visLocals = [];
+                    this.visCollectLocals(sub);
+                    this.visWalk(sub);
+                }
+                continue;
+            }
+            // Top-level statements (initializers, expression statements).
+            this.visLocals = [];
+            this.visCollectLocals(item);
+            this.visWalk(item);
+        }
+    }
+
+    // Import-site half of the static visibility pass: an import statement
+    // in project code may not pull an external source module's internal
+    // surface into scope. Star imports error on the module's FIRST
+    // internal declaration (every internal name would be an error at the
+    // same site); named imports error on the internal declaration they
+    // name; a bare `import name;` errors when that module self-declares
+    // internal. Native imports (win32/linux/mac/custom) resolve to no
+    // source module in the aggregate and are never judged here.
+    private void staticInternalCheckImports(Node[] program) {
+        for (int i = 0; i < program.length; i++) {
+            Node item = program[i];
+            if (item.kind != ND_IMPORT) { continue; }
+            if (item.line < this.projectBoundaryLine) { continue; }
+            string src = item.strVal;
+            if (src.length == 0) {
+                // Bare `import name;`: the name itself is the module.
+                string[] bare = item.name.split(",");
+                for (int b = 0; b < bare.length; b++) {
+                    Node mod = this.findSourceModule(program, bare[b]);
+                    if (mod != null && mod.isInternal) {
+                        this.staticInternalError(bare[b], bare[b], item);
+                    }
+                }
+                continue;
+            }
+            if (!this.modules.contains(src)) { continue; }
+            if (item.name == "*") {
+                string first = this.firstInternalDeclOf(program, src);
+                if (first.length > 0) {
+                    this.staticInternalError(first, src, item);
+                }
+            } else {
+                string[] wanted = item.name.split(",");
+                for (int w = 0; w < wanted.length; w++) {
+                    if (this.declIsInternalIn(program, src, wanted[w])) {
+                        this.staticInternalError(wanted[w], src, item);
+                    }
+                }
+            }
+        }
+    }
+
+    // The `mod export <name>;` node of a source module in the aggregate,
+    // or null when no such module exists.
+    private Node findSourceModule(Node[] program, string name) {
+        for (int i = 0; i < program.length; i++) {
+            Node item = program[i];
+            if (item.kind == ND_MODULE && item.strVal == "export" && item.name == name) {
+                return item;
+            }
+        }
+        return null;
+    }
+
+    // First internal declaration name of module `src` ("" when none):
+    // the module's flat item run after its `mod export` header, up to the
+    // next module header.
+    private string firstInternalDeclOf(Node[] program, string src) {
+        bool inMod = false;
+        for (int i = 0; i < program.length; i++) {
+            Node item = program[i];
+            if (item.kind == ND_MODULE) {
+                inMod = item.strVal == "export" && item.name == src;
+                continue;
+            }
+            if (!inMod) { continue; }
+            if (item.isInternal && item.name.length > 0 && item.kind != ND_IMPORT) {
+                return item.name;
+            }
+        }
+        return "";
+    }
+
+    // True when declaration `decl` inside module `src` is internal.
+    private bool declIsInternalIn(Node[] program, string src, string decl) {
+        bool inMod = false;
+        for (int i = 0; i < program.length; i++) {
+            Node item = program[i];
+            if (item.kind == ND_MODULE) {
+                inMod = item.strVal == "export" && item.name == src;
+                continue;
+            }
+            if (!inMod) { continue; }
+            if (item.name == decl && item.isInternal) { return true; }
+        }
+        return false;
+    }
+
     // Registry lookup by key ("name", "mod.name", "Class.member"): reject
     // when the key was marked internal to an external module.
     private void checkInternalUse(string key, string displayName, string fallbackOwner, Node at) {
@@ -1046,6 +1312,9 @@ class Evaluator {
         if (this.diagCrumbs) { file.writeBytes("build/diag/TR0.txt", [49]); }
         this.registerItems(program);
         this.validateInheritance();
+        // Static pre-run visibility pass (fail-fast parity with the
+        // compilers' checker): same tables, same shadow rules.
+        this.staticInternalCheck(program);
         if (this.diagCrumbs) { file.writeBytes("build/diag/TR1.txt", [49]); }
         this.runMain(program);
         if (this.diagCrumbs) { file.writeBytes("build/diag/TR2.txt", [49]); }
