@@ -169,7 +169,7 @@ class Value {
 
     public int64 toInt() {
         if (this.tag == VAL_INT || this.tag == VAL_BYTE) { return this.intVal; }
-        if (this.tag == VAL_FLOAT) { return floatStrToInt(this.strVal); }
+        if (this.tag == VAL_FLOAT) { return int64(this.floatVal); }
         if (this.tag == VAL_BOOL) { return this.boolVal ? 1 : 0; }
         if (this.tag == VAL_STRING) { return strToInt64Safe(this.strVal); }
         if (this.tag == VAL_CHAR) { return this.charVal.toInt64(); }
@@ -177,7 +177,8 @@ class Value {
     }
 
     public float64 toFloat() {
-        if (this.tag == VAL_FLOAT || this.tag == VAL_STRING) { return floatStrToF64(this.strVal); }
+        if (this.tag == VAL_FLOAT) { return this.floatVal; }
+        if (this.tag == VAL_STRING) { return floatStrToF64(this.strVal); }
         if (this.tag == VAL_INT || this.tag == VAL_BYTE) { return this.intVal.toFloat64(); }
         return 0.0;
     }
@@ -324,16 +325,16 @@ Value makeByte(int64 v) {
 Value makeFloat(float64 v) {
     Value val = GC.acquireValue();
     val.tag = VAL_FLOAT;
+    val.floatVal = v;
     val.strVal = v.toString();
     return val;
 }
 
-// Create a float whose decimal string is the literal text from the source
-// (e.g. "3.14").  The runtime float64.toString() path truncates to %lld, so
-// float literals keep their exact spelling to print full precision.
+// Preserve the source spelling for display and parse its binary64 value once.
 Value makeFloatStr(string s) {
     Value val = GC.acquireValue();
     val.tag = VAL_FLOAT;
+    val.floatVal = floatStrToF64(s);
     val.strVal = s;
     return val;
 }
@@ -433,13 +434,8 @@ Value makeDict(dict<string, Value> v) {
 }
 
 // ---------------------------------------------------------------------------
-// Float storage.  silverc-rs compiles `float64` class fields so that reading
-// the field back yields the IEEE-754 bit pattern reinterpreted as an int64,
-// and it does not recognise float-returning *methods* or `.abs()` on floats
-// as float expressions.  To keep floats correct across the interpreter, the
-// float VALUE is carried as its decimal string in Value.strVal and converted
-// with the free functions below (free functions returning float64 are tracked
-// by the compiler, so their results flow through as proper bit patterns).
+// Float values retain binary64 data in floatVal. strVal is display text only;
+// arithmetic must never round-trip through the default six-digit formatter.
 // ---------------------------------------------------------------------------
 
 // Safe decimal parse: skips leading whitespace and an optional sign, and
@@ -520,67 +516,37 @@ int64 floatStrToInt(string s) {
     return result;
 }
 
-// Parse a decimal float string ("3.14", "-2.5", "1e-5") into a float64.
-float64 floatStrToF64(string s) {
-    string t = s;
-    bool neg = false;
-    if (t.length > 0 && t[0] == '-') {
-        neg = true;
-        t = t.substr(1);
+// Parse with the existing correctly-rounded decimal-to-IEEE builtin, then
+// decode its bits arithmetically. Powers of two preserve the exact value,
+// including subnormals; decimal scaling by 0.1 loses low bits in huge inputs.
+float64 floatStrToF64(string spelling) {
+    int64 bits = spelling.toFloatBits();
+    int exponent = (bits >> 52) & 2047;
+    int64 significand = bits & 4503599627370495;
+    if (exponent == 2047) {
+        if (significand != 0) { float64 zero = 0.0; return zero / zero; }
+        float64 large = 1e308;
+        float64 infinity = large * large;
+        if (bits < 0) { return -infinity; }
+        return infinity;
     }
-    int eAt = t.indexOf("e");
-    int eAt2 = t.indexOf("E");
-    if (eAt < 0 || (eAt2 >= 0 && eAt2 < eAt)) { eAt = eAt2; }
-    string mant = t;
-    int64 exp = 0;
-    if (eAt >= 0) {
-        mant = t.substr(0, eAt);
-        string expPart = t.substr(eAt + 1);
-        bool expNeg = false;
-        if (expPart.length > 0 && expPart[0] == '-') {
-            expNeg = true;
-            expPart = expPart.substr(1);
-        }
-        if (expPart.length > 0 && expPart[0] == '+') { expPart = expPart.substr(1); }
-        exp = strToInt64Safe(expPart);
-        if (expNeg) { exp = -exp; }
+    int power = -1074;
+    if (exponent != 0) {
+        significand = significand + 4503599627370496;
+        power = exponent - 1075;
     }
-    int dot = mant.indexOf(".");
-    string ip = mant;
-    string fp = "";
-    if (dot >= 0) {
-        ip = mant.substr(0, dot);
-        fp = mant.substr(dot + 1);
-    }
-    int64 intPart = strToInt64Safe(ip);
-    float64 result = intPart.toFloat64();
-    if (fp.length > 0) {
-        int64 fracPart = strToInt64Safe(fp);
-        int64 flen = fp.length;
-        float64 divisor = 10.0;
-        for (int64 i = 1; i < flen; i++) {
-            divisor = divisor * 10.0;
-        }
-        result += fracPart.toFloat64() / divisor;
-    }
-    if (exp != 0) {
-        float64 p10 = 1.0;
-        int64 e = exp;
-        if (e < 0) { e = -e; }
-        for (int64 i = 0; i < e; i++) {
-            p10 = p10 * 10.0;
-        }
-        if (exp < 0) { result = result / p10; }
-        else { result = result * p10; }
-    }
-    if (neg) { result = -result; }
+    float64 result = float64(significand);
+    while (power > 0) { result = result * 2.0; power--; }
+    while (power < 0) { result = result * 0.5; power++; }
+    if (bits < 0) { result = -result; }
     return result;
 }
 
-// Convert a Value to a float64: float Values parse their decimal string,
+// Convert a Value to a float64: float Values read their binary64 field,
 // int/byte Values convert numerically, string Values parse as a number.
 float64 valueToFloat(Value v) {
-    if (v.tag == VAL_FLOAT || v.tag == VAL_STRING) {
+    if (v.tag == VAL_FLOAT) { return v.floatVal; }
+    if (v.tag == VAL_STRING) {
         float64 r = floatStrToF64(v.strVal);
         return r;
     }

@@ -443,8 +443,8 @@ class Evaluator {
                 // Bare `import name;`: the name itself is the module.
                 string[] bare = item.name.split(",");
                 for (int b = 0; b < bare.length; b++) {
-                    Node mod = this.findSourceModule(program, bare[b]);
-                    if (mod != null && mod.isInternal) {
+                    Node sourceModule = this.findSourceModule(program, bare[b]);
+                    if (sourceModule != null && sourceModule.isInternal) {
                         this.staticInternalError(bare[b], bare[b], item);
                     }
                 }

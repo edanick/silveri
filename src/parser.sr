@@ -2920,7 +2920,7 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             this.advance();
             Node n = new Node(ND_UNARY, ln, c);
             n.op = UOP_NEG;
-            n.addChild(this.parseExpr(10));
+            n.addChild(this.parseExpr(12));
             return n;
         }
         if (this.check(TK_BANG)) {
