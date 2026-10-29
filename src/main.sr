@@ -124,43 +124,19 @@ bool stdRegionNameMatches(string name, string target) {
     return name == target;
 }
 
-// A `#on` branch's match: the first name plus every ` or <name>` entry
-// that follows it on the same directive line (lowercase `or` separator,
-// UPPERCASE-only names, mirroring the compilers' OR-lists in DOCS/253).
-// The branch feeds when ANY listed name matches its own axis (OS names
-// test the target, DEBUG/RELEASE test the build mode). Lenient like the
-// rest of this filter: a missing name or non-`or` tail just ends the
-// list, and unknown names never match (their body stays stripped).
-bool stdRegionBranchMatches(string src, int nameStart, int contentEnd, string target) {
-    int nameEnd = nameStart;
-    while (nameEnd < contentEnd && src[nameEnd] != ' ' && src[nameEnd] != '\t') { nameEnd++; }
-    bool feeds = stdRegionNameMatches(projSlice(src, nameStart, nameEnd), target);
-    int cursor = nameEnd;
-    while (cursor < contentEnd) {
-        int sepSkip = cursor;
-        while (sepSkip < contentEnd && (src[sepSkip] == ' ' || src[sepSkip] == '\t')) { sepSkip++; }
-        if (sepSkip >= contentEnd) { break; }
-        int sepEnd = sepSkip;
-        while (sepEnd < contentEnd && src[sepEnd] != ' ' && src[sepEnd] != '\t') { sepEnd++; }
-        if (projSlice(src, sepSkip, sepEnd) != "or") { break; }
-        int nextSkip = sepEnd;
-        while (nextSkip < contentEnd && (src[nextSkip] == ' ' || src[nextSkip] == '\t')) { nextSkip++; }
-        int nextEnd = nextSkip;
-        while (nextEnd < contentEnd && src[nextEnd] != ' ' && src[nextEnd] != '\t') { nextEnd++; }
-        if (nextEnd <= nextSkip) { break; }
-        if (stdRegionNameMatches(projSlice(src, nextSkip, nextEnd), target)) { feeds = true; }
-        cursor = nextEnd;
-    }
-    return feeds;
+// The `#on` directive's OS-name axis (UPPERCASE-only, DOCS/260): the same
+// three names the compilers' preprocessor accepts.
+bool stdRegionIsOsName(string name) {
+    return name == "WINDOWS" || name == "LINUX" || name == "MAC";
 }
 
-// DOCS/260 — the preprocessor filter for prepended std module sources,
-// reduced for the interpreter. The interpreter deliberately does NOT
-// implement the preprocessor as a language feature, but the v2 unified core
-// library folds OS code into `#on WINDOWS ... #off` regions inside
-// silverc\std\*.sr, and those raw directive lines must never reach the
-// parser. This filter runs on std module text BEFORE it is prepended into
-// the aggregate:
+// DOCS/260 — the preprocessor region filter, strict like the compilers'
+// validator. The interpreter does not implement the preprocessor as a
+// language feature, but the v2 unified core library folds OS code into
+// `#on WINDOWS ... #off` regions inside silverc\std\*.sr, and those raw
+// directive lines must never reach the parser. This filter runs on every
+// source text BEFORE it is lexed (std module text when prepended, the
+// entry source — plain or .srp aggregate — before import resolution):
 //   - `#on <target>` region bodies are kept, where target is the host OS
 //     the interpreter itself was built for (interpHostOs).
 //     Build-mode names test their own axis (DOCS/253): `RELEASE` feeds by
@@ -172,30 +148,36 @@ bool stdRegionBranchMatches(string src, int nameStart, int contentEnd, string ta
 //     branch and opens the next branch of the SAME region (chained-branch
 //     rule, mirroring the compilers). First-match-wins: a branch body feeds
 //     iff its OS equals the target AND no earlier branch of the same region
-//     matched (`active = eq(osName, target) && !matchedAny`, then
-//     `matchedAny ||= eq(osName, target)` — the same `matchedAny` rule
-//     `#else` already uses).
+//     matched (the same `matchedAny` rule `#else` uses).
 //   - Other `#on` bodies are stripped; an `#else` body is kept only when
 //     no preceding `#on` of the region matched (compiler semantics).
 //   - Directive lines themselves are blank-replaced (CRLF shape preserved)
 //     so line numbers stay stable, mirroring preprocess.sr's line mapping.
 // Directive names stay `#on`-UPPERCASE-only (like the compilers).
-// Lenient by design (this is not the
-// compiler's strict validator): the filter NEVER errors. An `#else`/`#off`
-// without an open region, an unknown or missing OS or build-mode name, an unclosed region
-// at EOF, or a `#on` after `#else` just drops the directive line and the
-// scan continues — with one deliberate leniency gap vs the compilers (which
-// error on `#on` after `#else`, since `#else` must be last): here the same
-// branch-switch math applies without erroring, and `sawElse` (set by `#else`,
- // reset on region open and on `#off`) is tracked but never fatal.
-string filterStdRegions(string src, string target) {
+//
+// Malformed region shapes are FATAL with the compilers' diagnostics,
+// recorded into `errs` (messages embed the 1-based line number): `#on`
+// without a name, an unknown OS/build-mode name (first or after `or`), a
+// malformed `or` list, text after `#on`/`#else`/`#off`, `#on` after
+// `#else` in one region, `#else`/`#off` without an open region, a region
+// never closed at end of file, and a `*"..."` path literal opened but
+// never closed on its own line. On the first error the ORIGINAL text is
+// returned — the caller prints the messages and aborts before lexing.
+// Line numbers are relative to the exact text handed in (a module's own
+// file, or the assembled aggregate for a .srp entry — the compilers
+// preprocess per file before assembling).
+string filterStdRegions(string src, string target, string[] errs) {
     if (src.length == 0) { return src; }
-    // Files without a single `#` cannot carry directives: return untouched.
+    // Files without a single `#` cannot carry directives, but a path
+    // literal needs none: the closure scan below still runs.
     bool anyHash = false;
     for (int h = 0; h < src.length; h++) {
         if (src[h] == '#') { anyHash = true; break; }
     }
-    if (!anyHash) { return src; }
+    if (!anyHash) {
+        scanPathLiteralClosure(src, 0, src.length, 1, errs);
+        return src;
+    }
 
     // Pass 1: pure state-machine scan recording the char offsets of every
     // line to blank (no string building), exactly like preprocess.sr.
@@ -207,10 +189,15 @@ string filterStdRegions(string src, string target) {
     int mode = 0;
     bool active = false;
     bool matchedAny = false;
-    // Set by `#else`, reset on region open and on `#off`. Tracked only:
-    // the filter never errors, so a `#on` after `#else` still applies the
-    // chained branch-switch math below (the compilers reject that shape).
+    // Set by `#else`, reset on region open and on `#off`: `#else` must be
+    // the last branch of its region, so a later `#on` is an error.
     bool sawElse = false;
+    // The open region's opening line and name-list span, for the
+    // never-closed diagnostic at end of file.
+    int regionOpenLine = 0;
+    int regionOpenNameStart = 0;
+    int regionOpenNameEnd = 0;
+    int lineNo = 1;
     int i = 0;
     while (i < src.length) {
         int nl = -1;
@@ -236,42 +223,102 @@ string filterStdRegions(string src, string target) {
                 drop = true;
                 int nameStart = wordEnd;
                 while (nameStart < contentEnd && (src[nameStart] == ' ' || src[nameStart] == '\t')) { nameStart++; }
+                int nameEnd = nameStart;
+                while (nameEnd < contentEnd && src[nameEnd] != ' ' && src[nameEnd] != '\t') { nameEnd++; }
+                string osName = projSlice(src, nameStart, nameEnd);
+                if (osName.length == 0) {
+                    errs.add("preprocessor: '#on' requires an OS or build-mode name (WINDOWS, LINUX, MAC, DEBUG, RELEASE), at line " + (string)lineNo);
+                    return src;
+                }
+                if (!stdRegionIsOsName(osName) && !stdRegionIsBuildModeName(osName)) {
+                    errs.add("preprocessor: unknown OS or build-mode name '" + osName + "' after '#on' (valid names are WINDOWS, LINUX, MAC, DEBUG, RELEASE), at line " + (string)lineNo);
+                    return src;
+                }
                 // OR-list aware (DOCS/253): the branch feeds when ANY listed
                 // name matches its own axis — OS names test the target,
                 // RELEASE feeds by default while DEBUG stays blanked (the
-                // build mode defaults to RELEASE with no flag).
-                bool matchesTarget = stdRegionBranchMatches(src, nameStart, contentEnd, target);
-                if (mode == 0) {
-                    mode = 1;
-                    // Unknown or missing OS/build-mode names strip their body
-                    // too (match stays false); only matching regions survive
-                    // (directive names are UPPERCASE-only).
-                    active = matchesTarget;
-                    matchedAny = active;
-                    sawElse = false;
-                } else {
+                // build mode defaults to RELEASE with no flag). The list
+                // itself is validated name by name: a missing or unknown
+                // name and a non-`or` tail are errors, like the compilers.
+                bool matchesTarget = stdRegionNameMatches(osName, target);
+                int listEnd = nameEnd;
+                int cursor = nameEnd;
+                while (cursor < contentEnd) {
+                    int sepSkip = cursor;
+                    while (sepSkip < contentEnd && (src[sepSkip] == ' ' || src[sepSkip] == '\t')) { sepSkip++; }
+                    if (sepSkip >= contentEnd) { break; }
+                    int sepEnd = sepSkip;
+                    while (sepEnd < contentEnd && src[sepEnd] != ' ' && src[sepEnd] != '\t') { sepEnd++; }
+                    string sep = projSlice(src, sepSkip, sepEnd);
+                    if (sep != "or") {
+                        errs.add("preprocessor: unexpected text after '#on', at line " + (string)lineNo);
+                        return src;
+                    }
+                    int nextSkip = sepEnd;
+                    while (nextSkip < contentEnd && (src[nextSkip] == ' ' || src[nextSkip] == '\t')) { nextSkip++; }
+                    int nextEnd = nextSkip;
+                    while (nextEnd < contentEnd && src[nextEnd] != ' ' && src[nextEnd] != '\t') { nextEnd++; }
+                    string nextOs = projSlice(src, nextSkip, nextEnd);
+                    if (nextOs.length == 0) {
+                        errs.add("preprocessor: '#on' requires an OS or build-mode name (WINDOWS, LINUX, MAC, DEBUG, RELEASE) after 'or', at line " + (string)lineNo);
+                        return src;
+                    }
+                    if (!stdRegionIsOsName(nextOs) && !stdRegionIsBuildModeName(nextOs)) {
+                        errs.add("preprocessor: unknown OS or build-mode name '" + nextOs + "' after '#on' (valid names are WINDOWS, LINUX, MAC, DEBUG, RELEASE), at line " + (string)lineNo);
+                        return src;
+                    }
+                    if (stdRegionNameMatches(nextOs, target)) { matchesTarget = true; }
+                    listEnd = nextEnd;
+                    cursor = nextEnd;
+                }
+                if (mode == 1) {
+                    if (sawElse) {
+                        errs.add("preprocessor: '#on' after '#else' in the same region ('#else' must be last), at line " + (string)lineNo);
+                        return src;
+                    }
                     // Chained branch: a `#on` inside an open region closes
                     // the previous branch and opens the next one of the SAME
                     // region (never nests). First-match-wins — the same
-                    // `matchedAny` math `#else` uses — so only the first
-                    // matching branch feeds. Unknown or missing OS/build-mode
-                    // names keep stripping (the match stays false), exactly
-                    // like a top-level `#on`.
+                    // `matchedAny` math `#else` uses.
                     active = matchesTarget && !matchedAny;
                     matchedAny = matchedAny || matchesTarget;
+                } else {
+                    mode = 1;
+                    active = matchesTarget;
+                    matchedAny = active;
+                    sawElse = false;
+                    regionOpenLine = lineNo;
+                    regionOpenNameStart = nameStart;
+                    regionOpenNameEnd = listEnd;
                 }
             } else if (word == "else") {
                 drop = true;
-                // Lenient: `#else` outside a region just drops the line.
-                // Inside a region the `#else` body is kept only when no
-                // preceding `#on` matched (compiler semantics).
-                if (mode == 1) {
-                    active = !matchedAny;
-                    sawElse = true;
+                int tail = wordEnd;
+                while (tail < contentEnd && (src[tail] == ' ' || src[tail] == '\t')) { tail++; }
+                if (tail < contentEnd) {
+                    errs.add("preprocessor: unexpected text after '#else', at line " + (string)lineNo);
+                    return src;
                 }
+                if (mode == 0) {
+                    errs.add("preprocessor: '#else' without an open '#on' region, at line " + (string)lineNo);
+                    return src;
+                }
+                // The `#else` body is kept only when no preceding `#on`
+                // matched (compiler semantics).
+                active = !matchedAny;
+                sawElse = true;
             } else if (word == "off") {
                 drop = true;
-                // Lenient: `#off` outside a region just drops the line.
+                int tail = wordEnd;
+                while (tail < contentEnd && (src[tail] == ' ' || src[tail] == '\t')) { tail++; }
+                if (tail < contentEnd) {
+                    errs.add("preprocessor: unexpected text after '#off', at line " + (string)lineNo);
+                    return src;
+                }
+                if (mode == 0) {
+                    errs.add("preprocessor: '#off' without an open '#on' region, at line " + (string)lineNo);
+                    return src;
+                }
                 mode = 0;
                 sawElse = false;
             }
@@ -289,32 +336,144 @@ string filterStdRegions(string src, string target) {
 
         if (nl < 0) { break; }
         i = nl + 1;
+        lineNo++;
     }
-    // Lenient: an unclosed region at EOF is not an error — whatever was
-    // recorded above is simply how the text was filtered.
+    if (mode == 1) {
+        string openNames = projSlice(src, regionOpenNameStart, regionOpenNameEnd);
+        errs.add("preprocessor: '#on " + openNames + "' region opened at line " + (string)regionOpenLine + " is never closed by '#off' (end of file)");
+        return src;
+    }
 
-    if (dropAt.length == 0) { return src; }
+    if (dropAt.length == 0) {
+        scanPathLiteralClosure(src, 0, src.length, 1, errs);
+        return src;
+    }
 
     // Pass 2: splice — kept runs between dropped lines, one terminator per
     // blanked line, so the filtered text has exactly as many lines as the
-    // original (diagnostic line numbers stay on the original file).
+    // original (diagnostic line numbers stay on the original file). The
+    // path-literal closure scan runs over the KEPT runs only, so stripped
+    // region bodies never see it (mirrors the compilers' placement).
     string result = "";
     int copyStart = 0;
+    int runLine = 1;
     for (int d = 0; d < dropAt.length; d++) {
         if (dropAt[d] > copyStart) {
+            scanPathLiteralClosure(src, copyStart, dropAt[d], runLine, errs);
+            if (errs.length > 0) { return src; }
             result += projSlice(src, copyStart, dropAt[d]);
+            for (int r = copyStart; r < dropAt[d]; r++) {
+                if (src[r] == '\n') { runLine++; }
+            }
         }
         if (dropNl[d] >= 0) {
             if (dropCr[d] == 1) { result += "\r\n"; }
             else { result += "\n"; }
+            runLine++;
         }
         if (dropNl[d] >= 0) { copyStart = dropNl[d] + 1; }
         else { copyStart = src.length; }
     }
     if (copyStart < src.length) {
+        scanPathLiteralClosure(src, copyStart, src.length, runLine, errs);
+        if (errs.length > 0) { return src; }
         result += projSlice(src, copyStart, src.length);
     }
     return result;
+}
+
+// DOCS/257 — `*"..."` path-literal closure scan over [start, end) of
+// `source`, whose first line is the absolute 1-based `baseLine`. A `*`
+// immediately followed by `"` OUTSIDE strings, char literals, and comments
+// opens a compile-time path literal that must close on its own line; an
+// unclosed one records the compilers' diagnostic. Well-formed path
+// literals pass through untouched here (the interpreter has no
+// path-literal rewriting; its own corpus carries none).
+void scanPathLiteralClosure(string source, int start, int end, int baseLine, string[] errs) {
+    int i = start;
+    int lineNo = baseLine;
+    bool inBlock = false;
+    while (i < end) {
+        char c = source[i];
+        if (inBlock) {
+            if (c == '*' && i + 1 < end && source[i + 1] == '/') {
+                i += 2;
+                inBlock = false;
+                continue;
+            }
+            if (c == '\n') { lineNo++; }
+            i++;
+            continue;
+        }
+        if (c == '/' && i + 1 < end && source[i + 1] == '/') {
+            while (i < end && source[i] != '\n') { i++; }
+            continue;
+        }
+        if (c == '/' && i + 1 < end && source[i + 1] == '*') {
+            i += 2;
+            inBlock = true;
+            continue;
+        }
+        if (c == '"') {
+            int j = i + 1;
+            while (j < end) {
+                char d = source[j];
+                if (d == '\n') { lineNo++; j++; continue; }
+                if (d == '"') { j++; break; }
+                if (d == '\\' && j + 1 < end) {
+                    if (source[j + 1] == '\n') { lineNo++; }
+                    j += 2;
+                    continue;
+                }
+                j++;
+            }
+            i = j;
+            continue;
+        }
+        if (c == '\'') {
+            int j = i + 1;
+            if (j < end && source[j] == '\\') {
+                j++;
+                if (j < end) {
+                    if (source[j] == '\n') { lineNo++; }
+                    j++;
+                }
+            } else if (j < end) {
+                if (source[j] == '\n') { lineNo++; }
+                j++;
+            }
+            if (j < end && source[j] == '\'') { j++; }
+            i = j;
+            continue;
+        }
+        if (c == '*' && i + 1 < end && source[i + 1] == '"') {
+            int k = i + 2;
+            while (k < end && source[k] != '"' && source[k] != '\n') { k++; }
+            if (k >= end || source[k] != '"') {
+                errs.add("preprocessor: '\"*\"' path literal opened at line " + (string)lineNo + " is never closed on the same line");
+                return;
+            }
+            i = k + 1;
+            continue;
+        }
+        if (c == '\n') { lineNo++; }
+        i++;
+    }
+}
+
+// The driver's entry-source region pass: filter or die, mirroring the
+// compilers' preprocessor error channel (each message to stderr, then a
+// nonzero exit before anything runs).
+string filterEntryRegionsOrDie(string src, string target) {
+    string[] errs = [];
+    string out = filterStdRegions(src, target, errs);
+    if (errs.length > 0) {
+        for (int pe = 0; pe < errs.length; pe++) {
+            eprintln(errs[pe]);
+        }
+        exit(1);
+    }
+    return out;
 }
 
 // Read std/<module>.sr from the standard checkout locations, returning empty
@@ -415,7 +574,17 @@ string readStdModule(string name, string inputFile, string selfSource, string ta
         // Skip the input file itself (same content reached through a
         // different path spelling, e.g. bare-name vs absolute).
         if (src.length > 0 && src == selfSource) { continue; }
-        if (src.length > 0) { return filterStdRegions(src, target); }
+        if (src.length > 0) {
+            string[] modErrs = [];
+            string filtered = filterStdRegions(src, target, modErrs);
+            if (modErrs.length > 0) {
+                for (int me = 0; me < modErrs.length; me++) {
+                    eprintln(modErrs[me]);
+                }
+                exit(1);
+            }
+            return filtered;
+        }
     }
     return "";
 }
@@ -1301,14 +1470,14 @@ void main() {
         // parser must never see the directive lines. The filter blanks
         // directive lines but preserves every other line, so line counts
         // (and the prepend boundary computed below) stay file-accurate.
-        inputSource = filterStdRegions(loadProjectSource(filename), target);
+        inputSource = filterEntryRegionsOrDie(loadProjectSource(filename), target);
     } else {
         // `.col` declarations require a project manifest. Reuse the project
         // loader's validation so standalone sources report
         // UnknownCollectionException instead of a generic parser error.
         // Same filter as the project path: a source (or its .col expansions)
         // carrying regions is filtered before lexing.
-        inputSource = filterStdRegions(projExpandCollections(fs.readFile(filename), ".", ""), target);
+        inputSource = filterEntryRegionsOrDie(projExpandCollections(fs.readFile(filename), ".", ""), target);
     }
 
     // Resolve `import * from <module>` statements by prepending the module
