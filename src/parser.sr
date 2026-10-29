@@ -1193,6 +1193,18 @@ private Node? parseItem() {
             }
             if (this.check(TK_STAR)) {
                 this.advance();
+                // DOCS/50: a leading-star pointer type takes ONE star.
+                // `**T` names the mistake here instead of inventing shapes
+                // around the extra stars (the reference rejects the same
+                // shape with a generic expected-type error). A single
+                // leading star stays silent — the field path folds it away
+                // like the compilers' field branch, so `*T*` keeps
+                // compiling as `T*`.
+                if (this.check(TK_STAR)) {
+                    Token stTok = this.peek();
+                    this.recordError(stTok.line.toString() + ":" + stTok.col.toString() + ": pointer type takes only one `*`; write `T*` or `*T` (see DOCS/50)");
+                    while (this.check(TK_STAR)) { this.advance(); }
+                }
                 string typ = this.parseTypeStr();
                 string fieldName = this.expectIdent();
                 this.expectSemi();
