@@ -1421,14 +1421,24 @@ class BuiltinMethods {
             if (method == "round") { return makeFloat(numeric_math.round(mathArg(args, 0))); }
             if (method == "random") { return makeFloat(numeric_math.random()); }
             if (method == "randomInt") {
-                int64 lo = int(mathArg(args, 0));
-                int64 hi = int(mathArg(args, 1));
-                if (hi < lo) { int64 t = lo; lo = hi; hi = t; }
+                int64 lo = args.length > 0 ? args[0].toInt() : 0;
+                int64 hi = args.length > 1 ? args[1].toInt() : 0;
+                if (hi < lo) { int64 temp = lo; lo = hi; hi = temp; }
                 if (hi == lo) { return makeInt(lo); }
-                int64 range = hi - lo + 1;
-                int64 r = int(numeric_math.random() * float64(range));
-                if (r >= range) { r = range - 1; }
-                return makeInt(lo + r);
+                int64 width = hi - lo + 1;
+                int64 maximum = 9223372036854775807;
+                while (true) {
+                    int64 candidate = mathRandomWord();
+                    if (width > 0) {
+                        candidate = candidate & maximum;
+                        int64 limit = maximum - maximum % width;
+                        if (candidate < limit) { return makeInt(lo + candidate % width); }
+                    } else {
+                        // Intervals wider than INT64_MAX use signed rejection
+                        // directly, avoiding overflow in their positive width.
+                        if (candidate >= lo && candidate <= hi) { return makeInt(candidate); }
+                    }
+                }
             }
             if (method == "log" || method == "ln") { return makeFloat(numeric_math.ln(mathArg(args, 0))); }
             if (method == "log10") { return makeFloat(numeric_math.log10(mathArg(args, 0))); }
@@ -4197,6 +4207,7 @@ Value mathAbsV(Value[] args) {
     Value a = args.length > 0 ? args[0] : makeInt(0);
     if (a.tag == VAL_FLOAT) {
         float64 floatValue = valueToFloat(a);
+        if (floatValue == 0.0) { return makeFloat(0.0); }
         if (floatValue < 0.0) { return makeFloat(-floatValue); }
         return makeFloat(floatValue);
     }
@@ -4248,4 +4259,11 @@ Value mathSumV(Value[] args) {
     }
     if (floating) { return makeFloat(floatTotal); }
     return makeInt(integerTotal);
+}
+
+private int64 mathRandomWord() {
+    int64 high = int64(numeric_math.random() * 2147483648.0);
+    int64 middle = int64(numeric_math.random() * 2147483648.0);
+    int64 low = int64(numeric_math.random() * 2147483648.0);
+    return (high << 33) | (middle << 2) | (low & 3);
 }

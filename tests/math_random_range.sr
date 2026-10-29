@@ -1,0 +1,25 @@
+import math;
+
+void bounded(int low, int high) {
+    int first = math.randomInt(low, high);
+    bool varied = false;
+    for (int i = 0; i < 32; i++) {
+        int value = math.randomInt(low, high);
+        if (value < low || value > high) { printline("randomInt bounds"); exit(1); }
+        if (value != first) { varied = true; }
+    }
+    if (!varied) { printline("randomInt state"); exit(1); }
+}
+
+void main() {
+    if (math.randomInt(7, 7) != 7) { exit(1); }
+    if (math.randomInt(9223372036854775807, 9223372036854775807) != 9223372036854775807) { exit(1); }
+    bounded(-10, 10);
+    bounded(9223372036854775700, 9223372036854775807);
+    bounded(-9223372036854775807 - 1, 9223372036854775807);
+    for (int i = 0; i < 32; i++) {
+        int value = math.randomInt(10, -10);
+        if (value < -10 || value > 10) { exit(1); }
+    }
+    printline("math random ranges passed");
+}
