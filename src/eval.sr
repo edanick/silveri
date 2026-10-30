@@ -741,6 +741,13 @@ class Evaluator {
             // and GetSystemTime (UTC) raw the same way; the evalCall arm
             // below serves both from the same grant (ms-clock parity turn).
             || fn == "QueryPerformanceCounter" || fn == "QueryPerformanceFrequency" || fn == "GetLocalTime" || fn == "GetSystemTime") { return "kernel32.dll"; }
+        // Winsock (ws2_32.dll): the socket API the std net module calls.
+        // The interpreter serves these from its own builtin arms.
+        if (fn == "socket" || fn == "connect" || fn == "bind" || fn == "listen"
+            || fn == "accept" || fn == "send" || fn == "recv"
+            || fn == "sendto" || fn == "recvfrom" || fn == "closesocket"
+            || fn == "setsockopt" || fn == "getaddrinfo" || fn == "freeaddrinfo"
+            || fn == "inet_addr" || fn == "WSAStartup") { return "ws2_32.dll"; }
         return "";
     }
 
@@ -853,6 +860,34 @@ class Evaluator {
                     this.globals.define(k32[j], makeBuiltin(k32[j]));
                 }
             }
+            return;
+        }
+        if (dll == "ws2_32.dll") {
+            // Winsock exports the socket API calls the std net module
+            // makes. The interpreter serves them from its own builtin
+            // arms (builtins.sr), which call the DLL exports directly.
+            string[] ws2 = [];
+            ws2.add("socket");
+            ws2.add("connect");
+            ws2.add("bind");
+            ws2.add("listen");
+            ws2.add("accept");
+            ws2.add("send");
+            ws2.add("recv");
+            ws2.add("sendto");
+            ws2.add("recvfrom");
+            ws2.add("closesocket");
+            ws2.add("setsockopt");
+            ws2.add("getaddrinfo");
+            ws2.add("freeaddrinfo");
+            ws2.add("inet_addr");
+            ws2.add("WSAStartup");
+            for (int w = 0; w < ws2.length; w++) {
+                if (this.win32HasExport(dll, ws2[w])) {
+                    this.globals.define(ws2[w], makeBuiltin(ws2[w]));
+                }
+            }
+            return;
         }
     }
 
@@ -904,6 +939,39 @@ class Evaluator {
             }
         }
         this.defineGrantedExports(dll);
+    }
+
+    // DOCS/213 -- import aliasing: define each "local=export" entry of an
+    // import node's name list as a global callable bound to the export.
+    // The local name is what the source calls; the export is what the
+    // native layer serves. An alias of a native export (`connect as
+    // dllConnect`) therefore lands on the same builtin the export name
+    // would reach, under the local spelling.
+    private void defineImportAliases(Node node) {
+        if (node.name == "*") { return; }
+        int start = 0;
+        for (int i = 0; i <= node.name.length; i++) {
+            if (i == node.name.length || node.name[i] == ',') {
+                if (i > start) {
+                    string entry = this.evalSliceStr(node.name, start, i);
+                    int eq = this.findChar(entry, '=');
+                    if (eq > 0) {
+                        string localName = this.evalSliceStr(entry, 0, eq);
+                        string exportName = this.evalSliceStr(entry, eq + 1, entry.length);
+                        this.globals.define(localName, makeBuiltin(exportName));
+                    }
+                }
+                start = i + 1;
+            }
+        }
+    }
+
+    // The index of the first occurrence of `ch` in `text`, or -1.
+    private int findChar(string text, char ch) {
+        for (int i = 0; i < text.length; i++) {
+            if (text[i] == ch) { return i; }
+        }
+        return -1;
     }
 
     // LINUX (additive, mirrors silverc/compiler/mini_cg.sr linux tables):
@@ -1336,6 +1404,9 @@ class Evaluator {
     private void registerItem(Node item) {
         bool ext = this.isExternalItem(item);
         if (item.kind == ND_IMPORT) {
+            // DOCS/213 -- import aliasing: `X as Y` binds the native export
+            // X to the LOCAL call name Y, whatever library X comes from.
+            this.defineImportAliases(item);
             // DOCS/213 -- grant access to the imported win32 DLL modules.
             this.registerWin32Import(item);
             // LINUX (additive): grant access to imported linux shared libs.
@@ -3770,6 +3841,7 @@ val = this.coerceDeclaredValue(this.declaredFieldType(obj.typeName, target.name)
                 bytes.add(makeByte(0));
             }
             result = makeArray(bytes);
+            result.typeName = "byte[]";
         } else if ((typeName == "int" || typeName == "int32" || typeName == "int64" || typeName == "uint") && args.length == 1) {
             int icount = args[0].toInt();
             if (icount < 0) {
@@ -3781,6 +3853,58 @@ val = this.coerceDeclaredValue(this.declaredFieldType(obj.typeName, target.name)
                 ints.add(makeInt(0));
             }
             result = makeArray(ints);
+            result.typeName = "int[]";
+        } else if (typeName == "string" && args.length == 1) {
+            // A string array: `new string[n]` fills n empty strings. The
+            // element type is recorded so an array PARAMETER keeps the
+            // caller's array (an out-parameter write must be visible to
+            // the caller -- see coerceStoredValue).
+            int scount = args[0].toInt();
+            if (scount < 0) {
+                printline("Runtime error: string array size cannot be negative");
+                exit(1);
+            }
+            Value[] strs = [];
+            for (int i = 0; i < scount; i++) {
+                strs.add(makeString(""));
+            }
+            result = makeArray(strs);
+            result.typeName = "string[]";
+        } else if (typeName == "float" || typeName == "float64" || typeName == "double") {
+            if (args.length == 1) {
+                int fcount = args[0].toInt();
+                if (fcount < 0) {
+                    printline("Runtime error: float array size cannot be negative");
+                    exit(1);
+                }
+                Value[] floats = [];
+                for (int i = 0; i < fcount; i++) {
+                    floats.add(makeFloat(0.0));
+                }
+                result = makeArray(floats);
+            }
+        } else if (typeName == "bool" && args.length == 1) {
+            int bcount = args[0].toInt();
+            if (bcount < 0) {
+                printline("Runtime error: bool array size cannot be negative");
+                exit(1);
+            }
+            Value[] bools = [];
+            for (int i = 0; i < bcount; i++) {
+                bools.add(makeBool(false));
+            }
+            result = makeArray(bools);
+        } else if (typeName == "char" && args.length == 1) {
+            int ccount = args[0].toInt();
+            if (ccount < 0) {
+                printline("Runtime error: char array size cannot be negative");
+                exit(1);
+            }
+            Value[] chars = [];
+            for (int i = 0; i < ccount; i++) {
+                chars.add(makeChar(' '));
+            }
+            result = makeArray(chars);
         } else if (this.classes.contains(typeName)) {
             this.checkInternalClassUse(typeName, where);
             result = this.constructClass(typeName, args);
@@ -3995,6 +4119,27 @@ val = this.coerceDeclaredValue(this.declaredFieldType(obj.typeName, target.name)
         GC.popRoot(); return result;
     }
 
+    // True when every element of `arr` already has the declared element
+    // type, so the array needs no element-wise conversion.
+    private bool arrayElementsMatch(string elementType, Value arr) {
+        for (int i = 0; i < arr.arrVal.length; i++) {
+            Value el = arr.arrVal[i];
+            if (el == null) { continue; }
+            if (elementType == "string" && el.tag == VAL_STRING) { continue; }
+            if (elementType == "int" && (el.tag == VAL_INT || el.tag == VAL_BYTE)) { continue; }
+            if (elementType == "int64" && (el.tag == VAL_INT || el.tag == VAL_BYTE)) { continue; }
+            if (elementType == "uint64" && el.tag == VAL_INT) { continue; }
+            if (elementType == "byte" && el.tag == VAL_BYTE) { continue; }
+            if (elementType == "char" && el.tag == VAL_CHAR) { continue; }
+            if (elementType == "float" || elementType == "float64" || elementType == "double") {
+                if (el.tag == VAL_FLOAT) { continue; }
+            }
+            if (elementType == "bool" && el.tag == VAL_BOOL) { continue; }
+            return false;
+        }
+        return true;
+    }
+
     private Value coerceStoredValue(string typeName, Value value) {
         if (value == null) { return makeNull(); }
         if (typeName.endsWith("?") && value.tag == VAL_NULL) { return value; }
@@ -4002,6 +4147,16 @@ val = this.coerceDeclaredValue(this.declaredFieldType(obj.typeName, target.name)
         if (typeName.endsWith("[]") && value.tag == VAL_ARRAY) {
             if (value.typeName == typeName) { return value; }
             string elementType = typeName.substr(0, typeName.length - 2);
+            // An array whose elements already carry the declared element
+            // type is passed THROUGH, not copied: the caller keeps the
+            // same array object, so an out-parameter (a callee writing
+            // `out[0] = ...`) is visible to the caller. Copying it would
+            // silently drop the write -- the array-parameter identity the
+            // compiled backends keep.
+            if (value.typeName.length == 0 && this.arrayElementsMatch(elementType, value)) {
+                value.typeName = typeName;
+                return value;
+            }
             Value result = makeArray([]); GC.pushRoot(result);
             for (int i = 0; i < value.arrVal.length; i++) {
                 result.arrVal.add(this.coerceDeclaredValue(elementType, value.arrVal[i]));

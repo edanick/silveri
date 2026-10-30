@@ -15,6 +15,7 @@ import numeric_math;
 #on WINDOWS
 import * from win32.user32;
 import * from win32.kernel32;
+import * from win32.ws2_32;
 #on LINUX
 import * from linux.libc;
 #on MAC
@@ -3610,6 +3611,8 @@ Value callBuiltin(string name, Value[] args) {
         if (args.length > 1) { sTyp = args[1].toInt(); }
         if (args.length > 2) { sProto = args[2].toInt(); }
         int sFd = -1;
+        #on WINDOWS
+        sFd = socket(sDom, sTyp, sProto);
         #on LINUX
         sFd = socket(sDom, sTyp, sProto);
         #on MAC
@@ -3630,6 +3633,8 @@ Value callBuiltin(string name, Value[] args) {
                 cnSa[i] = int(arrValIntAt(args[1], i));
             }
             int cnRes = -1;
+            #on WINDOWS
+            cnRes = connect(cnFd, cnSa, cnLen);
             #on LINUX
             cnRes = connect(cnFd, cnSa, cnLen);
             #on MAC
@@ -3652,6 +3657,8 @@ Value callBuiltin(string name, Value[] args) {
                 bSa[i] = int(arrValIntAt(args[1], i));
             }
             int bRes = -1;
+            #on WINDOWS
+            bRes = bind(bFd, bSa, bLen);
             #on LINUX
             bRes = bind(bFd, bSa, bLen);
             #on MAC
@@ -3668,6 +3675,8 @@ Value callBuiltin(string name, Value[] args) {
         if (args.length > 0) { lFd = args[0].toInt(); }
         if (args.length > 1) { lBack = args[1].toInt(); }
         int lRes = -1;
+        #on WINDOWS
+        lRes = listen(lFd, lBack);
         #on LINUX
         lRes = listen(lFd, lBack);
         #on MAC
@@ -3680,6 +3689,8 @@ Value callBuiltin(string name, Value[] args) {
         int acFd = 0;
         if (args.length > 0) { acFd = args[0].toInt(); }
         int acRes = -1;
+        #on WINDOWS
+        acRes = accept(acFd, null, null);
         #on LINUX
         acRes = accept(acFd, null, null);
         #on MAC
@@ -3687,6 +3698,111 @@ Value callBuiltin(string name, Value[] args) {
         acRes = accept(acFd, null, null);
         #off
         return makeInt(acRes);
+    }
+    // WINDOWS socket extras the std net module's UDP path uses. They are
+    // Windows-only names (POSIX spells them close/sendto/recvfrom), so
+    // each arm is WINDOWS-only.
+    if (name == "closesocket") {
+        int csFd = 0;
+        if (args.length > 0) { csFd = args[0].toInt(); }
+        int csRes = -1;
+        #on WINDOWS
+        csRes = closesocket(csFd);
+        #off
+        return makeInt(csRes);
+    }
+    if (name == "inet_addr") {
+        string iaHost = "";
+        if (args.length > 0 && args[0].tag == VAL_STRING) { iaHost = args[0].strVal; }
+        int iaRes = -1;
+        #on WINDOWS
+        iaRes = inet_addr(iaHost);
+        #off
+        return makeInt(iaRes);
+    }
+    if (name == "WSAStartup") {
+        int wsVer = 0;
+        if (args.length > 0) { wsVer = args[0].toInt(); }
+        int wsRes = -1;
+        #on WINDOWS
+        byte[] wsData = new byte[408];
+        wsRes = WSAStartup(wsVer, wsData);
+        #off
+        return makeInt(wsRes);
+    }
+    if (name == "sendto") {
+        int stFd = 0;
+        int stLen = 0;
+        int stFlags = 0;
+        if (args.length > 0) { stFd = args[0].toInt(); }
+        if (args.length > 2) { stLen = args[2].toInt(); }
+        if (args.length > 3) { stFlags = args[3].toInt(); }
+        if (args.length >= 5 && args[1].tag == VAL_ARRAY && args[4].tag == VAL_ARRAY) {
+            int stBuflen = arrValLen(args[1]);
+            int[] stBuf = new int[stBuflen];
+            for (int i = 0; i < stBuflen; i++) {
+                stBuf[i] = int(arrValIntAt(args[1], i));
+            }
+            int stSaLen = arrValLen(args[4]);
+            int[] stSa = new int[stSaLen];
+            for (int j = 0; j < stSaLen; j++) {
+                stSa[j] = int(arrValIntAt(args[4], j));
+            }
+            int stRes = -1;
+            #on WINDOWS
+            stRes = sendto(stFd, stBuf, stLen, stFlags, stSa, 16);
+            #on LINUX
+            stRes = sendto(stFd, stBuf, stLen, stFlags, stSa, 16);
+            #on MAC
+            // MAC (code-only, UNVALIDATED): same BSD sendto.
+            stRes = sendto(stFd, stBuf, stLen, stFlags, stSa, 16);
+            #off
+            return makeInt(stRes);
+        }
+        return makeInt(-1);
+    }
+    if (name == "recvfrom") {
+        int rfFd = 0;
+        int rfLen = 0;
+        int rfFlags = 0;
+        if (args.length > 0) { rfFd = args[0].toInt(); }
+        if (args.length > 2) { rfLen = args[2].toInt(); }
+        if (args.length > 3) { rfFlags = args[3].toInt(); }
+        if (args.length >= 2 && args[1].tag == VAL_ARRAY) {
+            int rfBuflen = arrValLen(args[1]);
+            int[] rfBuf = new int[rfBuflen];
+            for (int i = 0; i < rfBuflen; i++) {
+                rfBuf[i] = int(arrValIntAt(args[1], i));
+            }
+            // The caller's sockaddr buffer (arg 4) receives the sender's
+            // address; the length pointer (arg 5) is an int[1] the callee
+            // writes the real address length into. A null buffer means the
+            // caller does not want the peer address.
+            int[] rfFrom = new int[2];
+            int[] rfFromLen = new int[1];
+            rfFromLen[0] = 16;
+            int rfRes = -1;
+            #on WINDOWS
+            rfRes = recvfrom(rfFd, rfBuf, rfLen, rfFlags, rfFrom, rfFromLen);
+            #on LINUX
+            rfRes = recvfrom(rfFd, rfBuf, rfLen, rfFlags, rfFrom, rfFromLen);
+            #on MAC
+            // MAC (code-only, UNVALIDATED): same BSD recvfrom.
+            rfRes = recvfrom(rfFd, rfBuf, rfLen, rfFlags, rfFrom, rfFromLen);
+            #off
+            for (int j = 0; j < rfBuflen; j++) {
+                arrValSetAt(args[1], j, makeInt(rfBuf[j]));
+            }
+            // Hand the sender's address back to the caller (arg 4).
+            if (args.length >= 5 && args[4].tag == VAL_ARRAY) {
+                int rfFromLen2 = arrValLen(args[4]);
+                for (int k = 0; k < rfFromLen2 && k < 2; k++) {
+                    arrValSetAt(args[4], k, makeInt(rfFrom[k]));
+                }
+            }
+            return makeInt(rfRes);
+        }
+        return makeInt(-1);
     }
     if (name == "send") {
         int snFd = 0;
@@ -3702,6 +3818,8 @@ Value callBuiltin(string name, Value[] args) {
                 snBuf[i] = int(arrValIntAt(args[1], i));
             }
             int snGot = -1;
+            #on WINDOWS
+            snGot = send(snFd, snBuf, snLen, snFlags);
             #on LINUX
             snGot = send(snFd, snBuf, snLen, snFlags);
             #on MAC
@@ -3726,6 +3844,8 @@ Value callBuiltin(string name, Value[] args) {
                 rvBuf[i] = int(arrValIntAt(args[1], i));
             }
             int rvGot = -1;
+            #on WINDOWS
+            rvGot = recv(rvFd, rvBuf, rvLen, rvFlags);
             #on LINUX
             rvGot = recv(rvFd, rvBuf, rvLen, rvFlags);
             #on MAC
@@ -3765,6 +3885,8 @@ Value callBuiltin(string name, Value[] args) {
                 soOpt[i] = int(arrValIntAt(args[3], i));
             }
             int soRes = -1;
+            #on WINDOWS
+            soRes = setsockopt(soFd, soLevel, soName, soOpt, soLen);
             #on LINUX
             soRes = setsockopt(soFd, soLevel, soName, soOpt, soLen);
             #on MAC
@@ -3793,6 +3915,8 @@ Value callBuiltin(string name, Value[] args) {
             int gRet = -1;
             if (args[1].tag == VAL_STRING) {
                 string gSvc = args[1].strVal;
+                #on WINDOWS
+                gRet = getaddrinfo(gHost, gSvc, gHints, gRes);
                 #on LINUX
                 gRet = getaddrinfo(gHost, gSvc, gHints, gRes);
                 #on MAC
@@ -3800,6 +3924,8 @@ Value callBuiltin(string name, Value[] args) {
                 gRet = getaddrinfo(gHost, gSvc, gHints, gRes);
                 #off
             } else {
+                #on WINDOWS
+                gRet = getaddrinfo(gHost, null, gHints, gRes);
                 #on LINUX
                 gRet = getaddrinfo(gHost, null, gHints, gRes);
                 #on MAC

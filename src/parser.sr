@@ -781,6 +781,12 @@ private Node? parseItem() {
         int ln = this.line(); int c = this.col();
         this.advance();
         string[] names = [];
+        // DOCS/213 -- import aliasing: `X as Y` grants the native export
+        // `X` under the LOCAL call name `Y` (the same shape the compilers
+        // accept). The alias is recorded parallel to `names` so the
+        // post-parse unknown-method walk accepts the local name.
+        string[] aliasLocals = [];
+        string[] aliasExport = [];
         bool all = false;
         if (this.check(TK_STAR)) {
             this.advance();
@@ -788,17 +794,17 @@ private Node? parseItem() {
         } else if (this.check(TK_LBRACE)) {
             // DOCS/213 -- import { a, b } from win32;
             this.advance();
-            names.add(this.expectIdent());
+            this.parseImportName(names, aliasLocals, aliasExport);
             while (this.check(TK_COMMA)) {
                 this.advance();
-                names.add(this.expectIdent());
+                this.parseImportName(names, aliasLocals, aliasExport);
             }
             this.expect(TK_RBRACE);
         } else {
-            names.add(this.expectIdent());
+            this.parseImportName(names, aliasLocals, aliasExport);
             while (this.check(TK_COMMA)) {
                 this.advance();
-                names.add(this.expectIdent());
+                this.parseImportName(names, aliasLocals, aliasExport);
             }
         }
         string source = "";
@@ -819,6 +825,13 @@ private Node? parseItem() {
         this.recordMacImportGrant(source, all, names);
         // DOCS/261: remember custom native grants the same way.
         this.recordCustomImportGrant(source, all, names);
+        // Alias local names are callable names for the same walk.
+        for (int ai = 0; ai < aliasLocals.length; ai++) {
+            this.win32GrantNames.add(aliasLocals[ai]);
+            this.linuxGrantNames.add(aliasLocals[ai]);
+            this.macGrantNames.add(aliasLocals[ai]);
+            this.customGrantNames.add(aliasLocals[ai]);
+        }
         this.expectSemi();
         Node n = new Node(ND_IMPORT, ln, c);
         n.strVal = source;
@@ -829,9 +842,29 @@ private Node? parseItem() {
             for (int i = 1; i < names.length; i++) {
                 result += "," + names[i];
             }
+            // Alias pairs ride along as "export=local" entries, comma
+            // separated, so the evaluator can define the local name as a
+            // callable bound to the export.
+            for (int ai = 0; ai < aliasLocals.length; ai++) {
+                result += "," + aliasLocals[ai] + "=" + aliasExport[ai];
+            }
             n.name = result;
         }
         return n;
+    }
+
+    // One import-list entry: an identifier, optionally followed by
+    // `as <local>`. The export name goes into `names`; the alias pair
+    // (export, local) goes into `aliasExport` / `aliasLocals` when one
+    // was spelled.
+    private void parseImportName(string[] names, string[] aliasLocals, string[] aliasExport) {
+        string exportName = this.expectIdent();
+        names.add(exportName);
+        if (this.peek().text == "as") {
+            this.advance();
+            aliasLocals.add(this.expectIdent());
+            aliasExport.add(exportName);
+        }
     }
 
     private Node parseConst() {
@@ -4524,6 +4557,12 @@ private Node parseFunctionDef(bool isPub, bool isStat, bool isInt, string retTyp
             || fn == "GetSystemInfo" || fn == "GlobalMemoryStatusEx"
             || fn == "QueryPerformanceCounter" || fn == "QueryPerformanceFrequency"
             || fn == "GetLocalTime" || fn == "GetSystemTime") { return "kernel32.dll"; }
+        // Winsock (ws2_32.dll): the socket API the std net module calls.
+        if (fn == "socket" || fn == "connect" || fn == "bind" || fn == "listen"
+            || fn == "accept" || fn == "send" || fn == "recv"
+            || fn == "sendto" || fn == "recvfrom" || fn == "closesocket"
+            || fn == "setsockopt" || fn == "getaddrinfo" || fn == "freeaddrinfo"
+            || fn == "inet_addr" || fn == "WSAStartup") { return "ws2_32.dll"; }
         return "";
     }
 
