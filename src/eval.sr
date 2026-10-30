@@ -1536,6 +1536,7 @@ class Evaluator {
                 this.uint64Vars[item.name] = item.typeHint == "uint64";
                 if (item.childCount() > 0) {
                     Value val = this.evalExpr(item.child(0), this.globals);
+                    val = this.coerceDeclaredValue(item.typeHint, val);
                     this.stampStructType(val, item.typeHint);
                     this.globals.define(item.name, val);
                 } else if (item.typeHint == "FileOps") {
@@ -1545,6 +1546,7 @@ class Evaluator {
                 } else {
                     this.globals.define(item.name, makeNull());
                 }
+                this.globals.recordDeclaredType(item.name, item.typeHint);
             }
             if (item.kind == ND_EXPR_STMT && item.childCount() > 0) {
             this.evalExpr(item.child(0), this.globals);
@@ -4126,9 +4128,9 @@ val = this.coerceDeclaredValue(this.declaredFieldType(obj.typeName, target.name)
             Value el = arr.arrVal[i];
             if (el == null) { continue; }
             if (elementType == "string" && el.tag == VAL_STRING) { continue; }
-            if (elementType == "int" && (el.tag == VAL_INT || el.tag == VAL_BYTE)) { continue; }
-            if (elementType == "int64" && (el.tag == VAL_INT || el.tag == VAL_BYTE)) { continue; }
-            if (elementType == "uint64" && el.tag == VAL_INT) { continue; }
+            if ((elementType == "int" || elementType == "int32" || elementType == "int64" || elementType == "uint")
+                && el.tag == VAL_INT && el.typeName != "uint64") { continue; }
+            if (elementType == "uint64" && el.tag == VAL_INT && el.typeName == "uint64") { continue; }
             if (elementType == "byte" && el.tag == VAL_BYTE) { continue; }
             if (elementType == "char" && el.tag == VAL_CHAR) { continue; }
             if (elementType == "float" || elementType == "float64" || elementType == "double") {
