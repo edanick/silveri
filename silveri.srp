@@ -2,7 +2,7 @@
     name: "silveri",
     version: "0.7.9.4",
     license: "Edan M. © 2025 All Rights Reserved Proprietary",
-    macCopyright: "Silver for macOS © 2026 StavA - macOS support, macOS compiler support, maintainer and QA of the macOS version (unit tests). Programming language creator: Edan M.",
+    macCopyright: "Stav A.",
     entry: "src/main.sr",
     sources: [
         "std",
