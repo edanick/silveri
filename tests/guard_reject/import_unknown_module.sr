@@ -1,0 +1,10 @@
+// Negative fixture (import resolution): importing a module that does not
+// exist fails before anything runs, with the shared unknown-module
+// diagnostic. Expected pre-run diagnostic:
+//   unknown module "nosuchmod" was found at line 6, column 8.
+//   module either doesn't exist or not installed.
+import nosuchmod;
+
+void main() {
+    printline("never runs");
+}

@@ -1,0 +1,8 @@
+// Negative probe: `*=` computes on the old value — on an array target it
+// would compute on the header bits (only `+=` pushes). Must reject
+// pre-run.
+void main() {
+    int[] xs = [1, 2, 3];
+    xs *= 2;
+    printline(xs[0]);
+}

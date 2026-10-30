@@ -1,0 +1,12 @@
+// Negative probe: a read-only prop is set exactly once, by its
+// declaration initializer — never by a later store from outside. Must
+// reject pre-run.
+class Widget {
+    public read only prop string tag = "w";
+}
+
+void main() {
+    Widget w = new Widget();
+    w.tag = "x";
+    printline(w.tag);
+}

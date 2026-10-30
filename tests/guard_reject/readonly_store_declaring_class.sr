@@ -1,0 +1,15 @@
+// Negative probe: a read-only prop is never writable, not even from the
+// declaring class's own methods. Must reject pre-run.
+class Widget {
+    public read only prop string tag = "w";
+
+    def retag() {
+        this.tag = "x";
+    }
+}
+
+void main() {
+    Widget w = new Widget();
+    w.retag();
+    printline(w.tag);
+}

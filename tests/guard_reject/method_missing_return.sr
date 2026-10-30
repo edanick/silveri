@@ -1,0 +1,19 @@
+// Negative probe: a value-returning method may not fall off the end of
+// its body (the enclosing class's fields being in scope does not relax
+// the missing-return rule). Must reject pre-run.
+class Widget {
+    int count;
+
+    construct() {
+        count = 0;
+    }
+
+    def bump() -> int {
+        count += 1;
+    }
+}
+
+void main() {
+    Widget w = new Widget();
+    printline(w.bump());
+}

@@ -1,0 +1,11 @@
+// Negative probe: an object-initializer entry stores onto the field —
+// a read-only prop takes no initializer store. Must reject pre-run.
+class Widget {
+    public read only prop string tag = "w";
+    public prop int extra;
+}
+
+void main() {
+    Widget w = new Widget() { tag = "x" };
+    printline(w.tag);
+}

@@ -1,0 +1,6 @@
+// Negative probe: an array element is addressed by an integer — a float
+// index is an error. Must reject pre-run.
+void main() {
+    int[] xs = [10, 20, 30];
+    printline(xs[1.5]);
+}

@@ -1,0 +1,5 @@
+import * from visbridge;
+
+void main() {
+    hiddenShout("nope");
+}

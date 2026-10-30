@@ -1,0 +1,6 @@
+import * from secrethelper;
+
+void main() {
+    HiddenBox b = new HiddenBox();
+    printline(b.tag);
+}

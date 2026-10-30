@@ -1,0 +1,27 @@
+// Shadowing across scopes stays legal: branch arms, nested blocks,
+// loop bodies, and method locals over class fields all reuse names.
+class C {
+    int count;
+    void bump() {
+        int count = 5;
+        printline(count);
+    }
+}
+
+void main() {
+    int x = 1;
+    if (true) {
+        int x = 2;
+        printline(x);
+    }
+    foreach (x in [10, 20]) {
+        printline(x);
+    }
+    {
+        int x = 7;
+        printline(x);
+    }
+    printline(x);
+    C c = new C();
+    c.bump();
+}

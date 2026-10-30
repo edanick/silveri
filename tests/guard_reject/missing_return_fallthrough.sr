@@ -1,0 +1,14 @@
+// Negative fixture (guard reject): a value-returning function whose body
+// can fall off the end must be rejected before the program runs
+// ("not all code paths return a value" concept, MEMORY_GUARD totality).
+// Expected pre-run diagnostic: GuardError: MissingReturn ... 'int'.
+
+int falls_off_when_negative(int x) {
+    if (x > 0) {
+        return 1;
+    }
+}
+
+void main() {
+    printline(falls_off_when_negative(1));
+}

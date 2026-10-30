@@ -1,0 +1,11 @@
+// Negative probe: a match pattern may not name an invented enum
+// variant — it would match nothing. Must reject pre-run.
+enum Color { Red, Green, Blue }
+
+void main() {
+    Color c = Color.Red;
+    match (c) {
+        Color.Purple => { printline("purple"); }
+        _ => { printline("other"); }
+    }
+}

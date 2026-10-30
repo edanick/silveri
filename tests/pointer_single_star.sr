@@ -1,0 +1,12 @@
+// A pointer type takes exactly one star: `T*` and a leading `*T` are the
+// same type (the field branch folds the leading star away), and a
+// trailing pointer type stores and reads like any field.
+class Box {
+    int* slot;
+    *int slot2;
+}
+
+void main() {
+    new Box();
+    printline("pointer fields ok");
+}

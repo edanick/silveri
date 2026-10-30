@@ -1,0 +1,5 @@
+#on WINDOWS
+#else
+#on LINUX
+#off
+void main() { }

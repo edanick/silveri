@@ -1,0 +1,8 @@
+// Negative probe: a later assignment carries the declaration value-type
+// check — an int variable may not store a string at the assignment, not
+// only at the declaration. Must reject pre-run.
+void main() {
+    int x = 5;
+    x = "hello";
+    printline(x);
+}

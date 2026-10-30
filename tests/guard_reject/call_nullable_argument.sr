@@ -1,0 +1,17 @@
+// Negative fixture (guard reject): passing a maybe-null nullable into a
+// function whose parameter is non-nullable must be rejected before the
+// program runs (nullable-argument check, error grade). A narrowed or `??`
+// unwrapped value passes; the raw maybe-null does not.
+// Expected pre-run diagnostic:
+//   GuardError: ParamTypeMismatch at line ...: v: expected an int, got ...
+
+int? src() << null;
+
+int twice(int v) {
+    return v + v;
+}
+
+void main() {
+    int? x = src();
+    printline(twice(x));
+}

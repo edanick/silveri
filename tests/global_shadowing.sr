@@ -1,0 +1,15 @@
+// Module-level bindings are read-only after initialization, but a local
+// may shadow one: the assignment then targets the local (the global
+// stays untouched), and reads see the innermost binding.
+int g = 5;
+
+void shadow() {
+    int g = 100;
+    g += 1;
+    printline(g);
+}
+
+void main() {
+    shadow();
+    printline(g);
+}

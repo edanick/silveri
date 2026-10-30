@@ -1,0 +1,16 @@
+// Negative probe: the read-only flag resolves through the flattened
+// inherited layout — a parent's read-only prop is not writable through a
+// derived instance either. Must reject pre-run.
+class Base {
+    public read only prop string origin = "base";
+}
+
+class Derived extends Base {
+    public prop int extra;
+}
+
+void main() {
+    Derived d = new Derived();
+    d.origin = "x";
+    printline(d.origin);
+}

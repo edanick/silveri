@@ -1,0 +1,4 @@
+class C {
+    **int p;
+}
+void main() { C c = new C(); printline("ok"); }

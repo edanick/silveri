@@ -1,0 +1,18 @@
+// Negative probe: a bare nullable field may not be returned from an
+// int-returning method without a null check. Must reject pre-run.
+class Widget {
+    int? maybe;
+
+    construct() {
+        maybe = null;
+    }
+
+    def get() -> int {
+        return maybe;
+    }
+}
+
+void main() {
+    Widget w = new Widget();
+    printline(w.get());
+}

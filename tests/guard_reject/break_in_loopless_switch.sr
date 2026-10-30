@@ -1,0 +1,10 @@
+// Negative probe: a switch opens no loop scope — a break inside a
+// loop-less switch is outside any loop. Must reject pre-run.
+void main() {
+    int x = 1;
+    switch (x) {
+        case 1 { break; }
+        else { printline("else"); }
+    }
+    printline("done");
+}

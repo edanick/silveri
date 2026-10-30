@@ -1,0 +1,14 @@
+// Negative probe: an unassigned local read inside a class method is an
+// unassigned read, exactly like inside a free function. Must reject
+// pre-run.
+class Widget {
+    def compute() -> int {
+        int x;
+        return x + 1;
+    }
+}
+
+void main() {
+    Widget w = new Widget();
+    printline(w.compute());
+}

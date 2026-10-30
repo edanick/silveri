@@ -1,0 +1,8 @@
+// Negative probe: every EnumName.Variant spelling must name a declared
+// variant — here a value expression invents one. Must reject pre-run.
+enum Color { Red, Green, Blue }
+
+void main() {
+    Color c = Color.Purple;
+    printline(c);
+}

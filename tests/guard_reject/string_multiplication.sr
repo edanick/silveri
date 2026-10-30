@@ -1,0 +1,7 @@
+// Negative probe: multiplication has no string meaning — it would
+// compute on the pointer bits. Must reject pre-run.
+void main() {
+    string a = "hello";
+    string b = a * 2;
+    printline(b);
+}

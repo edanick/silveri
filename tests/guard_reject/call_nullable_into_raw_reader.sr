@@ -1,0 +1,11 @@
+// Negative probe: a nullable argument may not flow into a non-nullable
+// parameter of a callee that reads it raw (no null-safe form anywhere in
+// its body). Must reject pre-run.
+int inc(int n) {
+    return n + 1;
+}
+
+void main() {
+    int? x = null;
+    printline(inc(x));
+}

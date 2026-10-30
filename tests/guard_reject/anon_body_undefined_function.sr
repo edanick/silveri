@@ -1,0 +1,7 @@
+void helper() { printline("known"); }
+void main() {
+    void () cb = (void () {
+        nosuchfunc();
+    });
+    cb();
+}

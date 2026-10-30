@@ -1,0 +1,7 @@
+// Negative probe: an array element is addressed by an integer — a
+// string index is an error (dict lookups are exempt, but this receiver
+// is a declared array). Must reject pre-run.
+void main() {
+    int[] xs = [10, 20, 30];
+    printline(xs["one"]);
+}

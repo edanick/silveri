@@ -1,0 +1,9 @@
+// Negative probe: a scalar number cannot be iterated — foreach over it
+// would read it as a collection header. Must reject pre-run.
+void main() {
+    int total = 0;
+    foreach (int x in 5) {
+        total += x;
+    }
+    printline(total);
+}

@@ -1,0 +1,9 @@
+// Negative probe: the same variant spelling twice in one enum is a
+// duplicate declaration — the second would answer as the first at run
+// time. Must reject pre-run.
+enum Color { Red, Green, Red }
+
+void main() {
+    Color c = Color.Red;
+    printline(c);
+}

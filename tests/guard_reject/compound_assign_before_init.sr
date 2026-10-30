@@ -1,0 +1,11 @@
+// Negative fixture (guard reject): a compound assignment reads its target
+// before writing (`x += 1` is `x = x + 1`), so it must be rejected on an
+// uninitialized variable before the program runs.
+// Expected pre-run diagnostic: GuardError: UnassignedVariableCallException
+// ... compound assignment reads 'x' before it is assigned on all paths.
+
+void main() {
+    int x;
+    x += 1;
+    printline(x);
+}

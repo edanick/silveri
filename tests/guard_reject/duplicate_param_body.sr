@@ -1,0 +1,5 @@
+void f(int x) {
+    int x = 2;
+    printline(x);
+}
+void main() { f(1); }

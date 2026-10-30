@@ -1,0 +1,8 @@
+// Negative probe: subtraction has no string meaning — a provably-string
+// operand on a non-concat arithmetic operator is an error. Must reject
+// pre-run.
+void main() {
+    string a = "hello";
+    string b = a - "world";
+    printline(b);
+}

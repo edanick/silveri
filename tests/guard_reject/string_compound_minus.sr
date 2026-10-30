@@ -1,0 +1,8 @@
+// Negative probe: `-=` computes on the old value — on a string target it
+// would corrupt the pointer bits (only `+=` concatenates). Must reject
+// pre-run.
+void main() {
+    string s = "hello";
+    s -= "world";
+    printline(s);
+}

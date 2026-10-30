@@ -1,0 +1,11 @@
+// Negative probe: a compound store onto a read-only prop is still a
+// store (`w.tag += "x"` is `w.tag = w.tag + "x"`). Must reject pre-run.
+class Widget {
+    public read only prop string tag = "w";
+}
+
+void main() {
+    Widget w = new Widget();
+    w.tag += "x";
+    printline(w.tag);
+}

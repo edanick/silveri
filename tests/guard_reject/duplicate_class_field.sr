@@ -1,0 +1,12 @@
+// Negative probe: two fields of the same name in one class share one
+// storage slot; the second declaration is a duplicate. Must reject
+// pre-run.
+class Widget {
+    int count;
+    string count;
+}
+
+void main() {
+    Widget w = new Widget();
+    printline(w.count);
+}

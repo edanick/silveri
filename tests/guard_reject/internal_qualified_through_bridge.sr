@@ -1,0 +1,5 @@
+import * from visbridge;
+
+void main() {
+    secrethelper.hiddenShout("nope");
+}

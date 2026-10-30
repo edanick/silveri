@@ -1,0 +1,11 @@
+// Negative probe: inc/dec on a read-only prop is a member store too
+// (`w.count++` is `w.count = w.count + 1`). Must reject pre-run.
+class Widget {
+    public read only prop int count = 0;
+}
+
+void main() {
+    Widget w = new Widget();
+    w.count++;
+    printline(w.count);
+}

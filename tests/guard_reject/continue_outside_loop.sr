@@ -1,0 +1,6 @@
+// Negative probe: with no enclosing loop, a continue statement cannot
+// reach any loop edge. Must reject pre-run.
+void main() {
+    continue;
+    printline("unreachable");
+}

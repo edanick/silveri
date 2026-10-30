@@ -1,0 +1,15 @@
+// Negative probe: composed argument types must agree with the parameter
+// in their components — a string[] argument cannot feed an int[]
+// parameter. Must reject pre-run.
+int sumAll(int[] values) {
+    int total = 0;
+    foreach (int v in values) {
+        total += v;
+    }
+    return total;
+}
+
+void main() {
+    string[] names = ["amy", "bo"];
+    printline(sumAll(names));
+}

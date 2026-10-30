@@ -1,0 +1,11 @@
+// Membership scans an array: literal collections, array variables, and
+// dynamic expressions all stay legal; parenthesized `not in` negates.
+void main() {
+    int[] xs = [1, 2, 3];
+    printline(2 in xs);
+    printline(9 in xs);
+    printline((9 not in xs));
+    var ys = [4, 5];
+    printline(5 in ys);
+    printline("a" in ["a", "b"]);
+}

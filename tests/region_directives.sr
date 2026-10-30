@@ -1,0 +1,12 @@
+#on LINUX
+void lp() { }
+#off
+#on WINDOWS
+void wp() { }
+#else
+void ep() { }
+#off
+#on WINDOWS or MAC
+void omp() { }
+#off
+void main() { printline("regions ok"); }

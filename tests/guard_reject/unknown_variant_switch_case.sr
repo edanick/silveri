@@ -1,0 +1,11 @@
+// Negative probe: a switch case value may not name an invented enum
+// variant. Must reject pre-run.
+enum Color { Red, Green, Blue }
+
+void main() {
+    Color c = Color.Red;
+    switch (c) {
+        case Color.Purple { printline("purple"); }
+        else { printline("other"); }
+    }
+}

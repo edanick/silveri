@@ -1,0 +1,11 @@
+// Negative fixture (guard reject): assignability relations — strings never
+// interchange with numbers in either direction, so binding a numeric
+// variable's value into a string must be rejected before the program runs.
+// Expected pre-run diagnostic: GuardError: TypeMismatch ... expected
+// 'string', found 'int'.
+
+void main() {
+    int n = 5;
+    string s = n;
+    printline(s);
+}

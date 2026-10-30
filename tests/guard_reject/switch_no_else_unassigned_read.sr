@@ -1,0 +1,13 @@
+// Negative fixture (guard reject): sound definite assignment through
+// switch — a switch without an else keeps the no-match path unassigned, so
+// the trailing read must be rejected before the program runs, even for a
+// variable initialized before the switch (parity with the compilers).
+// Expected pre-run diagnostic: GuardError: UnassignedVariableCallException ...
+
+void main() {
+    int y = 1;
+    switch (9) {
+        case 1 { y = 100; }
+    }
+    printline(y);
+}

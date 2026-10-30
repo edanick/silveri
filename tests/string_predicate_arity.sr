@@ -1,0 +1,15 @@
+// startsWith/endsWith take exactly one argument (the whole signature);
+// one-argument calls answer correctly and user-declared same-name
+// functions are never the built-in.
+bool startsWith(string whole, string head, int dummy) {
+    return whole.length >= head.length;
+}
+
+void main() {
+    string s = "hello world";
+    printline(s.startsWith("hello"));
+    printline(s.startsWith("world"));
+    printline(s.endsWith("world"));
+    printline(s.endsWith("hello"));
+    printline(startsWith("hello", "he", 0));
+}

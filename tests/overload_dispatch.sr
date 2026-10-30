@@ -1,0 +1,13 @@
+// Overload dispatch by arity (default parameters make the tail optional)
+// and the zero-argument fn-typed local invocation both stay legal.
+int pick(int a, int b) { return a; }
+int pick(int a) { return a + 100; }
+int pick(int a, int b, int c = 9) { return c; }
+
+void main() {
+    printline(pick(1, 2));
+    printline(pick(1));
+    printline(pick(1, 2, 3));
+    void () cb = (void () { printline("called"); });
+    cb();
+}

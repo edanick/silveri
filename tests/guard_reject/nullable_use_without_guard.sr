@@ -1,0 +1,17 @@
+// Negative fixture (guard reject): using a nullable without a null guard
+// must be rejected before the program runs (MEMORY_GUARD check 6). Narrowing
+// only ever proves NON-null, so inside the `x == null` branch the raw read
+// stays illegal. The nullable must come from a maybe-null source: a
+// literal-initialized `int? x = 5` is proven non-null at declaration and
+// legitimately passes (declaration-state flow concept).
+// Expected pre-run diagnostic: GuardError: NullValueException ...
+
+int? src() << null;
+
+void main() {
+    int? x = src();
+    if (x == null) {
+        int y = x;
+        printline(y);
+    }
+}

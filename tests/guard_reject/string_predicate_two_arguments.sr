@@ -1,0 +1,8 @@
+void main() {
+    string s = "hello world";
+    if (s.startsWith("world", 6)) {
+        printline("wrong-true");
+    } else {
+        printline("wrong-false");
+    }
+}

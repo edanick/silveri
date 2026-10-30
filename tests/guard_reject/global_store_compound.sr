@@ -1,0 +1,6 @@
+int g = 5;
+const int K = 10;
+void main() {
+    g += 1;
+    printline(g + K);
+}

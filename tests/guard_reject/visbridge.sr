@@ -1,0 +1,9 @@
+mod export visbridge;
+
+import * from secrethelper;
+
+// Module-internal use of the internal sibling is legal here: this module
+// is external project code with full access to its own internals.
+void bridgeLoud(string s) {
+    hiddenShout(s);
+}

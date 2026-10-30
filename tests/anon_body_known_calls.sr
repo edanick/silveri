@@ -1,0 +1,13 @@
+// Anonymous bodies resolve their calls against the file's globals and the
+// known symbol table: known free calls, dotted module receivers, and
+// all-caps placeholders all stay callable inside the isolated body.
+void helper() { printline("helper-ok"); }
+
+void main() {
+    void () cb = (void () {
+        helper();
+        printline(math.pi);
+    });
+    cb();
+    printline("main-ok");
+}

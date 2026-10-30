@@ -1,0 +1,19 @@
+// Negative fixture (guard reject): a fact proven non-null on only ONE
+// branch of an if does not survive the join — reading the nullable after
+// the if must be rejected before the program runs (meet-at-join
+// flow concept: maybe-null wins unless proven on every
+// completing path).
+// Expected pre-run diagnostic:
+//   GuardError: NullValueException ...: y: nullable value x used without a
+//   null check (use ??)
+
+int? src() << null;
+
+void main() {
+    int? x = src();
+    if (src() != null) {
+        x = 1;
+    }
+    int y = x;
+    printline(y);
+}
