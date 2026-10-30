@@ -9,7 +9,7 @@ a native executable.
 ## Credits
 
 - **Author:** Edan M.
-- **Version:** 0.7.9.4
+- **Version:** 0.7.10
 - **Copyright:** © 2025 Edan M.
 
 ## Mac OS Version
