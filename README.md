@@ -12,10 +12,10 @@ a native executable.
 - **Version:** 0.7.9.4
 - **Copyright:** © 2025 Edan M.
 
-## macOS Port
+## Mac OS Version
 
 - **Credit:** Stav A (2026) - Mac OS support, initial QA of the Mac OS version.
-- Enabling Silver interpreter support on macOS
+- Enabling Silver interpreter support on Mac OS
 - Programming language creator: Edan M.
 
 ## Quick start
