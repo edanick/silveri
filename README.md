@@ -14,10 +14,8 @@ a native executable.
 
 ## macOS Port
 
-- **Copyright:** © 2026 StavA
-- Enabling support for Silver on macOS
+- **Credit:** Stav A (2026) - Mac OS support, initial QA of the Mac OS version.
 - Enabling Silver interpreter support on macOS
-- Maintainer and QA of the macOS version (unit tests)
 - Programming language creator: Edan M.
 
 ## Quick start

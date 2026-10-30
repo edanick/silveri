@@ -2,7 +2,7 @@
     name: "silveri",
     version: "0.7.9.4",
     license: "Edan M. © 2025 All Rights Reserved Proprietary",
-    macCopyright: "Stav A.",
+    macCopyright: "Stav A (2026) - Mac OS support, initial QA of the Mac OS version.",
     entry: "src/main.sr",
     sources: [
         "std",
